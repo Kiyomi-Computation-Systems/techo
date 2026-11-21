@@ -1,0 +1,12 @@
+* 手帳 Techō
+
+Document storage API specifically geared for note taking.
+
+#+begin_quote
+✨ *AI Disclosure:* LLMs are used extensively in the planning and development of this project.
+#+end_quote
+
+** License
+
+© [[https://kiyomicomputation.systems/][Kiyomi Computation Systems LLC]]. Licensed under BSD-3-Clause — see
+[[file:LICENSE][LICENSE]].
