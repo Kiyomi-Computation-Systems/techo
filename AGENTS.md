@@ -16,12 +16,40 @@
 * circuit https://github.com/Kiyomi-Computation-Systems/circuit
 * chez-sqlite3 https://github.com/Kiyomi-Computation-Systems/chez-sqlite3/
 * threading https://github.com/Kiyomi-Computation-Systems/threading
+* chez-curl https://github.com/Kiyomi-Computation-Systems/chez-curl
+  (integration tests; later an object store)
+* chez-sodium https://github.com/Kiyomi-Computation-Systems/chez-sodium
+  (password hashing, random bytes, fast hashing)
+* unique-id https://github.com/Kiyomi-Computation-Systems/unique-id (UUID v4
+  and v7)
 * Use Akku 1.2.0 where possible for managing dependencies (chez-srfi, threading)
-* circuit and chez-sqlite3 are not in Akku, but their dependencies are
+* circuit, chez-sqlite3, chez-curl, chez-sodium and unique-id are not in Akku,
+  but their dependencies are
+* A new dependency needs a decision record
+
+### Sibling projects
+
+* The dependencies above are the owner's, each checked out beside this
+  repository: `../circuit`, `../chez-http-server`, `../chez-sqlite3`,
+  `../chez-curl`, `../chez-sodium`, `../unique-id`, `../threading`.
+* Read a sibling's source, its `.plans/decisions/` and its traps there before
+  relying on its behaviour or proposing a change to it.
+* Never edit a sibling from here. A change to one is an issue on its
+  repository, with a brief in `/.plans/briefs`.
+* A brief is the snapshot handed over. Once the sibling has taken it up, the
+  sibling's own `.plans/` is the truth.
 
 ### Layout, process & libraries
 
 * Plans live in `/.plans`, decision records in `/.plans/decisions`
+* `/.plans/outline.md` is the project's outline. A slice's plan is
+  `/.plans/YYYY-MM-DD-slice-N-name.md`. Spikes and their reports live in
+  `/.plans/research`.
+* A decision record is `NNNN-what-was-decided.md`, with Date, Status, Plan,
+  then Context, Decision and Consequences. A decision changes by a new or
+  amended record.
+* Traps this repo has hit live in `/.plans/traps.md`, each reproduced before
+  it is recorded.
 * The ledger is `/.plans/progress.md`: where the project stands, the next
   slice, and a close-out for each merged slice. `/.plans/global-constraints.md`
   holds the decision records' hard rules and binds every task brief. Read both
@@ -35,7 +63,9 @@
   reach mutable state through procedures.
 * Before a global replace, predict how many matches it should hit, and check
   the count afterwards: the sentence that defines a marker contains the
-  marker (`.plans/traps.md`).
+  marker.
+* Model behaviour that has states as a transition table with a pure step
+  function (ADR-0007).
 
 ### Guix development container
 
