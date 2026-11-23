@@ -20,15 +20,22 @@ close-out under **Close-outs**, newest first.
   amended 2026-11-23).
 - **Slice 2 waits for circuit's worker**, the third item of
   [circuit issue 53](https://github.com/Kiyomi-Computation-Systems/circuit/issues/53)
-  ([the brief](briefs/circuit-worker.md)). Its design goes to the owner first. The database will run on one write thread
+  ([the brief](briefs/circuit-worker.md)). Its design is
+  [circuit PR 55](https://github.com/Kiyomi-Computation-Systems/circuit/pull/55), read
+  here against T1 to T5. circuit builds it in three slices, and Techo needs the
+  second, which has `make-worker` and `worker-call`. The database will run on one write thread
   and one or more read threads, modelled as state machines and verified (ADR-0008,
   amended 2026-11-22).
 - **`techo user add` moved to slice 3** (owner, 2026-11-22).
-- **ADR-0006 carries a proposed amendment** that the owner has not yet accepted.
+- **ADR-0006's amendment is accepted** (owner, 2026-11-23): a key is looked up by its
+  BLAKE2b hash.
+- **T5 is restated** (owner, 2026-11-23; ADR-0008's second amendment), since circuit's
+  worker refuses queued jobs at a stop.
 
 ## Next
 
-Plan slice 2, once circuit's worker design is approved. The plan starts from
+Plan slice 2, once circuit's worker design is merged. The plan can be written against
+the design; the build needs circuit's shell slice. The plan starts from
 ADR-0008's amendment and the brief's §9 and §10.
 
 **Watch for:** the Akku index gaining chez-http-server 0.12.0 and a chez-websocket
@@ -60,7 +67,7 @@ own `.plans/` is the truth from then on.**
 | chez-sodium | `../chez-sodium` | Repository made; its brief under adversarial review |
 | unique-id | `../unique-id` | Repository made, holding the brief |
 | chez-http-server: `await-outside` | `../chez-http-server` | Released in v0.12.0 (bba2ba6); not on the Akku index yet |
-| circuit: the worker | `../circuit` | Issue 53: items 1 and 2 merged (442dd85); the worker's design is next |
+| circuit: the worker | `../circuit` | Issue 53: items 1 and 2 merged (442dd85); the worker's design is its PR 55 |
 
 ## Open questions
 

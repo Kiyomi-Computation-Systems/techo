@@ -33,13 +33,13 @@ Plan: [the outline](../outline.md) §7
 
 ## Amendment, 2026-11-22: a key is checked by looking it up by its hash
 
-Status: proposed; awaits the owner. It came from the adversarial review of
+Status: accepted (owner, 2026-11-23). It came from the adversarial review of
 chez-sodium's brief, passed on by that project's session.
 
 **Context.** The decision says a key is stored as a hash and that every request checks
 one. It does not say how.
 
-**Proposed.**
+**Decided.**
 
 1. A key is 32 random bytes from chez-sodium's `random-bytes`, shown to the user in one
    fixed encoding.
