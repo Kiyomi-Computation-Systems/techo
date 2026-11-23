@@ -34,3 +34,30 @@ Plan: [the outline](../outline.md) §9
 - When `await-outside` is released, the doorway can hand its closure to a worker
   thread, and hashing can leave the loop. No handler changes. That is a new decision,
   taken on the spike's numbers.
+
+## Amendment, 2026-11-22: slice 2 waits for `await-outside`
+
+Status: accepted (owner, 2026-11-22, on the spike's numbers)
+
+- **What the spike found**, at medium size
+  ([the loop-stall report](../research/2026-11-22-loop-stall.md)):
+  - SQLite's own work on a write has a median of 0.3 ms and a worst of 25 ms, measured
+    in memory.
+  - Its largest cost of its own is processor time, not the disk: a ranked search for a
+    word in nearly every note takes 13 ms, and 141 ms at large size.
+  - A commit also waits on the disk's `fsync`. One commit held the loop for 31 seconds,
+    while the host was unpacking a download and the benchmark's own 950 MB copy was
+    still being written out. No number from a quiet disk exists yet. Techo cannot bound
+    this wait.
+- **Decided.** Slice 2 does not start until chez-http-server's `await-outside` has
+  landed. Point 1 above, the connection on the loop's thread, is not built.
+- **What a worker thread does not fix.** One connection on one worker still queues
+  every database request behind a stalled commit or a slow search. Only requests that
+  never touch the database are freed.
+- **Still to decide, in slice 2's plan and a new record:**
+  - how the doorway hands its closure to a worker thread;
+  - whether reads get a connection and a thread of their own, since a WAL reader does
+    not wait for the writer;
+  - whether password hashing goes to a worker too.
+
+  Points 2 to 6 are to be read again against that design, not assumed.

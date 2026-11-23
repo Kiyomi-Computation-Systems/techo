@@ -78,7 +78,7 @@
 * Verify it with `make check-guix`, run on the host.
 * Anything that needs the network or git runs on the host: fetches, pushes,
   downloads, `make check-pins`, `make site-deps`, and
-  `git submodule update --init --recursive`,
+  `git submodule update --init`,
   which a fresh clone needs once before `make deps`. The container has no git.
 
 ### Testing & mutation discipline

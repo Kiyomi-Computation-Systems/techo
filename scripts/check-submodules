@@ -1,0 +1,61 @@
+#!/bin/sh
+# scripts/check-submodules NAME:PIN...
+#
+# Fails unless each vendor/NAME is a git submodule pinned at PIN, a tag or
+# a commit: the index's gitlink for vendor/NAME is the commit PIN names in
+# that submodule, the checkout is at that commit with nothing changed, and
+# .gitmodules gives it an https URL. A gitlink under vendor/ that no NAME
+# names fails it too. Needs git, so it runs on the host. `make check-pins`
+# runs it with the Makefile's SUBMODULE_PINS.
+#
+# GIT_ROOT (default .) exists so a test can run it on a tree of its own.
+# Prints one line a submodule and exits 0, or names each fault on stderr
+# and exits 1.
+set -u
+
+root=${GIT_ROOT:-.}
+if [ "$#" -lt 1 ]; then
+  echo "usage: check-submodules NAME:PIN..." >&2
+  exit 2
+fi
+cd "$root" || exit 2
+
+status=0
+bad() { echo "check-submodules: $*" >&2; status=1; }
+
+for spec in "$@"; do
+  name=${spec%%:*}
+  pin=${spec#*:}
+  path=vendor/$name
+  line=$(git ls-files -s -- "$path")
+  case $line in
+    160000*) linked=$(printf '%s\n' "$line" | awk '{ print $2 }') ;;
+    *) bad "$path is not a gitlink in the index: add it with git submodule add"; continue ;;
+  esac
+  want=$(git -C "$path" rev-parse --verify -q "$pin^{commit}") \
+    || { bad "$path has no commit or tag '$pin'; is the submodule checked out? (git submodule update --init)"; continue; }
+  head=$(git -C "$path" rev-parse HEAD) || { bad "$path is not a checkout"; continue; }
+  ok=1
+  if [ "$linked" != "$want" ]; then
+    bad "$path's gitlink is $linked, but the pin '$pin' is $want"; ok=0
+  fi
+  if [ "$head" != "$linked" ]; then
+    bad "$path is checked out at $head, but its gitlink is $linked"; ok=0
+  fi
+  if [ -n "$(git -C "$path" status --porcelain 2>/dev/null)" ]; then
+    bad "$path has changes of its own: $(git -C "$path" status --porcelain | head -n 3 | tr '\n' ' ')"; ok=0
+  fi
+  url=$(git config -f .gitmodules --get "submodule.$path.url" 2>/dev/null)
+  case $url in
+    https://*) ;;
+    *) bad "$path's URL in .gitmodules is '${url:-missing}', not an https URL"; ok=0 ;;
+  esac
+  [ "$ok" -eq 1 ] && echo "check-submodules: $path at $pin ($want)"
+done
+
+for linked in $(git ls-files -s -- vendor | awk '$1 == "160000" { print $4 }'); do
+  found=0
+  for spec in "$@"; do [ "vendor/${spec%%:*}" = "$linked" ] && found=1; done
+  [ "$found" -eq 1 ] || bad "$linked is a gitlink that nothing pins: add it to SUBMODULE_PINS"
+done
+exit $status

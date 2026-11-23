@@ -29,8 +29,20 @@ Plan: [the slice 1 plan](../2026-11-22-slice-1-skeleton.md) §3.2
 
 ## Consequences
 
-- A fresh clone needs `git submodule update --init --recursive`, on the host, before
+- A fresh clone needs `git submodule update --init`, on the host, before
   `make deps`. `AGENTS.md` already says so.
 - Techo is circuit's proving ground: what Techo finds wanting in circuit becomes an
   issue there, and Techo's pin moves when it is fixed.
 - chez-sodium and unique-id join as submodules when slices 3 and 4 need them.
+
+## Amendment, 2026-11-22: a pin is written as a full commit SHA
+
+Status: accepted as a correction (slice 1's adversarial review, reproduced)
+
+- CI's checkout of a submodule is shallow and brings no tags, so a pin written as a tag
+  does not resolve there. `SUBMODULE_PINS` names the tag's commit in full, with the tag
+  in a comment beside it.
+- A fresh clone needs `git submodule update --init`, without `--recursive`: nothing in
+  Techo reads a submodule's own `vendor/`.
+- `make check-pins` reads all three submodules' manifests. One with no `depends` form,
+  only `depends/dev`, asks nothing of Techo's.

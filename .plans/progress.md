@@ -13,20 +13,24 @@ close-out under **Close-outs**, newest first.
   with the rules they make in [global-constraints.md](global-constraints.md).
 - **Slice 1 is planned and approved**, in
   [2026-11-22-slice-1-skeleton.md](2026-11-22-slice-1-skeleton.md). The owner answered
-  its four questions on 2026-11-22 (its §6); the first is ADR-0011. No code exists
-  yet.
+  its four questions on 2026-11-22 (its §6); the first is ADR-0011.
+- **Slice 1 is built** on branch `slice-1-skeleton`, not yet merged: the build, the
+  pins, `techo serve` with `/health`, five suites, CI (not yet run on GitHub) and
+  [the loop-stall report](research/2026-11-22-loop-stall.md).
+- **Slice 2 waits for chez-http-server's `await-outside`** (ADR-0008, amended
+  2026-11-22). `techo user add` moved to slice 3 (owner, 2026-11-22).
 
 ## Next
 
-Slice 1: the skeleton and the loop-stall spike. It is ready to start.
+Merge slice 1. Then plan slice 2, once `await-outside` has landed.
 
 ## Slices
 
 | # | Slice | State | Waits on |
 |---|---|---|---|
-| 1 | Skeleton, health endpoint, loop-stall spike | approved | |
-| 2 | Schema, migrations, admin CLI | not planned | slice 1 |
-| 3 | Accounts, login, API keys | not planned | chez-sodium M3 |
+| 1 | Skeleton, health endpoint, loop-stall spike | built, not merged | |
+| 2 | Schema, migrations, the CLI's `migrate` | not planned | slice 1; chez-http-server `await-outside` (ADR-0008, amended) |
+| 3 | Accounts, `techo user add`, login, API keys | not planned | chez-sodium M3 |
 | 4 | Node create, read, update; revisions; `If-Match` | not planned | unique-id |
 | 5 | The tree and move; links | not planned | |
 | 6 | Kinds and props; task transitions | not planned | |
