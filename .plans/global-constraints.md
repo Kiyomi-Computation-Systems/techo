@@ -14,6 +14,9 @@ disagree, the record wins and this file gets fixed.
 - **The owner's libraries outside the index are git submodules under `vendor/`,** each
   pinned at a commit. Techo's `Akku.manifest` names the index dependencies each one
   needs, and `make check-pins` holds them together (ADR-0011).
+- **chez-http-server 0.12.0 comes from the submodule `vendor/chez-http-server`,** ahead
+  of Akku's 0.11.0, until the index has it. The manifest keeps `^0.11.0` (ADR-0011,
+  amended 2026-11-23).
 - **On a Guix host, every build and test runs through `scripts/guix-env`** (ADR-0001,
   `AGENTS.md`).
 

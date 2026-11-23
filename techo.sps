@@ -10,9 +10,7 @@
 ;;; listens before the environment is accepted.
 (import (rnrs)
         (only (chezscheme) getenv)
-        (only (circuit http-server) run-server)
-        ;; circuit does not hand this on, so it comes from the server itself.
-        (only (http-server) http-server-config-error?)
+        (only (circuit http-server) run-server http-server-config-error?)
         (techo app)
         (techo cli)
         (techo config)

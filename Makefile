@@ -15,11 +15,17 @@
 #   chez-curl, are git submodules under vendor/, each pinned at a commit
 #   (SUBMODULE_PINS). A fresh clone runs `git submodule update
 #   --init` on the host once, before `make deps`.
+# - chez-http-server is both, for now (ADR-0011, amended 2026-11-23): the
+#   index has 0.11.0, and Techo needs 0.12.0's await-outside. Akku.manifest
+#   and Akku.lock keep ^0.11.0, which brings the libraries the server needs,
+#   and the path takes the server's src/ from the submodule
+#   vendor/chez-http-server, at v0.12.0. The 0.11.0 tree is still fetched,
+#   as the lock pins it, and nothing reads it.
 #
 # `make check-pins` holds them together: the lock pins exactly what `make
 # fetch` gets, each tree is its archive, chez-libuv's copy is its tree and
 # its build's products, each submodule's gitlink is its pin, and Akku.manifest
-# names every `depends` entry vendor/circuit/Akku.manifest names. Those
+# names every `depends` entry each submodule's own Akku.manifest names. Those
 # that download run on the host: the container has no network. `make deps`
 # never fetches: it fails unless the lock pins exactly what `make fetch`
 # gets and each tree is there; it builds chez-libuv's shim in a copy,
@@ -58,17 +64,22 @@ GOAL = $(strip $(if $(MAKECMDGOALS),$(MAKECMDGOALS),$@))
 # submodule is shallow and brings no tags, so a tag would not resolve there.
 # Moving a pin is its own commit, with the reason (ADR-0011); `make
 # check-pins` fails unless each gitlink is its PIN.
-#   circuit       481f593 (no release yet)
-#   chez-sqlite3  v0.1.1
-#   chez-curl     v0.1.2
+#   circuit           442dd85 (no release yet): hands on await-outside
+#   chez-sqlite3      v0.1.1
+#   chez-curl         v0.1.2
+#   chez-http-server  v0.12.0, until the index has it (ADR-0011, amended)
 SUBMODULE_PINS := \
-  circuit:481f593f3857756c77675d0223bc4290cd6443ec \
+  circuit:442dd85123022e294fadebaa50febf31ca5dd562 \
   chez-sqlite3:960d9f0028ce09b51019cd7050d5833af30f98e0 \
-  chez-curl:15197e8a699c4b2d6c12e2b62c7dc76be7729780
+  chez-curl:15197e8a699c4b2d6c12e2b62c7dc76be7729780 \
+  chez-http-server:bba2ba6fea252996d31bffc6255d8be36e9bdfd2
 SUBMODULE_NAMES := $(foreach p,$(SUBMODULE_PINS),$(firstword $(subst :, ,$(p))))
 CIRCUIT_DIR := vendor/circuit
 SQLITE3_DIR := vendor/chez-sqlite3
 CURL_DIR    := vendor/chez-curl
+# The server the path uses: the submodule, 0.12.0, not Akku's 0.11.0 tree.
+SERVER_DIR  := vendor/chez-http-server
+SERVER_VERSION := 0.12.0
 
 # --- the trees ----------------------------------------------------------------
 # Every package `make fetch` unpacks into vendor/akku-trees, as NAME:FILE,
@@ -94,7 +105,6 @@ AKKU_TREE_NAMES := $(foreach t,$(AKKU_TREES),$(firstword $(subst :, ,$(t))))
 # any target runs, unless AKKU_TREES names NAME.
 tree = $(if $(filter $(1),$(AKKU_TREE_NAMES)),$(AKKU_TREES_DIR)/$(1),$(error AKKU_TREES names no $(1), which a directory of the Makefile's is in))
 
-SERVER_DIR       := $(call tree,chez-http-server)
 WEBSOCKET_DIR    := $(call tree,chez-websocket)
 LIBUV_TREE       := $(call tree,chez-libuv)
 HTTPARSE_DIR     := $(call tree,chez-httparse)
@@ -111,8 +121,8 @@ LIBUV_DIR := build/chez-libuv
 # --- the library path ---------------------------------------------------------
 # LIBDIRS is the path `make dev`, `make libdirs` and the suites use: Techo's
 # src/, then tests/, which holds (techo-testing), then the submodules' src/
-# directories, then the Akku trees as circuit orders them: the server's,
-# chez-websocket's, chez-libuv's copy's and those of the other libraries the
+# directories, the server's among them, then the Akku trees as circuit
+# orders them: chez-websocket's, chez-libuv's copy's and those of the other libraries the
 # server brings, then jsonparse's, then threading's, then build/scheme-libs,
 # which carries (srfi :64), then vendor/akku, which holds hashing.
 # chez-libuv locates its C shim by an absolute path baked into the
@@ -339,7 +349,10 @@ define link-srfi
 	done
 endef
 
-# CHECK_LOCKED first. Then each submodule's src/ must be there, and each
+# CHECK_LOCKED first. Then each submodule's src/ must be there, and the
+# server's submodule must be the release SERVER_VERSION names, by its own
+# Akku.manifest: the container has no git, so check-pins holds the commit.
+# Each
 # tree must be there, by the file AKKU_TREES names under it, and record the
 # sha256 Akku.lock pins (scripts/fetch-akku-lock --check-record), as
 # hashing must under vendor/akku. chez-libuv's tree is copied to
@@ -349,12 +362,16 @@ endef
 # check-pins holds.
 deps: check-chez ## Copy chez-libuv to build/chez-libuv and build its shim there, and link SRFI-64 into build/scheme-libs; never fetches
 	@scripts/require-tools "$(GOAL)" $(CHEZ) $(CC) pkg-config
-	@for d in $(CIRCUIT_DIR) $(SQLITE3_DIR) $(CURL_DIR); do \
+	@for d in $(CIRCUIT_DIR) $(SQLITE3_DIR) $(CURL_DIR) $(SERVER_DIR); do \
 	  if [ ! -d $$d/src ]; then \
 	    echo "deps: $$d/src not found, so the submodule isn't checked out. Run 'git submodule update --init' on the host: the container has no git." >&2; \
 	    exit 1; \
 	  fi; \
 	done
+	@if ! grep -qF '("chez-http-server" "$(SERVER_VERSION)")' $(SERVER_DIR)/Akku.manifest; then \
+	  echo "deps: $(SERVER_DIR) isn't chez-http-server $(SERVER_VERSION). Run 'git submodule update --init' on the host: the container has no git." >&2; \
+	  exit 1; \
+	fi
 	@if ! $(CHECK_LOCKED) > /dev/null; then \
 	  echo "deps: so Akku.lock and the Makefile's AKKU_TREES name different packages. A lock move that adds or drops a package changes both, on one commit." >&2; \
 	  exit 1; \

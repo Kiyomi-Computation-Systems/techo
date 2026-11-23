@@ -7,11 +7,15 @@
 ;;;   (chez-sqlite3)  `select 1` on a :memory: database answers 1
 ;;;   (http-client)   the session constructor is a procedure
 ;;;   (threading)     a ~> chain has its value
+;;;   (http-server)   exports await-outside, so the path takes the server
+;;;                   from its submodule, 0.12.0, ahead of Akku's 0.11.0
+;;;                   (ADR-0011, amended), and circuit hands on the same one
 ;;;
 ;;; Everything that can raise is computed under a guard, and a raise comes
 ;;; out as a sentinel the expected value never is, so a failure names what
 ;;; was raised, never #f.
 (import (rnrs)
+        (rnrs eval)
         (srfi :64)
         (techo-testing)
         (circuit)
@@ -52,6 +56,28 @@
 (test-equal "chez-curl: make-http-session is a procedure"
   #t
   (attempt (lambda () (procedure? make-http-session))))
+
+;; Looked up at run time: a missing export would otherwise stop the suite at
+;; expansion, before any test is named.
+;; exported : Symbol Datum -> (U Any (List 'raised String))
+(define (exported name library)
+  (attempt (lambda () (eval name (environment library)))))
+
+(test-equal "chez-http-server: (http-server) exports await-outside"
+  #t
+  (let ((v (exported 'await-outside '(http-server))))
+    (if (procedure? v) #t v)))
+
+(test-equal "circuit: (circuit http-server) hands on the server's await-outside"
+  #t
+  (let ((ours (exported 'await-outside '(circuit http-server)))
+        (theirs (exported 'await-outside '(http-server))))
+    (if (and (procedure? ours) (eq? ours theirs)) #t (list ours theirs))))
+
+(test-equal "circuit: (circuit http-server) exports http-server-config-error?"
+  #t
+  (let ((v (exported 'http-server-config-error? '(circuit http-server))))
+    (if (procedure? v) #t v)))
 
 (test-end "stack")
 

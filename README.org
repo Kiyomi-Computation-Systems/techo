@@ -21,7 +21,7 @@ later, SQLite, libcurl, a C compiler and =pkg-config=. On a Guix host,
 #+begin_src sh
 git clone https://github.com/Kiyomi-Computation-Systems/techo.git
 cd techo
-git submodule update --init   # circuit, chez-sqlite3, chez-curl, each at its pin
+git submodule update --init   # circuit, chez-sqlite3, chez-curl, chez-http-server, each at its pin
 make fetch                    # the Akku dependencies, as Akku.lock pins them
 make test                     # builds chez-libuv's shim, then runs every tests/test-*.sps
 #+end_src

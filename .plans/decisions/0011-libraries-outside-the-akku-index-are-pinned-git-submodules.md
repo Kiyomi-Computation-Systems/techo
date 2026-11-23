@@ -46,3 +46,29 @@ Status: accepted as a correction (slice 1's adversarial review, reproduced)
   Techo reads a submodule's own `vendor/`.
 - `make check-pins` reads all three submodules' manifests. One with no `depends` form,
   only `depends/dev`, asks nothing of Techo's.
+
+## Amendment, 2026-11-23: chez-http-server 0.12.0 comes from a submodule until the index has it
+
+Status: accepted (owner, 2026-11-22: "we need to take the exception"). It follows
+circuit's ADR-0012, item 7.
+
+- **Why:** Techo's database work needs `await-outside`, which chez-http-server 0.12.0
+  adds. The index's newest is 0.11.0, and chez-websocket 0.6.0 admits only 0.11.
+- **The server is a fourth submodule,** `vendor/chez-http-server`, pinned at
+  `bba2ba6` (v0.12.0). The library path takes the server's `src/` from it.
+- **`Akku.manifest` and `Akku.lock` keep `chez-http-server ^0.11.0`,** as circuit's
+  manifest does. That entry brings chez-libuv, chez-httparse, chez-uri and
+  byte-machine at the versions 0.12.0's own lock names. The 0.11.0 tree is still
+  fetched, and nothing reads it.
+- **The manifest now names the server's four depends too,** since the server is a
+  submodule and `make check-pins` reads every submodule's manifest. The lock holds the
+  same ten projects as before, in another order.
+- **Two checks hold it.** `make deps` fails unless the submodule's manifest says
+  0.12.0. The stack suite fails unless `(http-server)` exports `await-outside` and
+  `(circuit http-server)` hands on the same procedure.
+- **circuit's pin moves to `442dd85`,** which re-exports `await-outside` and the
+  config-error predicates. `techo.sps` no longer imports from the server.
+- **What ends it:** the index having chez-http-server 0.12.0 and a chez-websocket whose
+  range admits it. Then circuit's ranges move, Techo's pin and manifest follow, and the
+  submodule, `SERVER_DIR` and `SERVER_VERSION` go, on one commit. Nothing turns CI red
+  when that day comes: the ledger holds the reminder.

@@ -4,12 +4,18 @@
 ;; Techo's own dependencies from the Akku index, and the index dependencies
 ;; of the libraries Techo takes as git submodules under vendor/ (ADR-0011):
 ;; Akku cannot read a submodule's manifest, so each is repeated here, and
-;; `make check-pins` fails when this file misses one that
-;; vendor/circuit/Akku.manifest names.
+;; `make check-pins` fails when this file misses one that a submodule's own
+;; Akku.manifest names.
 ;;
-;; threading: Techo's own. The rest are circuit's: chez-http-server, under
-;; its adapter; chez-websocket; hashing; and jsonparse. chez-sqlite3 and
-;; chez-curl need nothing from the index. Akku.lock is `akku lock`'s output
+;; threading: Techo's own. circuit's: chez-http-server, under its adapter;
+;; chez-websocket; hashing; and jsonparse. The server's: chez-libuv,
+;; chez-httparse, chez-uri and byte-machine. chez-sqlite3 and chez-curl need
+;; nothing from the index.
+;;
+;; chez-http-server stays at ^0.11.0, as circuit's manifest has it, though
+;; the path takes 0.12.0 from the submodule vendor/chez-http-server: the
+;; index has no 0.12.0 yet, and chez-websocket 0.6.0 admits only 0.11
+;; (ADR-0011, amended 2026-11-23, which says what ends this). Akku.lock is `akku lock`'s output
 ;; for this file (`make lock`; `make check-akku-lock` holds it). `make
 ;; fetch` fetches each tree as the lock pins it.
 ;;
@@ -23,5 +29,9 @@
            ("chez-http-server" "^0.11.0")
            ("chez-websocket" "^0.6.0")
            ("hashing" "^1.4.0")
-           ("jsonparse" "^0.2.0"))
+           ("jsonparse" "^0.2.0")
+           ("chez-libuv" "^0.11.0")
+           ("chez-httparse" "^0.6.0")
+           ("chez-uri" "^0.9.0")
+           ("byte-machine" "^0.9.0"))
   (depends/dev ("chez-srfi" "^0.0.0-akku.291.5219353")))

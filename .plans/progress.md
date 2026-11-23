@@ -15,10 +15,12 @@ close-out under **Close-outs**, newest first.
   [PR #2](https://github.com/Kiyomi-Computation-Systems/techo/pull/2) on 2026-11-22
   (980b424): the build, the pins, `techo serve` with `/health`, five suites, CI and
   [the loop-stall report](research/2026-11-22-loop-stall.md).
-- **Slice 2 waits for circuit**, which must take chez-http-server 0.12.0, hand on
-  `await-outside` and ship a worker
-  ([circuit issue 53](https://github.com/Kiyomi-Computation-Systems/circuit/issues/53),
-  [the brief](briefs/circuit-worker.md)). The database will run on one write thread
+- **`await-outside` is on the path** (2026-11-23): circuit is pinned at 442dd85, and
+  chez-http-server 0.12.0 comes from a submodule until the index has it (ADR-0011,
+  amended 2026-11-23).
+- **Slice 2 waits for circuit's worker**, the third item of
+  [circuit issue 53](https://github.com/Kiyomi-Computation-Systems/circuit/issues/53)
+  ([the brief](briefs/circuit-worker.md)). Its design goes to the owner first. The database will run on one write thread
   and one or more read threads, modelled as state machines and verified (ADR-0008,
   amended 2026-11-22).
 - **`techo user add` moved to slice 3** (owner, 2026-11-22).
@@ -26,16 +28,19 @@ close-out under **Close-outs**, newest first.
 
 ## Next
 
-Plan slice 2, once circuit has a commit to pin with `await-outside` on it. The plan
-starts from ADR-0008's amendment and the brief's §9 and §10. That pin move also takes
-circuit 5cf5946, so `techo.sps` can stop importing from chez-http-server.
+Plan slice 2, once circuit's worker design is approved. The plan starts from
+ADR-0008's amendment and the brief's §9 and §10.
+
+**Watch for:** the Akku index gaining chez-http-server 0.12.0 and a chez-websocket
+that admits it. That ends the server's submodule (ADR-0011, amended 2026-11-23).
+Nothing fails when it happens.
 
 ## Slices
 
 | # | Slice | State | Waits on |
 |---|---|---|---|
 | 1 | Skeleton, health endpoint, loop-stall spike | merged (PR #2) | |
-| 2 | Schema, migrations, the CLI's `migrate` | not planned | circuit issue 53 (ADR-0008, amended) |
+| 2 | Schema, migrations, the CLI's `migrate` | not planned | circuit issue 53's worker (ADR-0008, amended) |
 | 3 | Accounts, `techo user add`, login, API keys | not planned | chez-sodium M3 |
 | 4 | Node create, read, update; revisions; `If-Match` | not planned | unique-id |
 | 5 | The tree and move; links | not planned | |
@@ -54,7 +59,8 @@ own `.plans/` is the truth from then on.**
 |---|---|---|
 | chez-sodium | `../chez-sodium` | Repository made; its brief under adversarial review |
 | unique-id | `../unique-id` | Repository made, holding the brief |
-| chez-http-server: `await-outside` | `../chez-http-server`, branch `feat/await-outside` | Issue 260 accepted as its decision 0039; work under way |
+| chez-http-server: `await-outside` | `../chez-http-server` | Released in v0.12.0 (bba2ba6); not on the Akku index yet |
+| circuit: the worker | `../circuit` | Issue 53: items 1 and 2 merged (442dd85); the worker's design is next |
 
 ## Open questions
 
