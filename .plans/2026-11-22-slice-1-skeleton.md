@@ -164,11 +164,11 @@ The owner agreed these thresholds on 2026-11-22.
 
 - [x] `make help` lists every target, and `make check-help` passes.
 - [x] `make check-guix` passes on the host.
-- [ ] `scripts/guix-env make test` passes, from a fresh clone, after `make fetch`.
+- [x] `scripts/guix-env make test` passes, from a fresh clone, after `make fetch`.
 - [x] Each check has been seen to fail: a planted failing suite, a planted hang, a bad
       configuration.
 - [x] `techo serve` answers `/health`, and the integration suite passes.
-- [ ] CI is green on the pull request.
+- [x] CI is green on the pull request.
 - [x] The spike's report is written, with its verdict against §4's table.
 - [x] `CHANGELOG.md`, `README.org` and the ledger are updated.
 

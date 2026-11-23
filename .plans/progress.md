@@ -15,7 +15,7 @@ close-out under **Close-outs**, newest first.
   [2026-11-22-slice-1-skeleton.md](2026-11-22-slice-1-skeleton.md). The owner answered
   its four questions on 2026-11-22 (its §6); the first is ADR-0011.
 - **Slice 1 is built** on branch `slice-1-skeleton`, not yet merged: the build, the
-  pins, `techo serve` with `/health`, five suites, CI (not yet run on GitHub) and
+  pins, `techo serve` with `/health`, five suites, CI (green on PR #2) and
   [the loop-stall report](research/2026-11-22-loop-stall.md).
 - **Slice 2 waits for chez-http-server's `await-outside`** (ADR-0008, amended
   2026-11-22). `techo user add` moved to slice 3 (owner, 2026-11-22).
