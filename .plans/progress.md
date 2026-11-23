@@ -9,7 +9,7 @@ close-out under **Close-outs**, newest first.
 - **The outline is merged**, squashed from
   [PR #1](https://github.com/Kiyomi-Computation-Systems/techo/pull/1) on 2026-11-22
   (4b06708). It is [outline.md](outline.md).
-- **Eleven decisions are recorded**, ADR-0001 to ADR-0011, in [decisions/](decisions/),
+- **Twelve decisions are recorded**, ADR-0001 to ADR-0012, in [decisions/](decisions/),
   with the rules they make in [global-constraints.md](global-constraints.md).
 - **Slice 1 is merged**, squashed from
   [PR #2](https://github.com/Kiyomi-Computation-Systems/techo/pull/2) on 2026-11-22
@@ -18,14 +18,16 @@ close-out under **Close-outs**, newest first.
 - **`await-outside` is on the path** (2026-11-23): circuit is pinned at 442dd85, and
   chez-http-server 0.12.0 comes from a submodule until the index has it (ADR-0011,
   amended 2026-11-23).
-- **Slice 2 waits for circuit's worker**, the third item of
+- **Slice 2 is built** (2026-11-23), not yet merged: `techo migrate`, `serve`'s
+  database check, and the migrate state machine verified in six layers
+  ([the plan](2026-11-23-slice-2-migrations.md), ADR-0012). No table yet:
+  [schema.md](schema.md) sketches them.
+- **Slice 2b, the doorway, waits for circuit's worker**, the third item of
   [circuit issue 53](https://github.com/Kiyomi-Computation-Systems/circuit/issues/53)
   ([the brief](briefs/circuit-worker.md)). Its design is merged there
   ([circuit PR 55](https://github.com/Kiyomi-Computation-Systems/circuit/pull/55),
-  06f1894, with its ADR-0013), and was read here against T1 to T5. circuit builds it in three slices, and Techo needs the
-  second, which has `make-worker` and `worker-call`. The database will run on one write thread
-  and one or more read threads, modelled as state machines and verified (ADR-0008,
-  amended 2026-11-22).
+  06f1894, with its ADR-0013). circuit builds it in three slices, and Techo needs the
+  second, which has `make-worker` and `worker-call` (ADR-0008, amended 2026-11-23).
 - **`techo user add` moved to slice 3** (owner, 2026-11-22).
 - **ADR-0006's amendment is accepted** (owner, 2026-11-23): a key is looked up by its
   BLAKE2b hash.
@@ -34,9 +36,9 @@ close-out under **Close-outs**, newest first.
 
 ## Next
 
-Plan slice 2 against circuit's merged worker design. The build needs circuit's shell
-slice, W2. The plan starts from
-ADR-0008's amendment and the brief's §9 and §10.
+Merge slice 2. Then plan slice 2b against circuit's merged worker design, once
+circuit's shell slice, W2, lands. The plan starts from ADR-0008's amendments, the
+brief's §9 and §10, and the slice 2 plan's "For slice 2b".
 
 **Watch for:** the Akku index gaining chez-http-server 0.12.0 and a chez-websocket
 that admits it. That ends the server's submodule (ADR-0011, amended 2026-11-23).
@@ -47,7 +49,8 @@ Nothing fails when it happens.
 | # | Slice | State | Waits on |
 |---|---|---|---|
 | 1 | Skeleton, health endpoint, loop-stall spike | merged (PR #2) | |
-| 2 | Schema, migrations, the CLI's `migrate` | not planned | circuit issue 53's worker (ADR-0008, amended) |
+| 2 | Migrations, the CLI's `migrate`, `serve`'s check | built, not merged | |
+| 2b | The database doorway: write and read workers | not planned | circuit issue 53's worker, W2 |
 | 3 | Accounts, `techo user add`, login, API keys | not planned | chez-sodium M3 |
 | 4 | Node create, read, update; revisions; `If-Match` | not planned | unique-id |
 | 5 | The tree and move; links | not planned | |
@@ -65,7 +68,7 @@ own `.plans/` is the truth from then on.**
 | Project | Where | State on 2026-11-22 |
 |---|---|---|
 | chez-sodium | `../chez-sodium` | Repository made; its brief under adversarial review |
-| unique-id | `../unique-id` | Repository made, holding the brief |
+| unique-id | `../unique-id` | v0.1.0 released (2026-11-23, e0ed128); not pinned here yet: slice 4 takes it |
 | chez-http-server: `await-outside` | `../chez-http-server` | Released in v0.12.0 (bba2ba6); not on the Akku index yet |
 | circuit: the worker | `../circuit` | Issue 53: items 1 and 2 merged (442dd85); the worker's design is merged (06f1894); W1, the machine, is next, then W2, the shell |
 
@@ -76,10 +79,10 @@ From [outline.md](outline.md) §14, each for the slice named:
 | Question | Slice |
 |---|---|
 | Does the server refuse an id that is not version 7? | 4 |
-| Are ids stored as 16-byte blobs or as text? | 2 |
 | The node lifecycle's states, and which transitions can be undone | 4 |
 | A Contact's first fields, exactly | 6 |
 | The login rate limit's numbers | 3 |
+| Is an account's id a UUID or an integer? ([schema.md](schema.md)) | 3 |
 
 ## Close-outs
 

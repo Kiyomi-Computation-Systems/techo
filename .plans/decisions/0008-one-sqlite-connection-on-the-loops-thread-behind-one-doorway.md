@@ -88,3 +88,16 @@ Status: accepted (owner, 2026-11-23)
 - **The stop order is unchanged:** `run-server` returns, then the read worker stops,
   then the write worker, whose tear-down checkpoints and closes.
 
+
+## Amendment, 2026-11-23: the doorway is slice 2b
+
+Status: accepted (owner, 2026-11-23, answering the slice 2 plan's D1)
+
+- **Slice 2 is the schema's machinery, migrations and `techo migrate`.** It needs no
+  worker thread: the CLI has its own connection (point 6), and `serve` checks the
+  schema before the loop starts, on a connection it opens and closes.
+- **The doorway, the workers, the shutdown order and T1 to T5 are slice 2b.** It waits
+  for circuit's worker, the second slice of circuit's ADR-0013.
+- **"2b" and not a renumbering,** because the records name slices 3 to 9 by number.
+- **The first amendment's "slice 2 does not start until `await-outside` has landed"**
+  now binds slice 2b. `await-outside` has landed.

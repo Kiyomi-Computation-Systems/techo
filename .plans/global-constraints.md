@@ -57,7 +57,24 @@ disagree, the record wins and this file gets fixed.
 - **One doorway.** A handler reaches SQLite only through it (ADR-0008).
 - **Nothing waits inside the doorway's closure:** no `await`, no `sleep-ms`, no body
   read. Read the request first (ADR-0008).
-- **WAL mode, foreign keys on, a busy timeout set** (ADR-0008, ADR-0009).
+- **WAL mode, foreign keys on, a busy timeout set** (ADR-0008, ADR-0009). `migrate`'s
+  connection alone has foreign keys off, and checks them before each commit
+  (ADR-0012).
+- **A connection is opened with `open-techo-db`,** where the settings live once
+  (ADR-0012).
+- **The version is `user_version`, and the id is `application_id`.** There is no
+  bookkeeping table (ADR-0012).
+- **A shipped migration is never edited.** A change is a new migration (ADR-0012).
+- **Migrations only go forward,** each a list of single statements. None begins or
+  ends a transaction, attaches a database, or is a `PRAGMA` (ADR-0012).
+- **A table arrives with the slice that uses it,** in that slice's migration
+  (ADR-0012).
+- **Table conventions:** `STRICT`; ids as 16-byte blobs; times as whole milliseconds
+  since 1970, UTC; JSON as text with a `json_valid` check; a `CREATE INDEX` on an owner-scoped
+  table begins with the owner; foreign keys declared (ADR-0012).
+- **A file that will be refused is opened only read-only** (ADR-0012).
+- **`serve` starts only on a current file in WAL.** Stop the server before migrating
+  (ADR-0012).
 
 ## Secrets
 
@@ -72,6 +89,8 @@ disagree, the record wins and this file gets fixed.
 ## Operations
 
 - **All configuration comes from the environment** (ADR-0009).
+- **`TECHO_DB_PATH` is absolute and names a file,** with no trailing slash: SQLite and
+  Chez must agree on whether it exists (ADR-0012).
 - **The server logs to standard output** (ADR-0009).
 - **One binary is the server and the CLI** (ADR-0009).
 

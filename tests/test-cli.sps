@@ -46,6 +46,16 @@
 
 (test-equal "serve parses to serve" 'serve (parse '("serve")))
 (test-equal "version parses to version" 'version (parse '("version")))
+(test-equal "migrate parses to migrate" 'migrate (parse '("migrate")))
+
+(test-equal "extra arguments after migrate: usage naming the extra word"
+  #t
+  (let ((m (usage-message '("migrate" "x"))))
+    (and (string? m) (contains? m "x"))))
+
+(test-equal "migrate x: a usage form"
+  'usage
+  (let ((c (parse '("migrate" "x")))) (and (pair? c) (car c))))
 
 (test-equal "no arguments: usage with a message"
   #t
@@ -102,6 +112,10 @@
 (test-equal "usage-text lists version on a line of its own"
   #t
   (attempt (lambda () (and (exists (lambda (l) (contains? l "version")) (lines usage-text)) #t))))
+
+(test-equal "usage-text lists migrate on a line of its own"
+  #t
+  (attempt (lambda () (and (exists (lambda (l) (contains? l "migrate")) (lines usage-text)) #t))))
 
 (test-equal "usage-text: serve and version are different lines"
   #t

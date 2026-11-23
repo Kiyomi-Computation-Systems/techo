@@ -168,7 +168,7 @@ TIMEOUT ?= $(or $(shell command -v timeout 2>/dev/null),$(shell command -v gtime
 
 # One physical line: check-help reads it with awk, and fails if it ends in
 # a backslash.
-.PHONY: help check-help check-guix check-guix-inside akku-deps lock check-akku-lock fetch check-pins check-chez deps dev libdirs test check-suites check-test-fails check-ci run clean
+.PHONY: help check-help check-guix check-guix-inside akku-deps lock check-akku-lock fetch check-pins check-chez deps dev libdirs test check-suites check-test-fails check-ci run machines clean
 
 .DEFAULT_GOAL := help
 
@@ -460,6 +460,15 @@ check-suites: deps ## Fail unless every tests/test-*.sps ends with the shared ex
 # The program, on the library path: make run ARGS="serve".
 run: deps ## Run techo on the library path: make run ARGS="serve" (ARGS="help" lists the commands)
 	@$(CHEZ) --libdirs $(LIBDIRS) --program techo.sps $(ARGS)
+
+# Renders the migrate machines' diagrams from their tables into
+# .plans/machines/migrate.md (scripts/render-machines.sps prints the text).
+# tests/test-migrations.sps fails when the file differs.
+machines: deps ## Write .plans/machines/migrate.md from the migrate tables
+	@scripts/require-tools "$(GOAL)" $(CHEZ)
+	@mkdir -p .plans/machines
+	@$(CHEZ) --libdirs $(LIBDIRS) --program scripts/render-machines.sps > .plans/machines/migrate.md.tmp
+	@mv .plans/machines/migrate.md.tmp .plans/machines/migrate.md
 
 # Every action a workflow uses is pinned to a full commit SHA, with its tag in
 # a comment (scripts/ci/check-action-pins.sh).

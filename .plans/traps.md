@@ -68,6 +68,27 @@ it.
 - **See it again:** `printf '(x "a ; b")\n' | sed 's/;.*//'` prints `(x "a `.
 - **Rule:** skip comments in the same pass that tracks strings, never before it.
 
+## `equal-hash` reads only the start of a value
+
+- **Expected:** a hashtable made with `equal-hash` spreads large, distinct values
+  across its buckets.
+- **Happened:** Chez's `equal-hash` stops after about 20 pairs, or 5 levels of nesting.
+  Values that differ only past that all hash alike, so every lookup walks one bucket.
+  The explorer's table of worlds crawled.
+- **See it again:** hash `(append (make-list 40 'q) (list n))` for n from 0 to 999:
+  one distinct hash. The same for `n` nested six lists deep.
+- **Rule:** a hashtable keyed on deep structures gets a hash of its own. `explore`
+  takes one as its fifth argument.
+
+## `pkill -f` kills the shell that runs it
+
+- **Expected:** `pkill -f test-machine.sps` kills only the hung suite.
+- **Happened:** the calling shell's own command line holds the pattern, so it was
+  killed too, with exit 144, and the rest of the command never ran.
+- **See it again:** `sh -c 'pkill -f some-unique-word; echo still here'` prints
+  nothing.
+- **Rule:** kill by process id, from `pgrep` or `ps`.
+
 The siblings' traps apply wherever Techo touches the same ground. Read them there:
 
 - chez-sqlite3: `.plans/traps.md`
