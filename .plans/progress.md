@@ -11,25 +11,31 @@ close-out under **Close-outs**, newest first.
   (4b06708). It is [outline.md](outline.md).
 - **Eleven decisions are recorded**, ADR-0001 to ADR-0011, in [decisions/](decisions/),
   with the rules they make in [global-constraints.md](global-constraints.md).
-- **Slice 1 is planned and approved**, in
-  [2026-11-22-slice-1-skeleton.md](2026-11-22-slice-1-skeleton.md). The owner answered
-  its four questions on 2026-11-22 (its §6); the first is ADR-0011.
-- **Slice 1 is built** on branch `slice-1-skeleton`, not yet merged: the build, the
-  pins, `techo serve` with `/health`, five suites, CI (green on PR #2) and
+- **Slice 1 is merged**, squashed from
+  [PR #2](https://github.com/Kiyomi-Computation-Systems/techo/pull/2) on 2026-11-22
+  (980b424): the build, the pins, `techo serve` with `/health`, five suites, CI and
   [the loop-stall report](research/2026-11-22-loop-stall.md).
-- **Slice 2 waits for chez-http-server's `await-outside`** (ADR-0008, amended
-  2026-11-22). `techo user add` moved to slice 3 (owner, 2026-11-22).
+- **Slice 2 waits for circuit**, which must take chez-http-server 0.12.0, hand on
+  `await-outside` and ship a worker
+  ([circuit issue 53](https://github.com/Kiyomi-Computation-Systems/circuit/issues/53),
+  [the brief](briefs/circuit-worker.md)). The database will run on one write thread
+  and one or more read threads, modelled as state machines and verified (ADR-0008,
+  amended 2026-11-22).
+- **`techo user add` moved to slice 3** (owner, 2026-11-22).
+- **ADR-0006 carries a proposed amendment** that the owner has not yet accepted.
 
 ## Next
 
-Merge slice 1. Then plan slice 2, once `await-outside` has landed.
+Plan slice 2, once circuit has a commit to pin with `await-outside` on it. The plan
+starts from ADR-0008's amendment and the brief's §9 and §10. That pin move also takes
+circuit 5cf5946, so `techo.sps` can stop importing from chez-http-server.
 
 ## Slices
 
 | # | Slice | State | Waits on |
 |---|---|---|---|
-| 1 | Skeleton, health endpoint, loop-stall spike | built, not merged | |
-| 2 | Schema, migrations, the CLI's `migrate` | not planned | slice 1; chez-http-server `await-outside` (ADR-0008, amended) |
+| 1 | Skeleton, health endpoint, loop-stall spike | merged (PR #2) | |
+| 2 | Schema, migrations, the CLI's `migrate` | not planned | circuit issue 53 (ADR-0008, amended) |
 | 3 | Accounts, `techo user add`, login, API keys | not planned | chez-sodium M3 |
 | 4 | Node create, read, update; revisions; `If-Match` | not planned | unique-id |
 | 5 | The tree and move; links | not planned | |
@@ -63,6 +69,33 @@ From [outline.md](outline.md) §14, each for the slice named:
 | The login rate limit's numbers | 3 |
 
 ## Close-outs
+
+### Slice 1: the skeleton (PR #2, 2026-11-22)
+
+- **Merged:** the Makefile and Guix container, the pins (Akku.lock and three
+  submodules), `techo serve` with `GET /health`, `techo version` and `help`, five
+  suites with 75 tests, Linux CI, the loop-stall spike and its report.
+- **Decided on the way:** slice 2 waits for `await-outside`; writes and reads on
+  separate threads; the worker modelled and verified; `techo user add` in slice 3; a
+  pin is a full commit SHA (ADR-0011, amended).
+- **Filed:** circuit 51 (merged there as 5cf5946) and 53; chez-http-server 262.
+- **Verified:** every `make` check on the final tree, and CI green on its first run,
+  which is also the fresh clone.
+- **Not verified:** a commit's worst time on a quiet disk. The spike's disk numbers
+  were taken on a busy host.
+- **Left for later:**
+  - `check-pins` compares version ranges, not resolved versions.
+  - `techo help x` exits 0 while `techo version x` exits 2.
+  - Copied comments name test scripts Techo does not have.
+  - The 25 ms worst write in memory is unexplained (the report says how to find out).
+- **Found on the way** (each in [traps.md](traps.md)):
+  - A step that clears shared build output breaks a second run beside it, and `$$` is
+    the same in every container.
+  - A shallow checkout has no tags.
+  - A benchmark that syncs measures whatever else is writing to the disk.
+- **What the review caught that the builders and the lead did not:** the CI blocker,
+  and that the lead's own fix for the race was broken. Both came from the read-only
+  review at the end, on code that every local check passed.
 
 ### The outline (PR #1, 2026-11-22)
 
