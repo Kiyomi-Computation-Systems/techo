@@ -1,0 +1,138 @@
+name: CI
+
+# Linux only, deliberately (AGENTS.md: no macOS runners). One job: it
+# installs the toolchain, builds Chez 10.4.1 from source (once, then cached),
+# fetches every dependency as Akku.lock pins it, and runs the checks and
+# `make test`.
+#
+# Every action is pinned to a full commit SHA, with its tag in a comment: a tag
+# can be moved to other code, a commit cannot. scripts/ci/check-action-pins.sh
+# holds that.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: linux
+    # An explicit image, not ubuntu-latest: that label moves from one Ubuntu
+    # release to the next, and an image change should be a reviewed commit.
+    # 24.04 ships libuv 1.48.0, chez-libuv's floor.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      # Submodules too (vendor/: circuit, chez-sqlite3, chez-curl), but not
+      # theirs: nothing here reads a submodule's own vendor/. The checkout is
+      # shallow and brings no tags, so SUBMODULE_PINS names full commits. The
+      # job's token is not kept in .git/config afterwards.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+
+      # build-essential: the C compiler and make, for the libuv shim and for
+      # Chez (configured with no X11 or curses). pkg-config and libuv1-dev:
+      # the shim. libsqlite3-dev and libcurl4-openssl-dev: the libraries the
+      # suites load through the FFI (curl with TLS). curl, ca-certificates,
+      # coreutils (sha256sum, timeout), diffutils and xz-utils: `make fetch`
+      # and build-chez.sh. git comes with the runner.
+      - name: Install toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libuv1-dev libsqlite3-dev libcurl4-openssl-dev \
+            ca-certificates curl coreutils diffutils xz-utils
+
+      - name: Assert libuv is at least 1.48
+        run: |
+          pkg-config --atleast-version=1.48.0 libuv || {
+            echo "::error::libuv ($(pkg-config --modversion libuv 2>/dev/null || echo absent)) is below 1.48.0"
+            exit 1
+          }
+          echo "libuv $(pkg-config --modversion libuv)"
+
+      # The OS release for the Chez cache key, read off the machine, so a new
+      # image misses the cache instead of restoring a Chez built against
+      # another release's libraries.
+      - name: Identify the OS release
+        id: os
+        run: |
+          . /etc/os-release
+          echo "release=${ID:?}-${VERSION_ID:?}" >> "$GITHUB_OUTPUT"
+
+      # apt's chezscheme is below 10.4.1, so build it from its sha256-pinned
+      # release tarball and cache it, keyed on both scripts (the version, the
+      # sum and the configure line), the OS release and the arch.
+      - name: Restore cached Chez Scheme
+        id: chez-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.local/chez
+          key: chez-${{ runner.os }}-${{ steps.os.outputs.release }}-${{ runner.arch }}-${{ hashFiles('scripts/ci/build-chez.sh', 'scripts/ci/check-chez.sh') }}
+
+      - name: Build Chez Scheme from source
+        if: steps.chez-cache.outputs.cache-hit != 'true'
+        run: scripts/ci/build-chez.sh "$HOME/.local/chez"
+
+      # Saved here, not by the cache action's post-step, so a failed later step
+      # never publishes a half-installed prefix under the key.
+      - name: Save built Chez Scheme
+        if: steps.chez-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.local/chez
+          key: ${{ steps.chez-cache.outputs.cache-primary-key }}
+
+      # Built or restored, it is 10.4.1 and threaded, or the job stops here.
+      - name: Check Chez Scheme
+        run: scripts/ci/check-chez.sh "$HOME/.local/chez"
+
+      # CHEZ names the binary by its path: no search of PATH, where another
+      # scheme could come first. Every later step and `make` read it.
+      - name: Name the Chez binary
+        run: echo "CHEZ=$HOME/.local/chez/bin/scheme" >> "$GITHUB_ENV"
+
+      - name: Report versions
+        run: |
+          "$CHEZ" --version 2>&1 || true
+          cc --version | head -1
+          curl --version | head -1
+
+      - name: Fetch dependencies
+        run: make fetch
+
+      - name: Build dependencies
+        run: make deps
+
+      - name: Check help and suites
+        run: make check-help check-suites check-ci
+
+      - name: Test
+        run: make test
+
+      - name: Check that failing tests fail
+        run: make check-test-fails
+
+      # After the tests, not straight after the fetch: there it could not
+      # fail, and here it catches a build or a test that wrote into a
+      # fetched tree.
+      - name: Check pins
+        run: make check-pins
+
+      # Last, so a new release on the Akku index cannot hide the tests'
+      # result. check-akku-lock needs Akku 1.2.0 itself, which akku-deps
+      # fetches as scripts/akku-tool.lock pins it.
+      - name: Fetch the pinned Akku
+        run: make akku-deps
+
+      - name: Check Akku.lock
+        run: make check-akku-lock

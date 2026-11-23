@@ -6,6 +6,41 @@ Document storage API specifically geared for note taking.
 ✨ *AI Disclosure:* LLMs are used extensively in the planning and development of this project.
 #+end_quote
 
+** Status
+
+Early. The server starts and answers =GET /health=; nothing else is built
+yet. [[file:.plans/outline.md][The outline]] says what is planned, and
+[[file:.plans/progress.md][the ledger]] where it stands.
+
+** Build and test
+
+You need Linux, with Chez Scheme 10.4.1 or later (threaded), libuv 1.48 or
+later, SQLite, libcurl, a C compiler and =pkg-config=. On a Guix host,
+=scripts/guix-env= gives all of them, pinned.
+
+#+begin_src sh
+git clone https://github.com/Kiyomi-Computation-Systems/techo.git
+cd techo
+git submodule update --init   # circuit, chez-sqlite3, chez-curl, each at its pin
+make fetch                    # the Akku dependencies, as Akku.lock pins them
+make test                     # builds chez-libuv's shim, then runs every tests/test-*.sps
+#+end_src
+
+On a Guix host the last line is =scripts/guix-env make test=. The
+=git submodule= and =make fetch= lines stay on the host: they need git and the
+network, which the container has not.
+
+=make help= lists every target.
+
+** Run
+
+#+begin_src sh
+TECHO_DB_PATH=/var/lib/techo/techo.db make run ARGS=serve
+curl http://127.0.0.1:8080/health
+#+end_src
+
+[[file:docs/running.md][Running Techo]] has the settings.
+
 ** License
 
 © [[https://kiyomicomputation.systems/][Kiyomi Computation Systems LLC]]. Licensed under BSD-3-Clause — see

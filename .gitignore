@@ -1,0 +1,15 @@
+# build artifacts: the SRFI-64 link tree, chez-libuv's copy and its shim,
+# Akku 1.2.0, and anything else we generate
+/build/
+
+# the Akku dependencies `make fetch` fetches, as Akku.lock pins them;
+# outside build/, so `make clean` keeps them
+/vendor/akku/
+/vendor/akku-trees/
+
+# Chez compiled objects / whole-program optimization outputs
+*.so
+*.wpo
+
+# linked worktrees made under the checkout
+/.claude/worktrees/

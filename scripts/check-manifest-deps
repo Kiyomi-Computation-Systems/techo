@@ -1,0 +1,80 @@
+#!/bin/sh
+# scripts/check-manifest-deps SUBMODULE_MANIFEST OURS
+#
+# Fails unless OURS, Techo's Akku.manifest, names in its `depends` every
+# package, with the same range, that SUBMODULE_MANIFEST, a submodule's own
+# Akku.manifest at its pinned commit, names in its `depends`: Akku cannot
+# read a submodule's manifest, so Techo repeats what the submodule needs.
+# `depends/dev` is not read: those are the submodule's own tests'. Names
+# each package missing or ranged differently, on stderr, and exits 1;
+# otherwise prints one line and exits 0.
+set -u
+
+if [ "$#" -ne 2 ]; then
+  echo "usage: check-manifest-deps SUBMODULE_MANIFEST OURS" >&2
+  exit 2
+fi
+for f in "$1" "$2"; do
+  [ -f "$f" ] || { echo "check-manifest-deps: $f not found" >&2; exit 1; }
+done
+
+# depends FILE: one `name range` line for each entry of FILE's (depends ...)
+# form, comments stripped. The form's strings come in pairs.
+depends() {
+  awk '
+    { sub(/;.*/, ""); text = text $0 "\n" }
+    END {
+      n = split(text, ch, "")
+      depth = 0; capture = 0; instr = 0; s = ""; cnt = 0
+      for (i = 1; i <= n; i++) {
+        c = ch[i]
+        if (instr) {
+          if (c == "\"") { instr = 0; if (capture) { cnt++; str[cnt] = s } }
+          else s = s c
+          continue
+        }
+        if (c == "\"") { instr = 1; s = ""; continue }
+        if (c == "(") {
+          depth++
+          rest = substr(text, i + 1, 8)
+          if (!capture && rest ~ /^depends[ \t\n)(]/) { capture = depth }
+          continue
+        }
+        if (c == ")") {
+          if (capture && depth == capture) capture = 0
+          depth--
+        }
+      }
+      for (k = 1; k + 1 <= cnt; k += 2) print str[k], str[k + 1]
+    }' "$1" | LC_ALL=C sort
+}
+
+theirs=$(depends "$1")
+ours=$(depends "$2")
+if [ -z "$theirs" ]; then
+  # A manifest may have no (depends ...) form at all: chez-sqlite3's has
+  # only depends/dev. One that has the form and yields nothing is a parse
+  # gone wrong.
+  if grep -q '(akku-package' "$1" && ! sed 's/;.*//' "$1" | grep -Eq '\(depends([[:space:]]|$)'; then
+    echo "check-manifest-deps: $1 has no depends form: nothing for $2 to name"
+    exit 0
+  fi
+  echo "check-manifest-deps: $1 names no depends: is the parse wrong?" >&2
+  exit 1
+fi
+status=0
+while read -r name range; do
+  [ -n "$name" ] || continue
+  mine=$(printf '%s\n' "$ours" | awk -v n="$name" '$1 == n { print $2 }')
+  if [ -z "$mine" ]; then
+    echo "check-manifest-deps: $2's depends lacks \"$name\" \"$range\", which $1's names" >&2
+    status=1
+  elif [ "$mine" != "$range" ]; then
+    echo "check-manifest-deps: $2 ranges \"$name\" \"$mine\", but $1 ranges it \"$range\"" >&2
+    status=1
+  fi
+done <<EOT
+$theirs
+EOT
+[ "$status" -eq 0 ] && echo "check-manifest-deps: $2 names every depends of $1 ($(printf '%s\n' "$theirs" | wc -l | tr -d ' ') package(s))"
+exit $status

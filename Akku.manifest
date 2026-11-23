@@ -1,0 +1,27 @@
+#!r6rs ; -*- scheme -*-
+(import (akku format manifest))
+
+;; Techo's own dependencies from the Akku index, and the index dependencies
+;; of the libraries Techo takes as git submodules under vendor/ (ADR-0011):
+;; Akku cannot read a submodule's manifest, so each is repeated here, and
+;; `make check-pins` fails when this file misses one that
+;; vendor/circuit/Akku.manifest names.
+;;
+;; threading: Techo's own. The rest are circuit's: chez-http-server, under
+;; its adapter; chez-websocket; hashing; and jsonparse. chez-sqlite3 and
+;; chez-curl need nothing from the index. Akku.lock is `akku lock`'s output
+;; for this file (`make lock`; `make check-akku-lock` holds it). `make
+;; fetch` fetches each tree as the lock pins it.
+;;
+;; Development only: chez-srfi gives the suites SRFI-64.
+(akku-package ("techo" "0.0.0")
+  (synopsis "A personal knowledge server in Chez Scheme")
+  (authors "Kiyomi Computation Systems LLC")
+  (homepage "https://github.com/Kiyomi-Computation-Systems/techo")
+  (license "BSD-3-Clause")
+  (depends ("threading" "^0.1.1")
+           ("chez-http-server" "^0.11.0")
+           ("chez-websocket" "^0.6.0")
+           ("hashing" "^1.4.0")
+           ("jsonparse" "^0.2.0"))
+  (depends/dev ("chez-srfi" "^0.0.0-akku.291.5219353")))

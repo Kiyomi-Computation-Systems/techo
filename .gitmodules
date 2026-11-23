@@ -1,0 +1,9 @@
+[submodule "vendor/circuit"]
+	path = vendor/circuit
+	url = https://github.com/Kiyomi-Computation-Systems/circuit.git
+[submodule "vendor/chez-sqlite3"]
+	path = vendor/chez-sqlite3
+	url = https://github.com/Kiyomi-Computation-Systems/chez-sqlite3.git
+[submodule "vendor/chez-curl"]
+	path = vendor/chez-curl
+	url = https://github.com/Kiyomi-Computation-Systems/chez-curl.git

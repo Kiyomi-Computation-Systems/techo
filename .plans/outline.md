@@ -191,8 +191,8 @@ Each is specified on its own, to be built in parallel.
 1. Skeleton: Makefile, Akku, the Guix script, CI, a health endpoint. Includes a spike
    that measures how long representative queries hold the loop: a node write with its
    snapshot, a search, a page of the change feed.
-2. Schema, migrations, the admin CLI.
-3. Accounts, login, API keys.
+2. Schema, migrations, the CLI's migrate command.
+3. Accounts, `techo user add`, login, API keys.
 4. Node create, read, update, with revisions and `If-Match`.
 5. The tree and move; then links.
 6. Kinds and their props; task transitions.
