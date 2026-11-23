@@ -7,3 +7,6 @@
 [submodule "vendor/chez-curl"]
 	path = vendor/chez-curl
 	url = https://github.com/Kiyomi-Computation-Systems/chez-curl.git
+[submodule "vendor/chez-http-server"]
+	path = vendor/chez-http-server
+	url = https://github.com/Kiyomi-Computation-Systems/chez-http-server.git

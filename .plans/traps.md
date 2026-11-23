@@ -59,6 +59,15 @@ it.
   after any large copy, and run once on memory-backed storage to split SQLite's cost
   from the disk's.
 
+## A `;` inside a string is not a comment
+
+- **Expected:** stripping `;` to the end of each line removes a manifest's comments.
+- **Happened:** chez-http-server's manifest has a `;` in its description string. The
+  strip ate the string's closing quote, and `check-manifest-deps` read no `depends` at
+  all.
+- **See it again:** `printf '(x "a ; b")\n' | sed 's/;.*//'` prints `(x "a `.
+- **Rule:** skip comments in the same pass that tracks strings, never before it.
+
 The siblings' traps apply wherever Techo touches the same ground. Read them there:
 
 - chez-sqlite3: `.plans/traps.md`
