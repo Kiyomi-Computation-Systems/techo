@@ -54,10 +54,20 @@ Status: accepted (owner, 2026-11-22, on the spike's numbers)
 - **What a worker thread does not fix.** One connection on one worker still queues
   every database request behind a stalled commit or a slow search. Only requests that
   never touch the database are freed.
+- **Decided (owner, 2026-11-22): writes and reads run on separate threads.** One write
+  thread with a read-write connection, and one or more read threads, each with a
+  read-only connection. A WAL reader does not wait for the writer. The arrangement, and
+  what it asks of circuit, is in
+  [the circuit brief](../briefs/circuit-worker.md) §9.
+- **Decided (owner, 2026-11-22): the design is modelled as state machines and
+  verified**, not only tested: that brief's §10 lists the machines, the layers and the
+  properties. Techo's share is the write transaction, the shutdown order and
+  properties T1 to T5.
 - **Still to decide, in slice 2's plan and a new record:**
-  - how the doorway hands its closure to a worker thread;
-  - whether reads get a connection and a thread of their own, since a WAL reader does
-    not wait for the writer;
+  - how many read threads, and whether it is a setting;
+  - how the doorway tells a read from a write;
+  - whether a TLA+ specification is written, or the exhaustive exploration in the
+    suite is enough;
   - whether password hashing goes to a worker too.
 
   Points 2 to 6 are to be read again against that design, not assumed.
