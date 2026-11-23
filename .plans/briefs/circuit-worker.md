@@ -306,7 +306,13 @@ Techo's own, on top, checked in Techo:
 | T2 | A read called after a write was answered sees that write. |
 | T3 | A read completes while the writer is stalled. |
 | T4 | An abandoned write is committed whole or not at all. |
-| T5 | At shutdown, every accepted write is committed, or its caller was told it was not. |
+| T5 | No caller is told a write succeeded unless it committed, and a write whose caller got no answer is committed whole or not at all. |
+
+T5 was restated on 2026-11-23 (owner). It first read "at shutdown, every accepted write
+is committed, or its caller was told it was not". That holds only if the worker's stop
+runs every queued job. circuit's stop refuses them (its ADR-0013), and after the server
+has stopped the refusal reaches no one. The restated T5 holds under a refusal: an
+answer is posted only after its job returns, and a job is one transaction.
 
 ### 10.5 What the composition rests on
 

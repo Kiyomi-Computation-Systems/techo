@@ -71,3 +71,20 @@ Status: accepted (owner, 2026-11-22, on the spike's numbers)
   - whether password hashing goes to a worker too.
 
   Points 2 to 6 are to be read again against that design, not assumed.
+
+## Amendment, 2026-11-23: T5 restated, and what a missing answer means
+
+Status: accepted (owner, 2026-11-23)
+
+- **T5 now reads:** no caller is told a write succeeded unless it committed, and a
+  write whose caller got no answer is committed whole or not at all.
+- **Why.** circuit's `worker-stop!` refuses the jobs not yet begun (circuit's ADR-0013,
+  the owner's answer there). Techo stops its workers after the server, so a write still
+  queued then is neither committed nor is its caller told. The first wording asked for
+  one or the other.
+- **A write with no answer is a "maybe".** That covers a 504 and a connection closed at
+  shutdown: the write may have committed. A client retries it safely, because a node's
+  id is made by the client and an update carries `If-Match`.
+- **The stop order is unchanged:** `run-server` returns, then the read worker stops,
+  then the write worker, whose tear-down checkpoints and closes.
+

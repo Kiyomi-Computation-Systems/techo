@@ -64,6 +64,9 @@ disagree, the record wins and this file gets fixed.
 - **A password is hashed with argon2id.** It is never logged, and never put in a
   condition's message (ADR-0006).
 - **An API key is stored only as its hash,** and shown once (ADR-0006).
+- **An API key is 32 random bytes, found by its BLAKE2b hash on a unique index.** A raw
+  secret or a signature is compared with `constant-time-bytevector=?`, never
+  `bytevector=?` (ADR-0006, amended 2026-11-23).
 - **Login is rate-limited before any hashing** (ADR-0006).
 
 ## Operations
