@@ -50,10 +50,15 @@
      (config-db-path
       (car (run (env '(("TECHO_DB_PATH" . "/var/lib/techo/techo.db")))))))))
 
-(test-equal "good: a lone / is absolute"
-  "/"
-  (attempt
-   (lambda () (config-db-path (car (run (env '(("TECHO_DB_PATH" . "/")))))))))
+(test-equal "trailing slash: a lone / names a directory"
+  '(#f (("TECHO_DB_PATH" . names-a-directory)))
+  (attempt (lambda () (run (env '(("TECHO_DB_PATH" . "/")))))))
+(test-equal "trailing slash: /var/lib/techo/techo.db/ names a directory"
+  '(#f (("TECHO_DB_PATH" . names-a-directory)))
+  (attempt (lambda () (run (env '(("TECHO_DB_PATH" . "/var/lib/techo/techo.db/")))))))
+(test-equal "problem->string: names-a-directory names the variable"
+  "TECHO_DB_PATH must name a file (it ends with /)"
+  (attempt (lambda () (problem->string '("TECHO_DB_PATH" . names-a-directory)))))
 
 (test-equal "config?: a string is not a config"
   #f

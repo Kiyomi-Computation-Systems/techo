@@ -18,6 +18,11 @@
     (cond ((not value) 'missing)
           ((string=? value "") 'empty)
           ((not (char=? (string-ref value 0) #\/)) 'not-absolute)
+          ;; SQLite drops a trailing slash and opens the file; Chez's
+          ;; file-exists? says no such file. The two must agree on what is
+          ;; missing, or migrate's read-only first look is skipped.
+          ((char=? (string-ref value (- (string-length value) 1)) #\/)
+           'names-a-directory)
           (else #f)))
 
   ;; variables : (Listof (Pairof String (-> (U String #f) (U Symbol #f))))
@@ -58,5 +63,7 @@
         ((empty) (string-append name " is empty"))
         ((not-absolute)
          (string-append name " must be an absolute path (start with /)"))
+        ((names-a-directory)
+         (string-append name " must name a file (it ends with /)"))
         (else (assertion-violation 'problem->string "unknown reason" reason)))))
 )

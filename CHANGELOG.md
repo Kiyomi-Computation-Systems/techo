@@ -15,3 +15,11 @@ Each release's changes. Dates are UTC.
 - `techo serve`, answering `GET /health`. A setting it refuses is named on
   standard error, with exit status 2.
 - `techo version` and `techo help`.
+- `techo migrate`: makes the database file, or brings it to this version's
+  schema. It refuses a file from a newer Techo or from another program, and
+  leaves it unchanged. The first migration only marks the file as Techo's.
+- `techo serve` checks the database before it listens. It refuses, with exit
+  status 1, a file that is missing, behind, newer, not Techo's, or not in WAL
+  mode.
+- `make machines` writes the migrate state machines' diagrams from their
+  tables.

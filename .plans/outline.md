@@ -192,6 +192,8 @@ Each is specified on its own, to be built in parallel.
    that measures how long representative queries hold the loop: a node write with its
    snapshot, a search, a page of the change feed.
 2. Schema, migrations, the CLI's migrate command.
+   - 2b. The database doorway: the write and read workers (ADR-0008, amended
+     2026-11-23).
 3. Accounts, `techo user add`, login, API keys.
 4. Node create, read, update, with revisions and `If-Match`.
 5. The tree and move; then links.
@@ -203,7 +205,7 @@ Each is specified on its own, to be built in parallel.
 ## 14. Open
 
 - Whether the server requires a client's id to be version 7, or accepts any UUID.
-- How ids are stored: 16-byte blobs or 36-character text.
+- ~~How ids are stored: 16-byte blobs or 36-character text.~~ Blobs (ADR-0012).
 - The first state list for the node lifecycle, and which transitions can be undone.
 - The vCard fields a Contact starts with, exactly.
 - The login rate limit's numbers.

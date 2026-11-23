@@ -10,6 +10,7 @@
   ;; commands : (Listof (Pairof String Symbol))
   (define commands
     '(("serve" . serve)
+      ("migrate" . migrate)
       ("version" . version)))
 
   ;; usage-text : String
@@ -20,11 +21,12 @@
      "\n"
      "commands:\n"
      "  serve     run the server\n"
+     "  migrate   create or update the database\n"
      "  version   print the version\n"))
 
   ;; parse-command : (Listof String) -> Command
   ;; ARGS are the arguments after the program's name.
-  ;; Command is (U 'serve 'version (List 'usage String))
+  ;; Command is (U 'serve 'migrate 'version (List 'usage String))
   (define (parse-command args)
     (cond
       ((null? args) (list 'usage "no command given"))
