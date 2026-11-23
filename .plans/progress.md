@@ -18,8 +18,9 @@ close-out under **Close-outs**, newest first.
 - **`await-outside` is on the path** (2026-11-23): circuit is pinned at 442dd85, and
   chez-http-server 0.12.0 comes from a submodule until the index has it (ADR-0011,
   amended 2026-11-23).
-- **Slice 2 is built** (2026-11-23), not yet merged: `techo migrate`, `serve`'s
-  database check, and the migrate state machine verified in six layers
+- **Slice 2 is merged**, squashed from
+  [PR #6](https://github.com/Kiyomi-Computation-Systems/techo/pull/6) on 2026-11-23:
+  `techo migrate`, `serve`'s database check, and the migrate state machine verified in six layers
   ([the plan](2026-11-23-slice-2-migrations.md), ADR-0012). No table yet:
   [schema.md](schema.md) sketches them.
 - **Slice 2b, the doorway, waits for circuit's worker**, the third item of
@@ -36,7 +37,7 @@ close-out under **Close-outs**, newest first.
 
 ## Next
 
-Merge slice 2. Then plan slice 2b against circuit's merged worker design, once
+Plan slice 2b against circuit's merged worker design, once
 circuit's shell slice, W2, lands. The plan starts from ADR-0008's amendments, the
 brief's §9 and §10, and the slice 2 plan's "For slice 2b".
 
@@ -49,7 +50,7 @@ Nothing fails when it happens.
 | # | Slice | State | Waits on |
 |---|---|---|---|
 | 1 | Skeleton, health endpoint, loop-stall spike | merged (PR #2) | |
-| 2 | Migrations, the CLI's `migrate`, `serve`'s check | built, not merged | |
+| 2 | Migrations, the CLI's `migrate`, `serve`'s check | merged (PR #6) | |
 | 2b | The database doorway: write and read workers | not planned | circuit issue 53's worker, W2 |
 | 3 | Accounts, `techo user add`, login, API keys | not planned | chez-sodium M3 |
 | 4 | Node create, read, update; revisions; `If-Match` | not planned | unique-id |
@@ -85,6 +86,37 @@ From [outline.md](outline.md) §14, each for the slice named:
 | Is an account's id a UUID or an integer? ([schema.md](schema.md)) | 3 |
 
 ## Close-outs
+
+### Slice 2: migrations (PR #6, 2026-11-23)
+
+- **Merged:** `techo migrate`; `serve`'s database check; `(techo machine)`,
+  `(techo migrations)` and `(techo db)`; the explorer and the file's model; ten suites;
+  `make machines`; ADR-0012 and [schema.md](schema.md).
+- **Decided on the way:** the doorway is slice 2b; tables arrive with their slices; ids
+  are blobs; migrations are Scheme data, forward only; the version is `user_version`;
+  a file that will be refused is opened only read-only; a hot rollback journal is
+  named, not recovered.
+- **Verified:** every `make` check on the final tree, and CI green on its first run.
+  2.96 million model worlds with M1 to M12 and ML1 to ML3 holding; 818 traces replayed
+  on real SQLite; `kill -9` mid-migration and mid-write in WAL.
+- **Not verified:** Ctrl-C on a real terminal; a kill during the WAL conversion; a disk
+  filling at `COMMIT`; 8 of the 14 list shapes in the suite (all 14 passed once by
+  hand).
+- **Left for later:**
+  - Nothing stops `migrate` beside a running server. Slice 2b can close it.
+  - Ctrl-C during a migration exits 255 and prints nothing.
+  - A `COMMIT` inside a migration is stopped by the check on the shipped list, not at
+    run time.
+  - The binary's output on a run that made progress and then failed has no test.
+  - Layer 3 has no property tying a result's kind to the file. Layers 2 and 4 hold it.
+  - unique-id v0.1.0 is released and not pinned: slice 4 takes it.
+- **Found on the way** (each in [traps.md](traps.md)):
+  - Chez's `equal-hash` reads only the start of a value.
+  - `pkill -f` kills the shell that runs it.
+- **What the verification caught that the reviews did not:** the exploration found
+  R26b's hole, which two plan reviews had read past. The closing review then found
+  the trailing-slash bug, which no layer could: the model assumed Chez and SQLite
+  agree on what a missing file is, and no clause said so.
 
 ### Slice 1: the skeleton (PR #2, 2026-11-22)
 
