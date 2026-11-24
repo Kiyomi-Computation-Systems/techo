@@ -81,3 +81,12 @@ Status: accepted (owner, 2026-11-23: "start working on it", on circuit's notice)
   Slice 2b's doorway is built on it (ADR-0013).
 - Its manifest names the same four index dependencies, so `Akku.manifest` and
   `Akku.lock` do not change.
+
+## Amendment, 2026-11-24: circuit's pin moves to its worker's docs
+
+Status: accepted (owner, 2026-11-24: "we can do it in the next slice")
+
+- **circuit's pin moves to `a39346c`,** its W3 slice: the worker's docs and an example.
+  The only change under `src/` since `b7e6f95` is one comment.
+- The reason to move is to read the docs at the commit Techo builds on.
+- `Akku.manifest` and `Akku.lock` do not change.
