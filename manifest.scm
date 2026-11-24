@@ -80,8 +80,9 @@
      ;; "curl" brings libcurl.so.4 (with TLS), which chez-curl loads by
      ;; the absolute path scripts/guix-env-enter exports, and the curl
      ;; client. "sqlite" brings libsqlite3.so.0, which chez-sqlite3 loads
-     ;; the same way.
-     "curl" "sqlite"
+     ;; the same way. "libsodium" brings libsodium.so.26, which
+     ;; chez-sodium loads the same way.
+     "curl" "sqlite" "libsodium"
      ;; What the Makefile and scripts shell out to; tar and xz build and
      ;; unpack the archives tests/fetch-akku-lock.sh makes. The container
      ;; has nothing else.

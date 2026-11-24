@@ -9,8 +9,9 @@
 ;;
 ;; threading: Techo's own. circuit's: chez-http-server, under its adapter;
 ;; chez-websocket; hashing; and jsonparse. The server's: chez-libuv,
-;; chez-httparse, chez-uri and byte-machine. chez-sqlite3 and chez-curl need
-;; nothing from the index.
+;; chez-httparse, chez-uri and byte-machine. unique-id's: chez-srfi, for the
+;; SRFI-19 clock in (unique-id system), which Techo does not import.
+;; chez-sqlite3, chez-curl and chez-sodium need nothing from the index.
 ;;
 ;; chez-http-server stays at ^0.11.0, as circuit's manifest has it, though
 ;; the path takes 0.12.0 from the submodule vendor/chez-http-server: the
@@ -19,7 +20,8 @@
 ;; for this file (`make lock`; `make check-akku-lock` holds it). `make
 ;; fetch` fetches each tree as the lock pins it.
 ;;
-;; Development only: chez-srfi gives the suites SRFI-64.
+;; Development only: chez-srfi gives the suites SRFI-64, at a later floor
+;; than unique-id asks for.
 (akku-package ("techo" "0.0.0")
   (synopsis "A personal knowledge server in Chez Scheme")
   (authors "Kiyomi Computation Systems LLC")
@@ -33,5 +35,6 @@
            ("chez-libuv" "^0.11.0")
            ("chez-httparse" "^0.6.0")
            ("chez-uri" "^0.9.0")
-           ("byte-machine" "^0.9.0"))
+           ("byte-machine" "^0.9.0")
+           ("chez-srfi" "^0.0.0-akku.181.7879b52"))
   (depends/dev ("chez-srfi" "^0.0.0-akku.291.5219353")))

@@ -121,11 +121,12 @@ case "$status" in
   *) bad "no-bare-name-load: '${chez:-unset}' exited $status, expected 3" ;;
 esac
 
-# Assertion 7: CHEZ_SQLITE3_LIBRARY and CHEZ_CURL_LIBCURL name the
-# profile's libsqlite3.so.0 and libcurl.so.4, and Chez loads each by that
+# Assertion 7: CHEZ_SQLITE3_LIBRARY, CHEZ_CURL_LIBCURL and
+# CHEZ_SODIUM_LIBRARY name the profile's libsqlite3.so.0, libcurl.so.4 and
+# libsodium.so.26, and Chez loads each by that
 # path. Exit 3 means it loaded, 4 that the load raised, and anything else
 # that Chez itself failed.
-for pair in CHEZ_SQLITE3_LIBRARY:libsqlite3.so.0 CHEZ_CURL_LIBCURL:libcurl.so.4; do
+for pair in CHEZ_SQLITE3_LIBRARY:libsqlite3.so.0 CHEZ_CURL_LIBCURL:libcurl.so.4 CHEZ_SODIUM_LIBRARY:libsodium.so.26; do
   var=${pair%%:*}
   lib=${pair#*:}
   eval "val=\${$var:-}"

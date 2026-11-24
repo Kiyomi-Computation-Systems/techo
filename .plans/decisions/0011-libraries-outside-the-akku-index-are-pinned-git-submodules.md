@@ -90,3 +90,21 @@ Status: accepted (owner, 2026-11-24: "we can do it in the next slice")
   The only change under `src/` since `b7e6f95` is one comment.
 - The reason to move is to read the docs at the commit Techo builds on.
 - `Akku.manifest` and `Akku.lock` do not change.
+
+## Amendment, 2026-11-24: chez-sodium and unique-id join the submodules
+
+Status: accepted (owner, 2026-11-24, with slice 3's D1 and D2)
+
+- **chez-sodium is pinned at `3a14085`,** its M2: `random-bytes` and `blake2b`, which
+  slice 3a's keys need. It has no release, so the pin is a commit. The pin moves to
+  its M3, the password verbs, for slice 3b.
+- **unique-id is pinned at `e0ed128`,** its v0.1.0, one slice early: slice 3's ids
+  are UUIDs (its D2).
+- **`Akku.manifest` names chez-srfi under `depends`,** at unique-id's range, since
+  `make check-pins` holds each submodule's `depends`. Techo imports only
+  `(unique-id)` and `(unique-id generator)`, which need nothing from the index.
+  `Akku.lock` keeps the same ten packages at the same versions, in another order.
+- **libsodium is a system library,** like SQLite and libcurl: `"libsodium"` in
+  `manifest.scm` (1.0.22), `libsodium23` in CI (Ubuntu 24.04's 1.0.18, chez-sodium's
+  floor). The container names it to chez-sodium by `CHEZ_SODIUM_LIBRARY`.
+- Both are in ADR-0001's stack already, so neither needs a record of its own.
