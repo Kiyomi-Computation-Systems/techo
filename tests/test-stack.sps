@@ -10,6 +10,9 @@
 ;;;   (http-server)   exports await-outside, so the path takes the server
 ;;;                   from its submodule, 0.12.0, ahead of Akku's 0.11.0
 ;;;                   (ADR-0011, amended), and circuit hands on the same one
+;;;   (chez-sodium)   blake2b of a fixed input is the known hash, and
+;;;                   random-bytes answers fresh bytes
+;;;   (unique-id)     a generator makes version 7 ids, each greater
 ;;;
 ;;; Everything that can raise is computed under a guard, and a raise comes
 ;;; out as a sentinel the expected value never is, so a failure names what
@@ -78,6 +81,44 @@
   #t
   (let ((v (exported 'http-server-config-error? '(circuit http-server))))
     (if (procedure? v) #t v)))
+
+;; chez-sodium and unique-id, looked up at run time for the same reason. A
+;; program that imports chez-sodium's verbs dies before its first line when
+;; libsodium is missing, so an import here would name no test.
+;; run-in : Datum Datum -> (U Any (List 'raised String))
+(define (run-in expr . libraries)
+  (attempt (lambda () (eval expr (apply environment libraries)))))
+
+;; hex : Bytevector -> String
+;; Lowercase: Chez's number->string writes A to F in capitals.
+(define (hex bv)
+  (apply string-append
+         (map (lambda (b)
+                (string-append (if (< b 16) "0" "")
+                               (string-downcase (number->string b 16))))
+              (bytevector->u8-list bv))))
+
+(test-equal "chez-sodium: blake2b of 32 bytes of 01 is the known 32 bytes"
+  "f40ceaf86e5776923332b8d8fd3bef849cadb19c6996bc272af1f648d9566a4c"
+  (let ((v (run-in '(blake2b (make-bytevector 32 1)) '(rnrs) '(chez-sodium))))
+    (if (bytevector? v) (hex v) v)))
+
+(test-equal "chez-sodium: random-bytes 32 answers 32 bytes, twice different"
+  '(32 32 #f)
+  (run-in '(let ((a (random-bytes 32)) (b (random-bytes 32)))
+             (list (bytevector-length a) (bytevector-length b) (equal? a b)))
+          '(rnrs) '(chez-sodium)))
+
+(test-equal "unique-id: a generator over a fixed clock and bytes makes a version 7 id, then a greater one"
+  '(7 "01935e11-" #t)
+  (run-in '(let* ((g (make-uuid-generator (lambda () 1732450000000)
+                                          (lambda (n) (make-bytevector n 5))))
+                  (a (generate-v7 g))
+                  (b (generate-v7 g)))
+             (list (uuid-version a)
+                   (substring (uuid->string a) 0 9)
+                   (uuid<? a b)))
+          '(rnrs) '(unique-id) '(unique-id generator)))
 
 (test-end "stack")
 

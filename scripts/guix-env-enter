@@ -11,11 +11,13 @@
 #         the profile's libsqlite3.so.0, by absolute path, for chez-sqlite3
 #   CHEZ_CURL_LIBCURL
 #         the profile's libcurl.so.4, by absolute path, for chez-curl
+#   CHEZ_SODIUM_LIBRARY
+#         the profile's libsodium.so.26, by absolute path, for chez-sodium
 #
 # It sets no LD_LIBRARY_PATH. chez-libuv's build bakes the absolute path of
-# the libuv it links into the config.sls it generates, and chez-sqlite3 and
-# chez-curl load the two paths above, so nothing loads a library by bare
-# name.
+# the libuv it links into the config.sls it generates, and chez-sqlite3,
+# chez-curl and chez-sodium load the three paths above, so nothing loads a
+# library by bare name.
 set -eu
 
 die() { printf 'guix-env-enter: %s\n' "$*" >&2; exit 2; }
@@ -33,10 +35,12 @@ need "$GUIX_ENVIRONMENT/bin/scheme"
 need "$GUIX_ENVIRONMENT/bin/gcc"
 need "$GUIX_ENVIRONMENT/lib/libsqlite3.so.0"
 need "$GUIX_ENVIRONMENT/lib/libcurl.so.4"
+need "$GUIX_ENVIRONMENT/lib/libsodium.so.26"
 
 export CHEZ="$GUIX_ENVIRONMENT/bin/scheme"
 export CC="$GUIX_ENVIRONMENT/bin/gcc"
 export CHEZ_SQLITE3_LIBRARY="$GUIX_ENVIRONMENT/lib/libsqlite3.so.0"
 export CHEZ_CURL_LIBCURL="$GUIX_ENVIRONMENT/lib/libcurl.so.4"
+export CHEZ_SODIUM_LIBRARY="$GUIX_ENVIRONMENT/lib/libsodium.so.26"
 
 exec "$@"

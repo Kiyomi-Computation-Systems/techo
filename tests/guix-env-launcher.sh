@@ -138,20 +138,22 @@ reset_profile() {
   : >"$store/gcc"
   : >"$store/libsqlite3.so.0"
   : >"$store/libcurl.so.4"
+  : >"$store/libsodium.so.26"
   ln -s "$store/scheme" "$profile/bin/scheme"
   ln -s "$store/gcc" "$profile/bin/gcc"
   ln -s "$store/libsqlite3.so.0" "$profile/lib/libsqlite3.so.0"
   ln -s "$store/libcurl.so.4" "$profile/lib/libcurl.so.4"
+  ln -s "$store/libsodium.so.26" "$profile/lib/libsodium.so.26"
 }
 
 # run_enter: prints CHEZ, CC, LD_LIBRARY_PATH (or "unset") and
-# CHEZ_SQLITE3_LIBRARY and CHEZ_CURL_LIBCURL as the command sees them,
-# separated by |.
+# CHEZ_SQLITE3_LIBRARY, CHEZ_CURL_LIBCURL and CHEZ_SODIUM_LIBRARY as the
+# command sees them, separated by |.
 run_enter() {
   status=999
   ( cd "$enter_cwd" && env -i PATH="$PATH" GUIX_ENVIRONMENT="$profile" \
       sh "$enter" sh -c \
-      'printf "%s|%s|%s|%s|%s\n" "${CHEZ-}" "${CC-}" "${LD_LIBRARY_PATH-unset}" "${CHEZ_SQLITE3_LIBRARY-}" "${CHEZ_CURL_LIBCURL-}"' ) \
+      'printf "%s|%s|%s|%s|%s|%s\n" "${CHEZ-}" "${CC-}" "${LD_LIBRARY_PATH-unset}" "${CHEZ_SQLITE3_LIBRARY-}" "${CHEZ_CURL_LIBCURL-}" "${CHEZ_SODIUM_LIBRARY-}"' ) \
     >"$tmp/out" 2>"$tmp/err"
   status=$?
 }
@@ -169,9 +171,11 @@ check "T7a CHEZ_SQLITE3_LIBRARY is the profile's libsqlite3.so.0" \
   [ "$(field 4)" = "$profile/lib/libsqlite3.so.0" ]
 check "T7a CHEZ_CURL_LIBCURL is the profile's libcurl.so.4" \
   [ "$(field 5)" = "$profile/lib/libcurl.so.4" ]
+check "T7a CHEZ_SODIUM_LIBRARY is the profile's libsodium.so.26" \
+  [ "$(field 6)" = "$profile/lib/libsodium.so.26" ]
 check "T7a no state directory" [ ! -e "$enter_cwd/.guix-env" ]
 
-# T7b-f: a profile missing one entry is refused, naming the entry, and the
+# T7b-g: a profile missing one entry is refused, naming the entry, and the
 # command never runs.
 refused() {  # LABEL PATH
   check "$1: exit 2" [ "$status" -eq 2 ]
@@ -202,6 +206,11 @@ reset_profile
 rm "$profile/lib/libcurl.so.4"
 run_enter
 refused "T7f no libcurl" "$profile/lib/libcurl.so.4"
+
+reset_profile
+rm "$profile/lib/libsodium.so.26"
+run_enter
+refused "T7g no libsodium" "$profile/lib/libsodium.so.26"
 
 # T8: the command's arguments pass through verbatim.
 reset_profile

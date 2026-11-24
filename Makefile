@@ -11,8 +11,9 @@
 #   manifest against today's index. `make fetch` downloads each archive the
 #   lock pins, checks its sha256 and unpacks it (scripts/fetch-akku-lock):
 #   hashing into vendor/akku, and the others into vendor/akku-trees.
-# - The owner's libraries outside the index, circuit, chez-sqlite3 and
-#   chez-curl, are git submodules under vendor/, each pinned at a commit
+# - The owner's libraries outside the index, circuit, chez-sqlite3,
+#   chez-curl, chez-sodium and unique-id, are git submodules under vendor/,
+#   each pinned at a commit
 #   (SUBMODULE_PINS). A fresh clone runs `git submodule update
 #   --init` on the host once, before `make deps`.
 # - chez-http-server is both, for now (ADR-0011, amended 2026-11-23): the
@@ -68,15 +69,21 @@ GOAL = $(strip $(if $(MAKECMDGOALS),$(MAKECMDGOALS),$@))
 #   chez-sqlite3      v0.1.1
 #   chez-curl         v0.1.2
 #   chez-http-server  v0.12.0, until the index has it (ADR-0011, amended)
+#   chez-sodium       3a14085 (no release yet): its M2, random-bytes and blake2b
+#   unique-id         v0.1.0
 SUBMODULE_PINS := \
   circuit:a39346c31d4242df4a261b6945c411992ee7a504 \
   chez-sqlite3:960d9f0028ce09b51019cd7050d5833af30f98e0 \
   chez-curl:15197e8a699c4b2d6c12e2b62c7dc76be7729780 \
-  chez-http-server:bba2ba6fea252996d31bffc6255d8be36e9bdfd2
+  chez-http-server:bba2ba6fea252996d31bffc6255d8be36e9bdfd2 \
+  chez-sodium:3a14085ddcf444cb2db87156fcedee074b72d6b8 \
+  unique-id:e0ed1284e9262141d87df4144edba114d44eb5e7
 SUBMODULE_NAMES := $(foreach p,$(SUBMODULE_PINS),$(firstword $(subst :, ,$(p))))
 CIRCUIT_DIR := vendor/circuit
 SQLITE3_DIR := vendor/chez-sqlite3
 CURL_DIR    := vendor/chez-curl
+SODIUM_DIR  := vendor/chez-sodium
+UNIQUE_ID_DIR := vendor/unique-id
 # The server the path uses: the submodule, 0.12.0, not Akku's 0.11.0 tree.
 SERVER_DIR  := vendor/chez-http-server
 SERVER_VERSION := 0.12.0
@@ -138,6 +145,8 @@ LIBDIR_LIST := src \
   $(CIRCUIT_DIR)/src \
   $(SQLITE3_DIR)/src \
   $(CURL_DIR)/src \
+  $(SODIUM_DIR)/src \
+  $(UNIQUE_ID_DIR)/src \
   $(SERVER_DIR)/src \
   $(WEBSOCKET_DIR)/src \
   $(LIBUV_DIR)/src \
@@ -362,7 +371,7 @@ endef
 # check-pins holds.
 deps: check-chez ## Copy chez-libuv to build/chez-libuv and build its shim there, and link SRFI-64 into build/scheme-libs; never fetches
 	@scripts/require-tools "$(GOAL)" $(CHEZ) $(CC) pkg-config
-	@for d in $(CIRCUIT_DIR) $(SQLITE3_DIR) $(CURL_DIR) $(SERVER_DIR); do \
+	@for d in $(CIRCUIT_DIR) $(SQLITE3_DIR) $(CURL_DIR) $(SERVER_DIR) $(SODIUM_DIR) $(UNIQUE_ID_DIR); do \
 	  if [ ! -d $$d/src ]; then \
 	    echo "deps: $$d/src not found, so the submodule isn't checked out. Run 'git submodule update --init' on the host: the container has no git." >&2; \
 	    exit 1; \

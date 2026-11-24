@@ -42,14 +42,16 @@ jobs:
       # build-essential: the C compiler and make, for the libuv shim and for
       # Chez (configured with no X11 or curses). pkg-config and libuv1-dev:
       # the shim. libsqlite3-dev and libcurl4-openssl-dev: the libraries the
-      # suites load through the FFI (curl with TLS). curl, ca-certificates,
+      # suites load through the FFI (curl with TLS). libsodium23: Ubuntu
+      # 24.04's libsodium, 1.0.18, chez-sodium's floor, which it finds by
+      # itself under /usr/lib. curl, ca-certificates,
       # coreutils (sha256sum, timeout), diffutils and xz-utils: `make fetch`
       # and build-chez.sh. git comes with the runner.
       - name: Install toolchain
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            build-essential pkg-config libuv1-dev libsqlite3-dev libcurl4-openssl-dev \
+            build-essential pkg-config libuv1-dev libsqlite3-dev libcurl4-openssl-dev libsodium23 \
             ca-certificates curl coreutils diffutils xz-utils
 
       - name: Assert libuv is at least 1.48

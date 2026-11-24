@@ -10,3 +10,9 @@
 [submodule "vendor/chez-http-server"]
 	path = vendor/chez-http-server
 	url = https://github.com/Kiyomi-Computation-Systems/chez-http-server.git
+[submodule "vendor/chez-sodium"]
+	path = vendor/chez-sodium
+	url = https://github.com/Kiyomi-Computation-Systems/chez-sodium.git
+[submodule "vendor/unique-id"]
+	path = vendor/unique-id
+	url = https://github.com/Kiyomi-Computation-Systems/unique-id.git
