@@ -2,6 +2,13 @@
 
 Techo is one program. It is the server and the admin tool.
 
+## What it needs
+
+libsodium 1.0.18 or later, on the machine. Techo uses it for hashing and random
+bytes. Without it, every command (`migrate`, `serve`, even `version`) stops at
+the start with the library's own message and a non-zero status. Install the
+package, then run it again.
+
 ## Prepare the database
 
 ```sh
@@ -56,6 +63,33 @@ It prints `listening 127.0.0.1 8080` once it is ready.
 It will not start on a database that is missing, empty, behind, newer than
 it, not in WAL mode, not its own, or that it may not write. It says which, and exits with status 1. Most of the time the
 answer is to run `techo migrate`.
+
+## The request log
+
+Each request Techo answers writes one line to standard output, when its answer ends:
+
+```
+request method=GET path=/v1/keys status=200 ending=written ms=4 db_ms=1 account=0193a5c0-7b1e-7000-8000-0123456789ab address=203.0.113.9
+```
+
+| Field | What it is |
+|---|---|
+| `method`, `path` | What was asked. |
+| `status` | The status the client got. `-` if Techo never answered. |
+| `ending` | How the answer ended: `written` is the normal one. |
+| `ms` | How long the request took. |
+| `db_ms` | How long the database part took, queue included. `-` if it had none. |
+| `account` | The account's id, when Techo answered or refused the request for that account. `-` with no key or a bad one, and on a `500`, `503` or `504`. |
+| `address` | Who connected. |
+
+Two other lines can appear:
+
+- `request-refused 400 …`: the server refused the request before Techo saw it. There
+  is no `request` line for it.
+- `handler-failed …`: beside a `500`'s `request` line, with what went wrong.
+
+A field with nothing to show is `-`. The line never holds a query string, a
+header or a body, so it never holds a key.
 
 ## Check it
 
@@ -130,7 +164,7 @@ restore.
 | Status | What it means | Retry? |
 |---|---|---|
 | `503` with `Retry-After` | Techo did not do it: it is busy, stopping, or the database moved (above). | Yes, later. |
-| `504` | It took too long. A write may or may not have happened. | Yes: a write is safe to send again. |
+| `504` | It took too long. A write may or may not have happened: the log line says `504`, and the write can still land after it. | Yes: a write is safe to send again. |
 | `500` | Something broke. A write may or may not have happened. | Yes, once; then look at the log. |
 
 If the log says `database unavailable: a connection was closed after a failed

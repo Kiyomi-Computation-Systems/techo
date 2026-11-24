@@ -60,3 +60,52 @@ of entropy.
 - If Techo ever compares a raw secret or a MAC, such as a webhook signature or a signed
   cookie, it uses `constant-time-bytevector=?`, never `bytevector=?`.
 - The encoding is slice 3's to fix, once, for creation and lookup alike.
+
+## Amendment, 2026-11-24: what slice 3 decided
+
+Status: accepted (owner, 2026-11-24, as slice 3's D1 to D6 and D9)
+Plan: [slice 3](../2026-11-24-slice-3-accounts.md)
+
+1. **An account's id and a key's id are UUIDs, version 7,** made by the server.
+2. **A key is `techo_` and 64 lowercase hex digits,** sent as
+   `Authorization: Bearer …`. Its stored hash is BLAKE2b, 32 bytes, of those 70
+   characters. This is "the one fixed encoding" the first amendment left to slice 3.
+3. **The key is hashed on the loop's thread. Only the hash enters a database job,** so
+   the key can never be in a logged raise.
+4. **The key is checked inside the request's own job** (ADR-0013). One job a request:
+   a 503 is a "no" for the whole request, and a revoke cannot cross a write.
+5. **A key's lifecycle is three states:** none, active, revoked. The table is in
+   `(techo keys)`, and its diagram in `.plans/machines/key.md`.
+   - A key may revoke any key of its account. That is how a lost device is shut out.
+   - A key may regenerate only itself. So a stolen key cannot take over the others.
+   - Another account's key looks like no key at all: a 404.
+6. **No key makes a key.** A key comes only from a login. A key that could make keys
+   would let a leaked one quietly make a second, which revoking the first would not
+   remove.
+7. **`last_used` is the last time a key *changed* something,** to the day. A request
+   that only reads does not set it.
+   - Why: a read job cannot write, and a second job after a read would hold a
+     finished answer behind the writer.
+   - The cost: a device that only reads looks unused.
+8. **The slice is split at the password verbs.** 3a is everything that needs no
+   password: the tables, the key check, the key routes. 3b waits on chez-sodium's M3:
+   `user add`, login, the rate limit.
+
+9. **A route reaches the database only through `db-read-as` and `db-write-as`,**
+   which check the key first. Only `techo.sps` names the doorway's `db-read` and
+   `db-write`, and a test holds that.
+10. **A refusal leaves a job as one condition, `&refusal`,** holding an error code and
+    the account's id. Nothing of the request rides on it.
+11. **A handler performs the command the key table's step names.** It decides no
+    answer by a test of its own.
+12. **The table's own checks hold an account's shape:** a lowercase email, by ASCII's
+    letters alone, whatever the SQLite build; a username of `[a-z0-9][a-z0-9_-]*`, at
+    most 32 characters; a key's name of 1 to 64 characters.
+
+**Consequences**
+
+- After 3a a real server has no accounts, and every key route answers 401.
+- `password-verify` answers false when memory is short, as for a wrong password.
+  chez-sodium was asked whether it could tell them apart
+  ([the brief](../briefs/chez-sodium-verify-out-of-memory.md)); its answer was "no
+  for now". 3b plans on checking for itself.

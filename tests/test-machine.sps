@@ -286,6 +286,37 @@
                               '()))
               never never))))
 
+;;; terminals #f: no end, on purpose
+
+;; A ring a -> b -> a, no terminal anywhere.
+(define ring-rows
+  (list (row 'a 'go 'b 'x) (row 'b 'go 'a 'x)))
+
+(test-equal "no end: #f skips the dead-end check"
+  '()
+  (problems ring-rows '(a) #f '()))
+
+(test-equal "no end: '() still reports every state as a dead end"
+  '((dead-end a) (dead-end b))
+  (problems ring-rows '(a) '() '()))
+
+(test-equal "no end: #f still reports an unlisted gap"
+  '((unlisted-gap b stop))
+  (problems (list (row 'a 'go 'b 'x) (row 'a 'stop 'a 'x) (row 'b 'go 'a 'x))
+            '(a) #f '()))
+
+(test-equal "no end: #f still reports a double row"
+  '((double-row a go))
+  (problems (append ring-rows (list (row 'a 'go 'a 'y))) '(a) #f '()))
+
+(test-equal "no end: #f still reports an unreachable state"
+  '((unreachable z))
+  (problems (append ring-rows (list (row 'z 'go 'a 'x))) '(a) #f '()))
+
+(test-equal "no end: #f still reports a listed pair that has a row"
+  '((listed-but-has-row a go))
+  (problems ring-rows '(a) #f '((a go "never"))))
+
 (test-end "machine")
 
 (exit (suite-exit-status runner))

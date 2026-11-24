@@ -9,8 +9,12 @@
 ;;; environment that is refused, 1 for a database that `migrate` or `serve`
 ;;; refuses or cannot use (ADR-0012). Refusals go to standard error, and
 ;;; nothing listens before the environment and the database are accepted.
+;;; Without libsodium every command, `help` and `version` too, ends before
+;;; its first line with chez-sodium's own message and status 255: this
+;;; program imports its verbs (slice 3's plan, "Smaller choices").
 (import (rnrs)
-        (only (chezscheme) getenv)
+        (only (chezscheme) getenv current-time time-second time-nanosecond)
+        (only (chez-sodium) random-bytes)
         (only (circuit http-server) run-server)
         (techo app)
         (techo cli)
@@ -70,6 +74,13 @@
               (result->ending-lines result))
     (exit status)))
 
+;; wall-clock : -> Natural
+;; The time of day in whole milliseconds since 1970, UTC: a row's times
+;; (D15). Durations use real-time instead, the app's default.
+(define (wall-clock)
+  (let ((t (current-time 'time-utc)))
+    (+ (* (time-second t) 1000) (div (time-nanosecond t) 1000000))))
+
 ;; serve! : -> [does not return until the server has stopped]
 ;; Techo's settings, then machine 3 (ADR-0013) in (techo serve): the database
 ;; check, the write thread, the read threads, the server, and the stops in
@@ -78,14 +89,24 @@
 ;; for a database refused or an error, 2 for settings the server refuses).
 ;; The server's host and port are chez-http-server's own variables,
 ;; CHEZ_HTTP_HOST and CHEZ_HTTP_PORT, which run-server reads.
+;;
+;; The app gets its two job runners, made here from db-read and db-write
+;; and the doorway, so no route reaches the doorway by another way; the
+;; wall clock; and chez-sodium's random-bytes. wrap-server puts the request
+;; log and the error format around it; stdout-log! writes both kinds of
+;; line, each in one write, from the loop's thread.
 (define (serve!)
   (let* ((config (config!))
          (doorway (make-doorway (config-db-path config) (config-db-readers config)
-                                migrations)))
+                                migrations))
+         (reader (lambda (job) (db-read doorway job)))
+         (writer (lambda (job) (db-write doorway job))))
     (let-values (((status prints)
                   (serve-loop (config-db-path config) migrations doorway
                               (lambda ()
-                                (run-server (wrap-app (make-app doorway) stdout-log!))))))
+                                (run-server
+                                 (wrap-server (make-app reader writer wall-clock random-bytes)
+                                              stdout-log!))))))
       (print-serve-ends! (current-error-port) prints)
       (exit status))))
 

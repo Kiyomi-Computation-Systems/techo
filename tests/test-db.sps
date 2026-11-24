@@ -964,15 +964,25 @@
   (with-db (plain p)
     (lambda (db) (execute! db "begin immediate") (execute! db "rollback") #t)))
 
+;; The machinery's tests below run on the shipped list's first migration alone
+;; (a one-migration world); the shipped list as a whole is run here and in
+;; "every shipped migration" below.
+(define first-only (list (car migrations)))
+
+;; objects in the shipped schema: accounts, api_keys, the index, and the
+;; automatic indexes of the primary and unique keys (2 + 1 + 2 + 3 + 2).
+(define shipped-objects 8)
+
 (let ((p (path "m-missing.db")))
   (clean! p)
-  (test-equal "migrate! on a missing file: applied (1), converted; the file is current, in WAL, Techo's"
-    (list '(applied (1) #t 1) (list T 1 0 'wal) #t)
+  (test-equal "migrate! on a missing file: every shipped version applied, converted; the file is current, in WAL, Techo's"
+    (list (list 'applied (map car migrations) #t (latest-version migrations))
+          (list T (latest-version migrations) shipped-objects 'wal) #t)
     (attempt (lambda ()
                (let ((r (migrate! p migrations)))
                  (list r (facts-of p) (lock-free? p))))))
   (test-equal "migrate! on that file again: nothing, not converted"
-    '(nothing () #f 1)
+    (list 'nothing '() #f (latest-version migrations))
     (attempt (lambda () (migrate! p migrations)))))
 
 (let ((p (path "m-ahead.db")))
@@ -982,7 +992,7 @@
     '(refused #t)
     (attempt (lambda ()
                (let* ((before (read-bytes p))
-                      (r (migrate! p migrations)))
+                      (r (migrate! p first-only)))
                  (list (car r) (bytevector=? before (read-bytes p))))))))
 
 (let ((p (path "m-foreign.db")))
@@ -992,7 +1002,7 @@
     '(refused #t)
     (attempt (lambda ()
                (let* ((before (read-bytes p))
-                      (r (migrate! p migrations)))
+                      (r (migrate! p first-only)))
                  (list (car r) (bytevector=? before (read-bytes p))))))))
 
 (let ((p (path "m-foreign-wal.db")) (src (path "m-foreign-src.db")))
@@ -1001,12 +1011,12 @@
     '(refused #t)
     (attempt (lambda ()
                (let* ((before (read-bytes p))
-                      (r (migrate! p migrations)))
+                      (r (migrate! p first-only)))
                  (list (car r) (bytevector=? before (read-bytes p))))))))
 
 (let ((cur (path "m-vac-src.db")) (copy (path "m-vac.db")))
   (clean! cur) (clean! copy)
-  (migrate! cur migrations)
+  (migrate! cur first-only)
   (with-db (plain cur)
     (lambda (db) (execute! db (string-append "VACUUM INTO '" copy "'"))))
   (test-equal "the VACUUM INTO copy of a current WAL file is current but not in WAL"
@@ -1014,17 +1024,17 @@
     (attempt (lambda () (facts-of copy))))
   (test-equal "migrate! on the VACUUM INTO copy: nothing applied, converted, now in WAL"
     (list '(nothing () #t 1) (list T 1 0 'wal))
-    (attempt (lambda () (list (migrate! copy migrations) (facts-of copy))))))
+    (attempt (lambda () (list (migrate! copy first-only) (facts-of copy))))))
 
 ;; a longer list: migration 1 is the shipped one
 (define (second-migration . stmts) (list 2 "two" stmts))
 (define longer
-  (append migrations
+  (append first-only
           (list (second-migration "create table two (x)"))))
 
 (let ((cur (path "m-vac2-src.db")) (copy (path "m-vac2.db")))
   (clean! cur) (clean! copy)
-  (migrate! cur migrations)
+  (migrate! cur first-only)
   (with-db (plain cur)
     (lambda (db) (execute! db (string-append "VACUUM INTO '" copy "'"))))
   (test-equal "migrate! on a VACUUM INTO copy that is behind: converted and applied (2)"
@@ -1032,7 +1042,7 @@
     (attempt (lambda () (list (migrate! copy longer) (facts-of copy))))))
 
 (define three
-  (append migrations
+  (append first-only
           (list (list 2 "two" '("create table first_table (x)"
                                 "insert into no_such_table values (1)"))
                 (list 3 "three" '("create table third (x)")))))
@@ -1053,7 +1063,7 @@
                  (list (car d) (caddr d)))))))
 
 (define hostile
-  (append migrations
+  (append first-only
           (list (list 2 "two" '("create table first_table (x)" "COMMIT"
                                 "create table after_commit (x)")))))
 
@@ -1079,14 +1089,14 @@
       (foreign-key-check) (stamp . 1) (commit) (close))
     (attempt (lambda ()
                (let ((seen '()))
-                 (migrate! p migrations (lambda (c) (set! seen (cons c seen))))
+                 (migrate! p first-only (lambda (c) (set! seen (cons c seen))))
                  (reverse seen)))))
   (test-equal "migrate! observer: a command is observed before the file shows its effect"
     '(#f #t)
     (attempt (lambda ()
                (clean! p)
                (let ((at-stamp #f) (after #f))
-                 (migrate! p migrations
+                 (migrate! p first-only
                            (lambda (c)
                              (when (eq? (car c) 'stamp)
                                (set! at-stamp (file-exists? p)))))
@@ -1098,7 +1108,7 @@
     '(raised #t 0 0)
     (attempt (lambda ()
                (let ((r (guard (e (#t 'raised))
-                          (migrate! p migrations
+                          (migrate! p first-only
                                     (lambda (c)
                                       (when (eq? (car c) 'commit)
                                         (raise 'boom)))))))
@@ -1123,11 +1133,11 @@
   (clean! p)
   (test-equal "check-db on a missing file: refused as missing, and still missing"
     '(missing #f)
-    (attempt (lambda () (list (verdict-kind (check-db p migrations))
+    (attempt (lambda () (list (verdict-kind (check-db p first-only))
                               (file-exists? p)))))
   (test-equal "check-db's refusal is (refuse KIND REASON) with a string reason"
     '(refuse missing #t)
-    (attempt (lambda () (let ((v (check-db p migrations)))
+    (attempt (lambda () (let ((v (check-db p first-only)))
                           (list (car v) (cadr v) (string? (caddr v))))))))
 
 (let ((p (path "k-fresh.db")))
@@ -1136,28 +1146,28 @@
   (test-equal "check-db on a fresh file: refused as fresh, bytes unchanged"
     '(fresh #t)
     (attempt (lambda ()
-               (let* ((before (read-bytes p)) (v (check-db p migrations)))
+               (let* ((before (read-bytes p)) (v (check-db p first-only)))
                  (list (verdict-kind v) (bytevector=? before (read-bytes p))))))))
 
 (let ((p (path "k-behind.db")))
   (clean! p)
-  (migrate! p migrations)
+  (migrate! p first-only)
   (test-equal "check-db on a file behind a longer list: refused as behind"
     'behind
     (attempt (lambda () (verdict-kind (check-db p longer)))))
   (test-equal "check-db on that same file with the shipped list: serve"
     'serve
-    (attempt (lambda () (check-db p migrations)))))
+    (attempt (lambda () (check-db p first-only)))))
 
 (let ((cur (path "k-unconv-src.db")) (p (path "k-unconv.db")))
   (clean! cur) (clean! p)
-  (migrate! cur migrations)
+  (migrate! cur first-only)
   (with-db (plain cur)
     (lambda (db) (execute! db (string-append "VACUUM INTO '" p "'"))))
   (test-equal "check-db on a current file not in WAL: refused as unconverted, bytes unchanged"
     '(unconverted #t)
     (attempt (lambda ()
-               (let* ((before (read-bytes p)) (v (check-db p migrations)))
+               (let* ((before (read-bytes p)) (v (check-db p first-only)))
                  (list (verdict-kind v) (bytevector=? before (read-bytes p))))))))
 
 (let ((p (path "k-ahead.db")))
@@ -1166,7 +1176,7 @@
   (test-equal "check-db on an ahead file: refused as ahead, bytes unchanged"
     '(ahead #t)
     (attempt (lambda ()
-               (let* ((before (read-bytes p)) (v (check-db p migrations)))
+               (let* ((before (read-bytes p)) (v (check-db p first-only)))
                  (list (verdict-kind v) (bytevector=? before (read-bytes p))))))))
 
 (let ((p (path "k-foreign.db")))
@@ -1174,22 +1184,22 @@
   (test-equal "check-db on another program's file: refused as foreign, bytes unchanged"
     '(foreign #t)
     (attempt (lambda ()
-               (let* ((before (read-bytes p)) (v (check-db p migrations)))
+               (let* ((before (read-bytes p)) (v (check-db p first-only)))
                  (list (verdict-kind v) (bytevector=? before (read-bytes p))))))))
 
 (let ((p (path "k-current.db")))
   (clean! p)
-  (migrate! p migrations)
+  (migrate! p first-only)
   (test-equal "check-db on a current file in WAL: serve"
     'serve
-    (attempt (lambda () (check-db p migrations))))
+    (attempt (lambda () (check-db p first-only))))
   (test-equal "check-db on a file that is not a database: refused as cannot-open"
     'cannot-open
     (attempt (lambda ()
                (let ((q (path "k-junk.db")))
                  (clean! q)
                  (write-bytes! q (make-bytevector 5000 120))
-                 (verdict-kind (check-db q migrations)))))))
+                 (verdict-kind (check-db q first-only)))))))
 
 ;;; A hot rollback journal: a file in rollback mode whose writer stopped
 ;;; mid-transaction after its cache spilled. Made without a kill: the main
@@ -1231,18 +1241,119 @@
     (list 'cannot-open hot-reason)
     (attempt (lambda ()
                (make-hot! p)
-               (let ((r (migrate! p migrations)))
+               (let ((r (migrate! p first-only)))
                  (list (car r) (cadddr r))))))
   (test-equal "a hot journal: check-db refuses with the named reason"
     (list 'refuse 'cannot-open (string-append "cannot open the database: " hot-reason))
-    (attempt (lambda () (make-hot! p) (check-db p migrations))))
+    (attempt (lambda () (make-hot! p) (check-db p first-only))))
   (test-equal "a hot journal: after one read-write open, migrate! converts the file"
     '(nothing #t)
     (attempt (lambda ()
                (make-hot! p)
                (with-db (plain p) (lambda (db) (row db "select count(*) from junk")))
-               (let ((r (migrate! p migrations)))
+               (let ((r (migrate! p first-only)))
                  (list (car r) (caddr r)))))))
+
+;;; Migration 2: accounts and api_keys
+
+(define (bv n fill) (make-bytevector n fill))
+(define id-a (bv 16 1))
+(define id-b (bv 16 2))
+
+;; refused-kind : Database String Any ... -> Symbol
+;; 'constraint when SQLite refuses the statement's constraint, 'ok when it
+;; runs, and 'other for any other raise.
+(define (refused-kind db sql . params)
+  (guard (e ((sqlite-constraint? e) 'constraint) (#t 'other))
+    (apply execute! db sql params)
+    'ok))
+
+(define insert-account-sql
+  "INSERT INTO accounts(id, username, email, password_hash, created) VALUES (?, ?, ?, 'h', 1)")
+(define insert-key-sql
+  "INSERT INTO api_keys(id, account, name, key_hash, created) VALUES (?, ?, 'k', ?, 1)")
+
+(let ((p (path "m-accounts.db")))
+  (clean! p)
+  (migrate! p migrations)
+  (test-equal "migration 2: both tables and the index exist"
+    '(("accounts" "table") ("api_keys" "table") ("api_keys_account" "index"))
+    (attempt
+     (lambda ()
+       (with-db (plain p)
+         (lambda (db)
+           (rows db "select name, type from sqlite_schema where name in ('accounts', 'api_keys', 'api_keys_account') order by name"))))))
+  (test-equal "migration 2: a non-lowercase email is refused, a lowercase one is not"
+    '(constraint ok)
+    (attempt
+     (lambda ()
+       (with-db (open-techo-db p 'read-write 0)
+         (lambda (db)
+           (list (refused-kind db insert-account-sql id-a "a" "A@Example.com")
+                 (refused-kind db insert-account-sql id-a "a" "a@example.com")))))))
+  ;; The rule is ASCII's alone, by GLOB's range, which no SQLite build folds
+  ;; differently: lower() folds more under ICU, and a CHECK made of it
+  ;; would then refuse what (techo accounts) hands it.
+  (test-equal "migration 2: the email rule is ASCII's: a capital outside it is kept"
+    'ok
+    (attempt
+     (lambda ()
+       (with-db (open-techo-db p 'read-write 0)
+         (lambda (db)
+           (refused-kind db insert-account-sql (bv 16 7) "nonascii"
+                         (string (integer->char #xC9) #\@ #\x)))))))
+  (test-equal "migration 2: a username with a capital, a space, nothing or 33 characters is refused; 32 good ones are not"
+    '(constraint constraint constraint constraint ok)
+    (attempt
+     (lambda ()
+       (with-db (open-techo-db p 'read-write 0)
+         (lambda (db)
+           (let* ((r1 (refused-kind db insert-account-sql (bv 16 8) "Ada" "u1@x"))
+                  (r2 (refused-kind db insert-account-sql (bv 16 8) "a b" "u2@x"))
+                  (r3 (refused-kind db insert-account-sql (bv 16 8) "" "u3@x"))
+                  (r4 (refused-kind db insert-account-sql (bv 16 8) (make-string 33 #\a) "u4@x"))
+                  (r5 (refused-kind db insert-account-sql (bv 16 8)
+                                    (string-append "a-b_9" (make-string 27 #\z)) "u5@x")))
+             (list r1 r2 r3 r4 r5)))))))
+  (test-equal "migration 2: a key's name of nothing or 65 characters is refused; 64 are not"
+    '(constraint constraint ok)
+    (attempt
+     (lambda ()
+       (with-db (open-techo-db p 'read-write 0)
+         (lambda (db)
+           (let* ((sql "INSERT INTO api_keys(id, account, name, key_hash, created) VALUES (?, ?, ?, ?, 1)")
+                  (r1 (refused-kind db sql (bv 16 31) (bv 16 8) "" (bv 32 31)))
+                  (r2 (refused-kind db sql (bv 16 32) (bv 16 8) (make-string 65 #\n) (bv 32 32)))
+                  (r3 (refused-kind db sql (bv 16 33) (bv 16 8) (make-string 64 #\n) (bv 32 33))))
+             (list r1 r2 r3)))))))
+  (test-equal "migration 2: an account id that is not 16 bytes is refused"
+    'constraint
+    (attempt
+     (lambda ()
+       (with-db (open-techo-db p 'read-write 0)
+         (lambda (db) (refused-kind db insert-account-sql (bv 15 9) "z" "z@example.com"))))))
+  (test-equal "migration 2: a key naming a missing account is refused; naming a real one is not"
+    '(constraint ok)
+    (attempt
+     (lambda ()
+       (with-db (open-techo-db p 'read-write 0)
+         (lambda (db)
+           (list (refused-kind db insert-key-sql (bv 16 5) id-b (bv 32 7))
+                 (refused-kind db insert-key-sql (bv 16 5) id-a (bv 32 7))))))))
+  (test-equal "migration 2: a key hash that is not 32 bytes, and a key id that is not 16, are refused"
+    '(constraint constraint)
+    (attempt
+     (lambda ()
+       (with-db (open-techo-db p 'read-write 0)
+         (lambda (db)
+           (list (refused-kind db insert-key-sql (bv 16 6) id-a (bv 31 8))
+                 (refused-kind db insert-key-sql (bv 17 6) id-a (bv 32 8))))))))
+  (test-equal "migration 2: two keys with one hash are refused"
+    'constraint
+    (attempt
+     (lambda ()
+       (with-db (open-techo-db p 'read-write 0)
+         (lambda (db) (refused-kind db insert-key-sql (bv 16 9) id-a (bv 32 7))))))))
 
 (test-end "db")
 

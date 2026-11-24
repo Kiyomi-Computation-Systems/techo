@@ -22,6 +22,28 @@ Each release's changes. Dates are UTC.
   status 1, a file that is missing, behind, newer, not Techo's, or not in WAL
   mode.
 - `make machines` writes the state machines' diagrams from their tables.
+- The second migration: the `accounts` and `api_keys` tables.
+- The first API routes, under `/v1`, each needing an API key in
+  `Authorization: Bearer`: `GET /v1/account`, `GET /v1/keys`, and
+  `POST /v1/keys/{id}/revoke` and `/regenerate`. No account can be made yet, so
+  on a real server they all answer 401 until login arrives. See `docs/api.md`.
+- Every error is RFC 9457 problem details with a `code` member.
+- A request log: one line a request on standard output.
+
+### Changed
+
+- The 404 for an unknown route was `{"error":"not_found"}`. It is now in the
+  error format.
+- Dependencies: chez-sodium and unique-id as git submodules. Techo now needs
+  libsodium, 1.0.18 or later, on the machine.
+- `make submodules` checks out each submodule at its pin, for a fresh clone.
+- `make check-makefile` holds the Makefile's own promises: `submodules`, the
+  hint `deps` gives, the rename `deps` uses, and `clean`.
+- The Makefile runs on macOS for development: `deps` no longer needs GNU's
+  `mv -T` or `ln -sT`. Tested by hand there, not in CI. `make test` needs
+  `timeout` or Homebrew's `gtimeout`, and chez-sodium needs
+  `CHEZ_SODIUM_LIBRARY` set to libsodium's path.
+- `make clean` removes a read-only directory under `build/`.
 - The database doorway: one thread writes and `TECHO_DB_READERS` threads read
   (default 2), so a slow write will not hold up a read or `/health`. No
   route uses the database yet.

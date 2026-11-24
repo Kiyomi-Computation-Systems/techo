@@ -29,8 +29,10 @@
         (only (chez-sqlite3) open-database close-database! execute! query query-row)
         (techo-testing)
         (techo cli)
+        (only (techo keys) key-secret id->string)
+        (only (techo auth) key-hash)
         (only (techo db) open-techo-db read-db-facts migrate!)
-        (only (techo migrations) techo-application-id)
+        (only (techo migrations) techo-application-id migrations latest-version)
         (migrations-fixture)
         (http-client)
         (jsonparse easy))
@@ -235,6 +237,17 @@
 (define (make-foreign! p)
   (make-file! p '("PRAGMA application_id = 42" "CREATE TABLE t (x)" "INSERT INTO t VALUES (1)")))
 
+;; The shipped schema, as the file's facts count it: accounts, api_keys, the
+;; index, and the automatic indexes of the primary and unique keys.
+(define shipped-latest (latest-version migrations))
+(define shipped-objects 8)
+(define shipped-tables '("accounts" "api_keys"))
+
+;; applied-lines : (Listof Natural) -> (Listof String)
+;; The lines `techo migrate` prints for the versions it applied.
+(define (applied-lines vs)
+  (map (lambda (v) (string-append "applied migration " (number->string v))) vs))
+
 ;; facts-of : String -> DbFacts    (read-only)
 (define (facts-of p) (with-db (open-techo-db p 'read-only) read-db-facts))
 
@@ -307,13 +320,14 @@
       (list sa sb (facts-of db)))))
 
 ;; killed-in-migration : String -> (List Boolean Status DbFacts (Listof String) Result DbFacts (Listof String))
-;; Clause 6. The child stops at the 2nd foreign-key-check: inside migration
-;; 2, its statements run and not committed. It is killed there.
+;; Clause 6. The child stops at the foreign-key-check of the fixture's first
+;; own migration (the n-th, n its version): its statements run and not committed. It is killed there.
 (define (killed-in-migration dir)
   (let* ((db (string-append dir "/clause6.db"))
          (ready (string-append dir "/clause6.ready"))
          (child (spawn-program dir "clause6" "tests/migrate-child.sps" '() '()
-                               (list db ready "foreign-key-check" "2"))))
+                               (list db ready "foreign-key-check"
+                                     (number->string fixture-notes-version)))))
     (dynamic-wind
       (lambda () #f)
       (lambda ()
@@ -482,6 +496,258 @@
   (observe "serve-foreign" (serve-run dir "srvforeign" (at "foreign")))
   (observe "serve-backup" (serve-run dir "srvbackup" (at "backup2"))))
 
+;; --- the API over the wire (slice 3a) ------------------------------------
+;;
+;; One server on its own file. The server cannot make an account yet, so the
+;; suite's own connection puts the rows in after `techo migrate`. Everything
+;; after that is a request on the socket, in a fixed order; the server's
+;; standard output is the request log. The run ends with D3/P1's search: no
+;; secret the run presented or was given is anywhere the server wrote.
+
+;; bv16 : Nat Nat -> Bytevector    an id: TAG sixteen times, the last byte N
+(define (bv16 tag n)
+  (let ((b (make-bytevector 16 tag))) (bytevector-u8-set! b 15 n) b))
+
+(define account-a (bv16 #x0a 1))
+(define account-b (bv16 #x0b 1))
+(define (key-id-of tag n) (bv16 tag n))
+(define a-keys (map (lambda (n) (key-id-of #x1a n)) '(1 2 3 4)))
+(define b-key (key-id-of #x1b 1))
+
+;; mk-secret : Nat -> String    a well-shaped secret, a different one for each N
+(define (mk-secret n)
+  (key-secret
+   (let ((b (make-bytevector 32 0)))
+     (do ((i 0 (+ i 1))) ((= i 32) b)
+       (bytevector-u8-set! b i (mod (+ 5 (* n 37) (* i 11)) 256))))))
+
+;; The secrets the run starts with: A's four keys, B's one, and one that no row holds.
+(define s-a1 (mk-secret 1))
+(define s-a2 (mk-secret 2))
+(define s-a3 (mk-secret 3))
+(define s-a4 (mk-secret 4))
+(define s-b1 (mk-secret 5))
+(define s-unknown (mk-secret 6))
+
+;; every secret presented or returned in the run; the expected log, newest first
+(define api-secrets '())
+(define api-expect '())
+(define (remember-secret! s) (unless (member s api-secrets) (set! api-secrets (cons s api-secrets))))
+
+;; api-call : Nat Symbol String (U String #f) -> (List Status Headers Json)
+;; Status, a lookup of the headers by name, and the body parsed (or 'unparsed).
+(define (api-call port method target secret)
+  (call-with-http-session 'timeout-ms 10000
+    (lambda (session)
+      (let* ((r (http-request session method
+                              (string-append "http://127.0.0.1:" (number->string port) target)
+                              'headers (if secret
+                                           (list (cons "Authorization" (string-append "Bearer " secret)))
+                                           '())))
+             (hs (map (lambda (n) (cons n (header-of r n)))
+                      '("content-type" "www-authenticate" "allow" "cache-control"))))
+        (list (http-response-status r) hs
+              (guard (e (#t 'unparsed)) (string->json (http-response-text r))))))))
+
+(define (rsp-status r) (car r))
+(define (rsp-header r name) (cdr (assoc name (cadr r))))
+(define (rsp-json r) (caddr r))
+
+;; jget : Json String -> Any    the member, or 'missing
+(define (jget j k)
+  (let ((p (and (list? j) (assoc k j)))) (if p (cdr p) 'missing)))
+(define (jitems j)
+  (let ((x (jget j "items"))) (cond ((vector? x) (vector->list x)) ((list? x) x) (else x))))
+
+;; go! : Nat String Symbol String (U String #f) (U Bytevector #f) -> Void
+;; One request, filed under NAME; the log line it should leave (method, path
+;; without its query, the status the client got, the account) is remembered.
+(define (go! port name method target secret account)
+  (when secret (remember-secret! secret))
+  (let ((r (attempt (lambda () (api-call port method target secret)))))
+    (obs-set! name r)
+    (when (and (pair? r) (not (eq? (car r) 'raised)))
+      (let ((j (rsp-json r)))
+        (let ((k (jget j "key"))) (when (string? k) (remember-secret! k))))
+      (set! api-expect
+            (cons (list (string-upcase (symbol->string method))
+                        (let loop ((cs (string->list target)) (acc '()))
+                          (if (or (null? cs) (char=? (car cs) #\?))
+                              (list->string (reverse acc))
+                              (loop (cdr cs) (cons (car cs) acc))))
+                        (number->string (rsp-status r))
+                        (if account (id->string account) "-"))
+                  api-expect)))))
+
+(define (url-of-key id verb) (string-append "/v1/keys/" (id->string id) "/" verb))
+
+;; needles-of : String -> (Listof Bytevector)
+;; The 70 characters, their 64 hex digits alone (both cases), and the 32 bytes.
+(define (needles-of secret)
+  (let* ((hex (substring secret 6 70))
+         (raw (u8-list->bytevector
+               (let loop ((i 0))
+                 (if (= i 64) '()
+                     (cons (string->number (substring hex i (+ i 2)) 16) (loop (+ i 2))))))))
+    (list (string->utf8 secret) (string->utf8 hex) (string->utf8 (string-upcase hex)) raw)))
+
+;; bytevector-append : Bytevector ... -> Bytevector
+(define (bytevector-append . bs)
+  (u8-list->bytevector (apply append (map bytevector->u8-list bs))))
+
+;; bytes-contain? : Bytevector Bytevector -> Boolean
+(define (bytes-contain? hay needle)
+  (let ((n (bytevector-length hay)) (m (bytevector-length needle)))
+    (let loop ((i 0))
+      (cond ((> (+ i m) n) #f)
+            ((and (= (bytevector-u8-ref hay i) (bytevector-u8-ref needle 0))
+                  (let inner ((j 1))
+                    (or (= j m)
+                        (and (= (bytevector-u8-ref hay (+ i j)) (bytevector-u8-ref needle j))
+                             (inner (+ j 1))))))
+             #t)
+            (else (loop (+ i 1)))))))
+
+;; leaks : (Listof (Pair String Bytevector)) (Listof String) -> (Listof (List String Nat))
+;; For each named haystack, the index of each secret that has a needle in it.
+(define (leaks hays secrets)
+  (apply append
+         (map (lambda (h)
+                (let loop ((ss secrets) (i 0) (acc '()))
+                  (cond ((null? ss) (reverse acc))
+                        ((exists (lambda (nd) (bytes-contain? (cdr h) nd)) (needles-of (car ss)))
+                         (loop (cdr ss) (+ i 1) (cons (list (car h) i) acc)))
+                        (else (loop (cdr ss) (+ i 1) acc)))))
+              hays)))
+
+(define (bv-or-empty p) (guard (e (#t (make-bytevector 0))) (if (file-exists? p) (read-bytes p) (make-bytevector 0))))
+
+;; log-lines : String -> (Listof (List String String String String))
+;; Method, path, status and account of each `request ` line, and, in a second
+;; list, the whole lines.
+(define (field-of line name)
+  (let loop ((ws (split-words line)))
+    (cond ((null? ws) #f)
+          ((starts-with? (car ws) (string-append name "="))
+           (substring (car ws) (+ 1 (string-length name)) (string-length (car ws))))
+          (else (loop (cdr ws))))))
+(define (request-lines text)
+  (filter (lambda (l) (starts-with? l "request ")) (split-lines text)))
+(define (line-key l)
+  (list (field-of l "method") (field-of l "path") (field-of l "status") (field-of l "account")))
+
+;; observe-api! : String -> Void
+(define (observe-api! dir)
+  (let* ((db (string-append dir "/api.db"))
+         (setup (migrate-run dir "apimigrate" db)))
+    (obs-set! "api:migrate" (car setup))
+    ;; The rows, from this suite's own connection.
+    (with-db (open-techo-db db 'read-write)
+      (lambda (c)
+        (execute! c "INSERT INTO accounts(id, username, email, password_hash, created) VALUES (?, ?, ?, ?, ?)"
+                  account-a "ada" "ada@example.com" "not-a-hash" 1700000000000)
+        (execute! c "INSERT INTO accounts(id, username, email, password_hash, created) VALUES (?, ?, ?, ?, ?)"
+                  account-b "bob" "bob@example.com" "not-a-hash" 1700000000001)
+        (for-each
+         (lambda (id name secret acct created)
+           (execute! c "INSERT INTO api_keys(id, account, name, key_hash, created) VALUES (?, ?, ?, ?, ?)"
+                     id acct name (key-hash secret) created))
+         (append a-keys (list b-key))
+         (list "laptop" "phone" "tablet" "watch" "bobs laptop")
+         (list s-a1 s-a2 s-a3 s-a4 s-b1)
+         (list account-a account-a account-a account-a account-b)
+         '(1700000000010 1700000000020 1700000000030 1700000000040 1700000000050))))
+    (let ((server (spawn dir "api" '() (list "CHEZ_HTTP_PORT=0" (string-append "TECHO_DB_PATH=" db))
+                         '("serve"))))
+      (dynamic-wind
+        (lambda () #f)
+        (lambda ()
+          (let ((port (listening-port server)))
+            (obs-set! "api:port" port)
+            (when (integer? port)
+              (let ((a1 (car a-keys)) (a2 (cadr a-keys)) (a3 (caddr a-keys)) (a4 (cadddr a-keys)))
+                ;; the refusals that come before any key is looked up
+                (go! port "api:no-key" 'get "/v1/account" #f #f)
+                (go! port "api:unknown-key" 'get "/v1/account" s-unknown #f)
+                (go! port "api:bad-limit" 'get "/v1/keys?limit=0" s-a1 #f)
+                (go! port "api:bad-limit-text" 'get "/v1/keys?limit=many" s-a1 #f)
+                (go! port "api:bad-after" 'get "/v1/keys?after=nope" s-a1 #f)
+                (go! port "api:no-route" 'get "/v1/nothing" s-a1 #f)
+                (go! port "api:wrong-method" 'post "/v1/account" s-a1 #f)
+                (go! port "api:wrong-method-keys" 'delete "/v1/keys" s-a1 #f)
+                ;; reads
+                (go! port "api:account" 'get "/v1/account" s-a1 account-a)
+                (go! port "api:keys" 'get "/v1/keys" s-a1 account-a)
+                (go! port "api:keys-1" 'get "/v1/keys?limit=2" s-a1 account-a)
+                (let ((next (jget (rsp-json (obs "api:keys-1")) "next")))
+                  (go! port "api:keys-2" 'get
+                       (string-append "/v1/keys?limit=2&after=" (if (string? next) next "x"))
+                       s-a1 account-a))
+                (go! port "api:keys-over" 'get "/v1/keys?limit=1000" s-a1 account-a)
+                ;; a key that only reads, and another account's
+                (go! port "api:reader" 'get "/v1/account" s-a2 account-a)
+                (go! port "api:reader-4" 'get "/v1/account" s-a4 account-a)
+                (go! port "api:b-keys" 'get "/v1/keys" s-b1 account-b)
+                ;; another account's key looks like no key; a sibling is not mine to regenerate
+                (go! port "api:other-revoke" 'post (url-of-key b-key "revoke") s-a1 account-a)
+                (go! port "api:other-regenerate" 'post (url-of-key b-key "regenerate") s-a1 account-a)
+                (go! port "api:sibling-regenerate" 'post (url-of-key a2 "regenerate") s-a1 account-a)
+                (go! port "api:bad-id" 'post "/v1/keys/not-an-id/revoke" s-a1 #f)
+                ;; a key revokes a sibling; the sibling then no longer opens
+                (go! port "api:revoke" 'post (url-of-key a3 "revoke") s-a1 account-a)
+                (go! port "api:revoke-again" 'post (url-of-key a3 "revoke") s-a1 account-a)
+                (go! port "api:revoked-key" 'get "/v1/account" s-a3 #f)
+                (go! port "api:keys-after" 'get "/v1/keys" s-a1 account-a)
+                ;; regenerate itself: the new secret works, the old one does not
+                (go! port "api:regenerate" 'post (url-of-key a1 "regenerate") s-a1 account-a)
+                (let* ((new (jget (rsp-json (obs "api:regenerate")) "key"))
+                       (new (if (string? new) new "techo_missing")))
+                  (obs-set! "api:new-secret" new)
+                  (go! port "api:old-secret" 'get "/v1/account" s-a1 #f)
+                  (go! port "api:new-account" 'get "/v1/account" new account-a)
+                  ;; a forced failure inside the write: the trigger comes from this
+                  ;; suite's own connection while the server runs
+                  (with-db (open-techo-db db 'read-write)
+                    (lambda (c)
+                      (execute! c "CREATE TRIGGER force_failure BEFORE UPDATE ON api_keys BEGIN SELECT RAISE(ABORT, 'forced'); END")))
+                  (go! port "api:forced-500" 'post (url-of-key a1 "regenerate") new #f)
+                  (go! port "api:forced-500-revoke" 'post (url-of-key a4 "revoke") new #f)
+                  (with-db (open-techo-db db 'read-write)
+                    (lambda (c) (execute! c "DROP TRIGGER force_failure")))
+                  (go! port "api:after-trigger" 'post (url-of-key a4 "revoke") new account-a)
+                  ;; a read while another program holds the write lock: the
+                  ;; program's reader must be a read job, which never waits on it
+                  (with-db (open-techo-db db 'read-write)
+                    (lambda (c)
+                      (execute! c "BEGIN IMMEDIATE")
+                      (let ((t0 (real-time)))
+                        (go! port "api:read-under-lock" 'get "/v1/account" new account-a)
+                        (obs-set! "api:read-under-lock-ms" (- (real-time) t0)))
+                      (execute! c "ROLLBACK")))
+                  ;; a second key regenerates itself: the program's random
+                  ;; bytes must give another secret, not the same one again
+                  (go! port "api:regenerate-2" 'post (url-of-key a2 "regenerate") s-a2 account-a)
+                  (let ((new2 (jget (rsp-json (obs "api:regenerate-2")) "key")))
+                    (obs-set! "api:new-secret-2" (if (string? new2) new2 "techo_missing")))))
+              ;; what is on disk while the server is up
+              (obs-set! "api:live-files"
+                        (list (cons "db (running)" (bv-or-empty db))
+                              (cons "wal (running)" (bv-or-empty (string-append db "-wal"))))))
+            (signal! server "TERM")
+            (obs-set! "api:exit" (await-status server deadline-ms))
+            (let ((out (read-bytes (child-file server "out"))))
+              (obs-set! "api:out" (utf8->string out))
+              (obs-set! "api:err" (file-text (child-file server "err")))
+              (obs-set! "api:leaks"
+                        (leaks (append (or (obs "api:live-files") '())
+                                       (list (cons "stdout" out)
+                                             (cons "stderr" (read-bytes (child-file server "err")))
+                                             (cons "db" (bv-or-empty db))
+                                             (cons "wal" (bv-or-empty (string-append db "-wal")))))
+                               (reverse api-secrets)))
+              (obs-set! "api:secret-count" (length api-secrets)))))
+        (lambda () (kill! server))))))
+
 ;; leftovers : String -> (Listof Boolean)
 ;; Whether DB's `-wal` and `-shm` exist.
 (define (leftovers db)
@@ -521,6 +787,7 @@
         (lambda () (kill! server))))
     (observe "migrate-again" (migrate-run dir "migagain" db))
     (observe-migrate! dir)
+    (observe "api-run" (observe-api! dir))
     ;; The command line.
     (set! cli-version (attempt (lambda () (run-cli dir "version" '() '() '("version")))))
     (set! cli-none (attempt (lambda () (run-cli dir "none" '() '() '()))))
@@ -586,8 +853,10 @@
 (test-equal "serve: GET /nope is 404"
   404 (if (pair? nope) (car nope) nope))
 
-(test-equal "serve: GET /nope body is {\"error\":\"not_found\"}"
-  '(("error" . "not_found")) (if (pair? nope) (caddr nope) nope))
+(test-equal "serve: GET /nope body is the not_found problem (D7)"
+  '(("type" . "about:blank") ("title" . "Not Found") ("status" . 404)
+    ("code" . "not_found") ("detail" . "There is no such thing here."))
+  (if (pair? nope) (caddr nope) nope))
 
 (test-equal "serve: SIGTERM ends it with status 0 within the deadline"
   0 serve-exit)
@@ -696,11 +965,17 @@
       r))
 
 (test-equal "migrate: a missing file is created and migrated"
-  (list 0 (nl "converted the database to WAL" "applied migration 1" "the database is at version 1") "")
+  (list 0 (apply nl (append '("converted the database to WAL")
+                            (applied-lines (map car migrations))
+                            (list (string-append "the database is at version "
+                                                 (number->string shipped-latest)))))
+        "")
   (obs "migrate-fresh"))
 
 (test-equal "migrate: a second run has nothing to do"
-  (list 0 (nl "nothing to do: the database is at version 1") "")
+  (list 0 (nl (string-append "nothing to do: the database is at version "
+                             (number->string shipped-latest)))
+        "")
   (obs "migrate-again"))
 
 (test-equal "migrate: an ahead file is refused, exit 1, the line on stderr"
@@ -711,12 +986,15 @@
   (list 1 "" (nl "techo: refused: not Techo's database"))
   (obs "migrate-foreign"))
 
-(test-equal "migrate: the VACUUM INTO backup is Techo's, version 1, not in WAL"
-  (list techo-application-id 1 0 'delete)
+(test-equal "migrate: the VACUUM INTO backup is Techo's, at the shipped version, not in WAL"
+  (list techo-application-id shipped-latest shipped-objects 'delete)
   (obs "backup-facts"))
 
 (test-equal "migrate: a restored backup is converted to WAL"
-  (list 0 (nl "converted the database to WAL" "nothing to do: the database is at version 1") "")
+  (list 0 (nl "converted the database to WAL"
+              (string-append "nothing to do: the database is at version "
+                             (number->string shipped-latest)))
+        "")
   (obs "migrate-backup"))
 
 (test-equal "migrate: a missing directory: cannot open, exit 1, stdout empty"
@@ -732,16 +1010,18 @@
   '(2 "") (let ((r (obs "migrate-empty"))) (if (pair? r) (list (car r) (cadr r)) r)))
 
 (test-equal "migrate: two at once on a missing file, five times: both exit 0, file current, in WAL"
-  (let ((ok (list 0 0 (list techo-application-id 1 0 'wal))))
+  (let ((ok (list 0 0 (list techo-application-id shipped-latest shipped-objects 'wal))))
     (list ok ok ok ok ok))
   (obs "two-at-once"))
 
-(test-equal "clause 6: a child killed inside migration 2, then the file is at version 1, none of 2"
-  (list #t 137 (list techo-application-id 1 0 'wal) '())
+(test-equal "clause 6: a child killed inside the fixture's first own migration, then the file is at the shipped version, none of the fixture's"
+  (list #t 137 (list techo-application-id shipped-latest shipped-objects 'wal) shipped-tables)
   (let ((r (obs "clause-6"))) (if (and (list? r) (= (length r) 7)) (head r 4) r)))
 
-(test-equal "clause 6: a normal migrate then applies 2 and 3 on the same file"
-  (list '(applied (2 3)) (list techo-application-id 3 3 'wal) '("notes" "tags"))
+(test-equal "clause 6: a normal migrate then applies the fixture's two on the same file"
+  (list (list 'applied (list fixture-notes-version fixture-tags-version))
+        (list techo-application-id fixture-latest-version (+ shipped-objects 3) 'wal)
+        (append shipped-tables '("notes" "tags")))
   (let ((r (obs "clause-6"))) (if (and (list? r) (= (length r) 7)) (tail r 4) r)))
 
 ;; The two clause 11 runs: the writer was killed with a full -wal, and
@@ -756,7 +1036,7 @@
                              (list (list-ref r 5) (list-ref r 6) (list-ref r 7))
                              r)))
   (test-equal (string-append label ": the file is current and in WAL, and serve answers /health")
-    (list (list techo-application-id 1 1 'wal)
+    (list (list techo-application-id shipped-latest (+ shipped-objects 1) 'wal)
           (list 'listening (list 200 "application/json" '(("status" . "ok"))) 0))
     (let ((r (obs key)))
       (if (and (list? r) (= (length r) 12))
@@ -765,7 +1045,7 @@
           r)))
 
   (test-equal (string-append label ": a migration then applies on top, and the rows are still there")
-    '((applied (2 3)) #t)
+    (list (list 'applied (list fixture-notes-version fixture-tags-version)) #t)
     (let ((r (obs key)))
       (if (and (list? r) (= (length r) 12)) (list (list-ref r 10) (list-ref r 11)) r))))
 
@@ -806,6 +1086,287 @@
 (test-equal "serve: a restored backup is refused: not in WAL"
   (refused-line "the database is not in WAL mode: run `techo migrate`")
   (obs "serve-backup"))
+
+;; --- the API over the wire (slice 3a) ------------------------------------
+
+(define (ok-obs? k) (let ((r (obs k))) (and (pair? r) (integer? (car r)))))
+
+;; refusal : Nat String String String [(U String #f)] -> List
+;; What a refusal shows: status, content-type, the body in D7's five members,
+;; and the www-authenticate and allow headers.
+(define (refusal status title code detail www allow)
+  (list status "application/problem+json"
+        (list (cons "type" "about:blank") (cons "title" title) (cons "status" status)
+              (cons "code" code) (cons "detail" detail))
+        www allow))
+(define (refusal-of k)
+  (let ((r (obs k)))
+    (if (and (pair? r) (integer? (car r)))
+        (list (rsp-status r) (rsp-header r "content-type") (rsp-json r)
+              (rsp-header r "www-authenticate") (rsp-header r "allow"))
+        r)))
+
+(test-equal "api: the server started on a migrated file and listens"
+  '(0 #t) (list (obs "api:migrate") (port-ok (obs "api:port"))))
+
+(define unauthorized-detail "A valid API key is needed.")
+(test-equal "api: no key is 401 in the problem format, with www-authenticate: Bearer"
+  (refusal 401 "Unauthorized" "unauthorized" unauthorized-detail "Bearer" #f)
+  (refusal-of "api:no-key"))
+(test-equal "api: a well-shaped key no row holds is 401, the same answer"
+  (refusal 401 "Unauthorized" "unauthorized" unauthorized-detail "Bearer" #f)
+  (refusal-of "api:unknown-key"))
+(test-equal "api: a revoked key is 401, the same answer"
+  (refusal 401 "Unauthorized" "unauthorized" unauthorized-detail "Bearer" #f)
+  (refusal-of "api:revoked-key"))
+(test-equal "api: the key that regenerated itself no longer opens: 401"
+  (refusal 401 "Unauthorized" "unauthorized" unauthorized-detail "Bearer" #f)
+  (refusal-of "api:old-secret"))
+
+(define invalid-detail "The request is not valid.")
+(test-equal "api: a limit of 0, a limit that is not a number, an after and an id that are no ids: 400"
+  (let ((e (refusal 400 "Bad Request" "invalid_request" invalid-detail #f #f)))
+    (list e e e e))
+  (map refusal-of '("api:bad-limit" "api:bad-limit-text" "api:bad-after" "api:bad-id")))
+
+(test-equal "api: an unknown route is 404 in the format"
+  (refusal 404 "Not Found" "not_found" "There is no such thing here." #f #f)
+  (refusal-of "api:no-route"))
+(test-equal "api: another account's key looks like no key: revoke and regenerate are 404"
+  (let ((e (refusal 404 "Not Found" "not_found" "There is no such thing here." #f #f)))
+    (list e e))
+  (map refusal-of '("api:other-revoke" "api:other-regenerate")))
+(test-equal "api: regenerating a sibling key is 403"
+  (refusal 403 "Forbidden" "forbidden" "A key can only regenerate itself." #f #f)
+  (refusal-of "api:sibling-regenerate"))
+(test-equal "api: a wrong method is 405 in the format, with allow"
+  (let ((e (refusal 405 "Method Not Allowed" "method_not_allowed"
+                    "That method is not allowed here." #f "GET, HEAD")))
+    (list e e))
+  (map refusal-of '("api:wrong-method" "api:wrong-method-keys")))
+
+(define key-members '("id" "name" "created" "last_used" "revoked"))
+(define (members j) (if (list? j) (map car j) j))
+(define (key-by-name items name)
+  (let loop ((is items))
+    (cond ((not (pair? is)) #f)
+          ((equal? (jget (car is) "name") name) (car is))
+          (else (loop (cdr is))))))
+(define (ok-json k)
+  (let ((r (obs k)))
+    (if (and (pair? r) (integer? (car r)))
+        (list (rsp-status r) (rsp-header r "content-type") (rsp-json r))
+        r)))
+(define (ids-of k) (let ((r (obs k))) (if (ok-obs? k) (map (lambda (i) (jget i "id")) (jitems (rsp-json r))) r)))
+(define id-a1 (id->string (car a-keys)))
+(define id-a2 (id->string (cadr a-keys)))
+(define id-a3 (id->string (caddr a-keys)))
+(define id-a4 (id->string (cadddr a-keys)))
+
+(test-equal "api: GET /v1/account answers who the key belongs to"
+  (list 200 "application/json"
+        (list (cons "id" (id->string account-a)) (cons "username" "ada")
+              (cons "email" "ada@example.com") (cons "created" 1700000000000)))
+  (ok-json "api:account"))
+
+(test-equal "api: GET /v1/keys lists the account's keys by id, none of another's, no more members than the five"
+  (list (list id-a1 id-a2 id-a3 id-a4) 'null
+        (list key-members key-members key-members key-members))
+  (let ((r (obs "api:keys")))
+    (if (ok-obs? "api:keys")
+        (list (ids-of "api:keys") (jget (rsp-json r) "next") (map members (jitems (rsp-json r))))
+        r)))
+
+(test-equal "api: another account's keys list is its own one key"
+  (list (id->string b-key)) (ids-of "api:b-keys"))
+
+(test-equal "api: limit and after page through: next is the last id shown, null at the end"
+  (list (list id-a1 id-a2) id-a2 (list id-a3 id-a4) 'null)
+  (let ((p1 (obs "api:keys-1")) (p2 (obs "api:keys-2")))
+    (if (and (ok-obs? "api:keys-1") (ok-obs? "api:keys-2"))
+        (list (ids-of "api:keys-1") (jget (rsp-json p1) "next")
+              (ids-of "api:keys-2") (jget (rsp-json p2) "next"))
+        (list p1 p2))))
+
+(test-equal "api: a limit over 100 is read as 100"
+  200 (let ((r (obs "api:keys-over"))) (if (ok-obs? "api:keys-over") (rsp-status r) r)))
+
+(test-equal "api: reading sets no last_used: after reads, every key's is null"
+  '(null null null null)
+  (let ((r (obs "api:keys")))
+    (if (ok-obs? "api:keys") (map (lambda (i) (jget i "last_used")) (jitems (rsp-json r))) r)))
+
+(test-equal "api: revoke answers the key with the time it was revoked, and again it answers the same"
+  '(#t #t #t)
+  (let ((a (obs "api:revoke")) (b (obs "api:revoke-again")))
+    (if (and (ok-obs? "api:revoke") (ok-obs? "api:revoke-again"))
+        (let ((t (jget (rsp-json a) "revoked")))
+          (list (and (= 200 (rsp-status a)) (equal? id-a3 (jget (rsp-json a) "id"))
+                     (equal? (members (rsp-json a)) key-members))
+                (and (integer? t) (> t 1700000000000))
+                (equal? t (jget (rsp-json b) "revoked"))))
+        (list a b))))
+
+(test-equal "api: the key that wrote has a last_used (a whole millisecond time); the one that only read has none"
+  '(#t null #t)
+  (let ((r (obs "api:keys-after")))
+    (if (ok-obs? "api:keys-after")
+        (let ((is (jitems (rsp-json r))))
+          (list (integer? (jget (key-by-name is "laptop") "last_used"))
+                (jget (key-by-name is "phone") "last_used")
+                (integer? (jget (key-by-name is "tablet") "revoked"))))
+        r)))
+
+(test-equal "api: regenerate answers the key and a new secret, once, with Cache-Control: no-store"
+  (list 200 "no-store" #t key-members id-a1)
+  (let ((r (obs "api:regenerate")))
+    (if (ok-obs? "api:regenerate")
+        (let ((k (jget (rsp-json r) "key")))
+          (list (rsp-status r) (rsp-header r "cache-control")
+                (and (string? k) (= (string-length k) 70) (starts-with? k "techo_"))
+                (filter (lambda (m) (not (equal? m "key"))) (members (rsp-json r)))
+                (jget (rsp-json r) "id")))
+        r)))
+
+;; hex-pairs : String -> (Listof String)    the 32 two-digit pairs after techo_
+(define (hex-pairs secret)
+  (let loop ((i 6) (acc '()))
+    (if (>= (+ i 2) (+ 1 (string-length secret)))
+        (reverse acc)
+        (loop (+ i 2) (cons (substring secret i (+ i 2)) acc)))))
+(define (distinct-count xs)
+  (let loop ((xs xs) (seen '()))
+    (cond ((null? xs) (length seen))
+          ((member (car xs) seen) (loop (cdr xs) seen))
+          (else (loop (cdr xs) (cons (car xs) seen))))))
+
+;; techo.sps hands the app chez-sodium's random-bytes. Nothing else holds
+;; that: a constant in its place gave every key one secret and passed.
+(test-equal "api: two regenerated secrets differ, are no secret the run began with, and each has many different bytes"
+  '(#t #t #t #t)
+  (let ((a (obs "api:new-secret")) (b (obs "api:new-secret-2")))
+    (if (and (string? a) (string? b) (= (string-length a) 70) (= (string-length b) 70))
+        (list (not (equal? a b))
+              (not (or (member a (list s-a1 s-a2 s-a3 s-a4 s-b1 s-unknown))
+                       (member b (list s-a1 s-a2 s-a3 s-a4 s-b1 s-unknown))))
+              (> (distinct-count (hex-pairs a)) 8)
+              (> (distinct-count (hex-pairs b)) 8))
+        (list a b))))
+
+;; techo.sps makes the reader from db-read. Made from db-write by mistake,
+;; this read would wait out the lock and answer 503.
+(test-equal "api: a read answers at once while another program holds the write lock"
+  '(200 #t)
+  (let ((r (obs "api:read-under-lock")) (ms (obs "api:read-under-lock-ms")))
+    (if (and (ok-obs? "api:read-under-lock") (number? ms))
+        (list (rsp-status r) (< ms 3000))
+        (list r ms))))
+
+(test-equal "api: the new secret works: it opens the same account"
+  (list 200 (id->string account-a))
+  (let ((r (obs "api:new-account")))
+    (if (ok-obs? "api:new-account") (list (rsp-status r) (jget (rsp-json r) "id")) r)))
+
+(test-equal "api: no list of keys, and no other answer, shows a key's hash or a secret"
+  '()
+  (filter (lambda (k) (let ((r (obs k)))
+                        (and (ok-obs? k) (not (equal? k "api:regenerate"))
+                             (exists (lambda (m) (member m '("key" "key_hash" "password_hash")))
+                                     (let ((m (members (rsp-json r)))) (if (list? m) m '()))))))
+          '("api:account" "api:keys" "api:keys-1" "api:revoke" "api:b-keys")))
+
+;; The forced 500, from a trigger this suite's own connection added while the
+;; server ran: user_version is unchanged, so the server did not notice.
+(test-equal "api: a forced failure inside a write is 500 in the format, for regenerate and for revoke"
+  (let ((e (refusal 500 "Internal Server Error" "internal" "Something went wrong on the server."
+                    #f #f)))
+    (list e e))
+  (map refusal-of '("api:forced-500" "api:forced-500-revoke")))
+
+(test-equal "api: after the trigger is dropped the same server writes again"
+  (list 200 id-a4 #t)
+  (let ((r (obs "api:after-trigger")))
+    (if (ok-obs? "api:after-trigger")
+        (list (rsp-status r) (jget (rsp-json r) "id") (integer? (jget (rsp-json r) "revoked")))
+        r)))
+
+(test-equal "api: SIGTERM ends the server with status 0"
+  0 (obs "api:exit"))
+
+;; The request log (D10): one line for each request, in order, with the
+;; status the client got, the account on those that had one.
+(test-equal "api log: one line for each request: method, path (no query), status, account (- when none)"
+  (reverse api-expect)
+  (let ((o (obs "api:out"))) (if (string? o) (map line-key (request-lines o)) o)))
+
+(test-equal "api log: every line has ending=written, whole-number ms, db_ms a number or -, and the client's address"
+  '()
+  (let ((o (obs "api:out")))
+    (if (string? o)
+        (filter
+         (lambda (l)
+           (not (and (equal? (field-of l "ending") "written")
+                     (string->number (or (field-of l "ms") "x"))
+                     (let ((d (field-of l "db_ms"))) (or (equal? d "-") (string->number (or d "x"))))
+                     (equal? (field-of l "address") "127.0.0.1"))))
+         (request-lines o))
+        o)))
+
+(test-equal "api log: a request the database did not see has db_ms - (no key, bad limit, no route, 405)"
+  '(#t #t #t #t #t)
+  (let ((o (obs "api:out")))
+    (if (string? o)
+        (map (lambda (path status)
+               (and (exists (lambda (l) (and (equal? (field-of l "path") path)
+                                             (equal? (field-of l "status") status)
+                                             (equal? (field-of l "db_ms") "-")))
+                            (request-lines o))
+                    #t))
+             '("/v1/account" "/v1/keys" "/v1/nothing" "/v1/account" "/v1/keys")
+             '("401" "400" "404" "405" "405"))
+        o)))
+
+(test-equal "api log: no line holds a query string, a header or a secret"
+  '()
+  (let ((o (obs "api:out")))
+    (if (string? o)
+        (filter (lambda (l) (or (contains? l "?") (contains? l "limit") (contains? l "uthorization")
+                                (contains? l "techo_") (contains? l "Bearer")))
+                (request-lines o))
+        o)))
+
+(test-equal "api: the forced failures leave a handler-failed line each, and the server's standard error is empty"
+  '(2 "")
+  (let ((o (obs "api:out")))
+    (if (string? o)
+        (list (length (filter (lambda (l) (and (starts-with? l "handler-failed ")
+                                               (contains? l "forced")))
+                              (split-lines o)))
+              (obs "api:err"))
+        o)))
+
+;; P1: no secret is kept or logged. The search itself is shown to find.
+(test-equal "P1: the search finds each needle's form in bytes that hold it, and none in bytes that do not"
+  '((#t #t #t #t) (#f #f #f #f))
+  (let* ((s (mk-secret 99))
+         (ns (needles-of s)))
+    (list (map (lambda (n) (bytes-contain? (bytevector-append (string->utf8 "xx") n (string->utf8 "yy")) n)) ns)
+          (map (lambda (n) (bytes-contain? (string->utf8 "nothing to see; techo_ and 00ff") n)) ns))))
+
+(test-equal "P1: the needles are the 70 characters, the 64 digits in both cases, and 32 raw bytes"
+  '(70 64 64 32)
+  (map bytevector-length (needles-of (mk-secret 1))))
+
+(test-equal "P1: the run presented or was given eight secrets, and the files searched are not empty"
+  '(8 #t #t #t)
+  (list (obs "api:secret-count")
+        (let ((h (obs "api:live-files"))) (and (pair? h) (> (bytevector-length (cdar h)) 0)))
+        (let ((o (obs "api:out"))) (and (string? o) (> (string-length o) 0)))
+        (= 4 (length (needles-of (mk-secret 1))))))
+
+(test-equal "P1: no secret is in the server's output or error, nor the database file or its -wal, while it ran or after"
+  '()
+  (obs "api:leaks"))
 
 (test-end "integration")
 

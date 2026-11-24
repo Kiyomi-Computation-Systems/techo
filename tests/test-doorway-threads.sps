@@ -538,10 +538,11 @@
 
 ;; moved -----------------------------------------------------------------------------
 
-;; a fourth migration, which the child's binary (the fixture's three) does not have
+;; one more migration, which the child's binary (the fixture's list) does not have
+(define extra-version (+ fixture-latest-version 1))
 (define longer-list
   (append fixture-migrations
-          (list (list 4 "extra" (list "CREATE TABLE extra (id INTEGER PRIMARY KEY) STRICT")))))
+          (list (list extra-version "extra" (list "CREATE TABLE extra (id INTEGER PRIMARY KEY) STRICT")))))
 
 ;; moved : String -> (List ...)
 (define (moved dir)
@@ -564,7 +565,9 @@
                   (map (lambda (r) (list (status-of r) (cadr r) (body-of r))) writes)
                   health
                   (count-of out "database moved")
-                  (count-of out "the file is at version 4 and this server expects 3")
+                  (count-of out (string-append "the file is at version " (number->string extra-version)
+                                               " and this server expects "
+                                               (number->string fixture-latest-version)))
                   status
                   (rows-of db))))))))
 

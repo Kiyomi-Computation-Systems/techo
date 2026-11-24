@@ -6,7 +6,9 @@ disagree, the record wins and this file gets fixed.
 
 ## Platform and stack
 
-- **Linux only.** CI runs on Linux; no macOS runner (ADR-0001, `AGENTS.md`).
+- **Linux only.** CI runs on Linux; no macOS runner (ADR-0001, `AGENTS.md`). The
+  Makefile's everyday targets also run on macOS, for development, tested by hand
+  (ADR-0001, amended 2026-11-24).
 - **Chez Scheme 10.4.1 or later, threaded** (ADR-0001).
 - **The stack is fixed:** circuit, chez-sqlite3, chez-curl, threading, SRFI-64,
   chez-sodium, unique-id. A new dependency needs a decision record (ADR-0001).
@@ -34,8 +36,12 @@ disagree, the record wins and this file gets fixed.
 ## The API
 
 - **REST with JSON.** A command is a `POST` to a sub-resource (ADR-0002).
-- **Every refusal uses the one error format** (ADR-0002).
-- **Every list is paged, with a server-side cap** (ADR-0002, ADR-0008).
+- **Every refusal uses the one error format:** RFC 9457 problem details with a `code`
+  member (ADR-0002, amended 2026-11-24). A handler refuses through `(techo errors)`.
+- **Every list is paged, with a server-side cap:** `limit` (50, at most 100) and
+  `after` (ADR-0002, amended; ADR-0008).
+- **A time in the API is whole milliseconds since 1970, UTC** (ADR-0002, amended).
+- **Routes live under `/v1`,** but `/health` (ADR-0002, amended).
 - **Every write to a node carries `If-Match`.** Stale answers 412, missing 428
   (ADR-0004).
 
@@ -100,6 +106,19 @@ disagree, the record wins and this file gets fixed.
   secret or a signature is compared with `constant-time-bytevector=?`, never
   `bytevector=?` (ADR-0006, amended 2026-11-23).
 - **Login is rate-limited before any hashing** (ADR-0006).
+- **A key is hashed on the loop's thread, and only its hash enters a job** (ADR-0006,
+  amended 2026-11-24).
+- **A route reaches the database only through `db-read-as` and `db-write-as`,** which
+  check the key in the request's own job. Only `techo.sps` names `db-read` and
+  `db-write` (ADR-0006, amended).
+- **A refusal leaves a job as `&refusal`,** which holds a code and an account id and
+  nothing of the request (ADR-0006, amended).
+- **A handler performs the command the key table's step names.** It decides no answer
+  on its own (ADR-0007; ADR-0006, amended).
+- **A read never writes `last_used`** (ADR-0006, amended).
+- **No key makes a key,** and a key regenerates only itself (ADR-0006, amended).
+- **The request log holds no query string, header or body** (ADR-0009, amended
+  2026-11-24).
 
 ## Operations
 
