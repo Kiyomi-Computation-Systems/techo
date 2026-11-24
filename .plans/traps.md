@@ -89,6 +89,89 @@ it.
   nothing.
 - **Rule:** kill by process id, from `pgrep` or `ps`.
 
+## A statement a job leaves open outlives its transaction
+
+- **Expected:** after `ROLLBACK` answers ok and `in-transaction?` says no, the
+  connection is clean for the next job.
+- **Happened:** a statement stepped once and never finished keeps its read snapshot.
+  Every later read on that connection saw the old rows, in and out of a transaction.
+  On a writer, every later `COMMIT` was refused as busy, "SQL statements in progress".
+- **See it again:** `prepare-statement` a `SELECT`, `step!` once, `ROLLBACK`, commit a row from another
+  connection, and count on the first. chez-sqlite3's traps record both halves.
+- **Rule:** a job gets the doorway's handle, never the connection (ADR-0013). The
+  handle's three procedures finish their statement on every way out.
+
+## SQLite can end a transaction and raise in the same call
+
+- **Expected:** a call that raises leaves the transaction as it was.
+- **Happened:** `INSERT OR ROLLBACK` on a conflict raised a constraint error with the
+  transaction already rolled back. A job that caught the raise and wrote on wrote in
+  autocommit: its second half was committed alone. A column declared `UNIQUE ON
+  CONFLICT ROLLBACK` does it with a plain `INSERT`, and so do an interrupted write
+  and a full disk.
+- **See it again:** `BEGIN IMMEDIATE`, insert A, `INSERT OR ROLLBACK` a duplicate
+  under a `guard`, insert B. Another connection sees B and not A.
+- **Rule:** look at `in-transaction?` on every way out of a call, a raise too. The
+  handle does (ADR-0013).
+
+## A `PRAGMA` run inside a transaction can outlive it
+
+- **Expected:** what a job does is undone by its `ROLLBACK`.
+- **Happened:** `PRAGMA query_only = 1`, `locking_mode = exclusive` and
+  `busy_timeout = 0` each stayed on the connection, and `user_version = 99` was
+  committed with the job. Every later write then failed, one of them as "busy".
+- **See it again:** `BEGIN IMMEDIATE`, `PRAGMA query_only = 1`, `ROLLBACK`, then
+  `BEGIN IMMEDIATE` again on the same connection: it raises `readonly`.
+- **`EXPLAIN` does not stop it.** SQLite applies a flag pragma while it prepares the
+  statement, so `EXPLAIN PRAGMA query_only = 1` sets the flag too.
+- **Rule:** a job runs no `PRAGMA`. The handle refuses the words a migration may not
+  begin with, `EXPLAIN` among them, before the statement runs.
+
+## A read-only connection that closes last leaves the `-wal`
+
+- **Expected:** when the last connection closes, SQLite checkpoints and removes the
+  `-wal` and `-shm` files.
+- **Happened:** only a read-write connection does that. With the writer closed first
+  and a reader last, both files stayed, at full size, until the next read-write open
+  and close. A read-only open also creates them when they are missing, and fails in
+  a directory it cannot write.
+- **See it again:** on a WAL file, open a read-write and a read-only connection,
+  write a row, close the read-write one, then the read-only one, and list the
+  directory.
+- **Rule:** readers stop before the writer. A test that looks for "no `-wal`" looks
+  before it opens the file again.
+
+## A read-write open of a file you may only read succeeds
+
+- **Expected:** opening a read-only file read-write fails.
+- **Happened:** SQLite fell back to a read-only connection without a word. `BEGIN
+  IMMEDIATE` succeeded on it too. Only the first write raised `readonly`.
+- **See it again:** `chmod 444` a database in a directory you can write, open it
+  read-write, `BEGIN IMMEDIATE`, then insert.
+- **Rule:** a connection that must write proves it at its set-up, with a write it
+  rolls back.
+
+## `exit` does not wait for threads
+
+- **Expected:** `(exit n)` on the main thread lets other threads finish, or at least
+  their tear-downs run.
+- **Happened:** the process ended at once with status n, two threads still running.
+  A worker's write would be cut and its connection never closed.
+- **See it again:** fork two threads that sleep, then `(exit 7)`: status 7, at once.
+- **Rule:** stop every worker before `exit`. `serve`'s loop calls `exit` only when its
+  table says "end".
+
+## Lines written from two threads run together
+
+- **Expected:** a line written to standard output from a worker thread arrives whole.
+- **Happened:** each `put-string` is whole, but a line built from several calls, or a
+  string and then `newline`, was cut by another thread's: about a third of 80,000
+  lines ran together.
+- **See it again:** four threads, each writing 20,000 lines to one port as a string
+  and then a `newline`. Count the lines longer than one line's text.
+- **Rule:** a log line is one `put-string`, newline included, and the server's lines
+  are written from the loop's thread.
+
 The siblings' traps apply wherever Techo touches the same ground. Read them there:
 
 - chez-sqlite3: `.plans/traps.md`

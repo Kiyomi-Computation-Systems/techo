@@ -16,8 +16,14 @@
         (techo-testing)
         (circuit)
         (circuit test)
+        (circuit worker)
+        (circuit json)
+        (circuit http-server)
+        (http-server testing)
         (jsonparse easy)
-        (techo app))
+        (techo app)
+        (techo doorway)
+        (only (migrations-fixture) fixture-migrations))
 
 (define runner (test-runner-simple))
 (test-runner-current runner)
@@ -53,7 +59,10 @@
              (header res "content-type")
              (string->json (body-text res)))))))
 
-(define app (attempt make-app))
+;; The app is made with a doorway that has no worker: no route uses it, so it
+;; must never be called. A /health that touched it would raise here.
+(define never-opened (make-doorway "/nonexistent/never.db" 1 fixture-migrations))
+(define app (attempt (lambda () (make-app never-opened))))
 
 (test-begin "app")
 
@@ -106,11 +115,90 @@
     (404 "application/json" (("error" . "not_found"))))
   (attempt
    (lambda ()
-     (let ((a (make-app)) (b (make-app)))
+     (let ((a (make-app never-opened)) (b (make-app never-opened)))
        (list (summary a 'GET "/health")
              (summary b 'GET "/health")
              (summary a 'GET "/health")
              (summary b 'GET "/other"))))))
+
+;; --- wrap-app --------------------------------------------------------------
+
+(define (unavailable-of reason expected found)
+  ((record-constructor (make-record-constructor-descriptor (record-type-descriptor &db-unavailable) #f #f))
+   reason expected found))
+(define worker-full-condition
+  ((record-constructor (make-record-constructor-descriptor (record-type-descriptor &worker-full) #f #f))))
+
+;; wrap-app has a wrap-timeout inside, which needs the server's coroutine, so
+;; each request goes through the server's own test host: bytes in, bytes out.
+
+;; unset : String -> #f
+(define (unset name) #f)
+
+;; wire-of : Handler -> String
+;; The raw response to GET /x on a test host serving HANDLER.
+(define (wire-of handler)
+  (let* ((host (make-test-host (circuit->handler handler unset) unset))
+         (c (test-host-connect! host)))
+    (test-client-send! c (string->utf8 "GET /x HTTP/1.1\r\nHost: x\r\n\r\n"))
+    (let ((rs (test-client-responses c)))
+      (if (= (length rs) 1)
+          (utf8->string (test-response-bytes (car rs)))
+          (list 'responses (length rs))))))
+
+;; status-line-of, has? : the answer's first line, and a substring test
+(define (status-line-of w)
+  (if (string? w) (car (lines-of w)) w))
+(define (lines-of s)
+  (let loop ((cs (string->list s)) (cur '()) (acc '()))
+    (cond ((null? cs) (reverse (cons (list->string (reverse cur)) acc)))
+          ((char=? (car cs) #\newline) (loop (cdr cs) '() (cons (list->string (reverse cur)) acc)))
+          ((char=? (car cs) #\return) (loop (cdr cs) cur acc))
+          (else (loop (cdr cs) (cons (car cs) cur) acc)))))
+(define (has? w line) (and (string? w) (member line (lines-of w)) #t))
+
+;; answer-of : (-> Any) (String -> Void) -> (List String Boolean Boolean)
+;; A handler that raises what THUNK makes, in wrap-app's stack: the status
+;; line, whether it has retry-after: 5, whether its body is empty.
+(define (answer-of thunk log)
+  (attempt
+   (lambda ()
+     (let ((w (wire-of (wrap-app (lambda (req) (raise (thunk))) log))))
+       (list (status-line-of w) (has? w "retry-after: 5") (has? w "Content-Length: 0"))))))
+
+(test-equal "wrap-app: a handler that raises &db-unavailable answers an empty 503 with retry-after: 5"
+  '("HTTP/1.1 503 Service Unavailable" #t #t)
+  (answer-of (lambda () (unavailable-of 'busy #f #f)) (lambda (line) #f)))
+
+(test-equal "wrap-app: a handler that raises &worker-full answers an empty 503 with retry-after: 5"
+  '("HTTP/1.1 503 Service Unavailable" #t #t)
+  (answer-of (lambda () worker-full-condition) (lambda (line) #f)))
+
+(test-equal "wrap-app: a handler that raises an error answers 500, not 503"
+  '("HTTP/1.1 500 Internal Server Error" #f #t)
+  (answer-of (lambda () (make-error)) (lambda (line) #f)))
+
+(test-equal "wrap-app: a handler that answers is passed through"
+  '("HTTP/1.1 200 OK" #f)
+  (attempt (lambda ()
+             (let ((w (wire-of (wrap-app (lambda (req) (make-json-res 200 '(("a" . "b"))))
+                                         (lambda (l) #f)))))
+               (list (status-line-of w) (has? w "retry-after: 5"))))))
+
+(test-equal "wrap-app: the log gets the moved line once, whole and with no newline, for two requests"
+  '(("HTTP/1.1 503 Service Unavailable" "HTTP/1.1 503 Service Unavailable")
+    ("database moved: the file is at version 4 and this server expects 3; a newer techo migrate ran beside it; database requests get 503 until the newer techo serves"))
+  (attempt
+   (lambda ()
+     (let* ((seen '())
+            (h (wrap-app (lambda (req) (raise (unavailable-of 'moved 3 4)))
+                         (lambda (line) (set! seen (cons line seen)))))
+            (a (status-line-of (wire-of h)))
+            (b (status-line-of (wire-of h))))
+       (list (list a b) seen)))))
+
+(test-equal "wrap-app: the request timeout is 10 seconds, a named constant"
+  10000 request-timeout-ms)
 
 (test-end "app")
 

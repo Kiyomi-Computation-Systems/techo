@@ -11,12 +11,14 @@
 ;;; nothing listens before the environment and the database are accepted.
 (import (rnrs)
         (only (chezscheme) getenv)
-        (only (circuit http-server) run-server http-server-config-error?)
+        (only (circuit http-server) run-server)
         (techo app)
         (techo cli)
         (techo config)
         (techo db)
+        (techo doorway)
         (techo migrations)
+        (techo serve)
         (techo version))
 
 ;; say : TextualOutputPort String ... -> Void
@@ -38,19 +40,6 @@
              (put-string (current-error-port) usage-text)
              (flush-output-port (current-error-port))
              (exit 2))))
-
-;; server-config-refusal : Condition -> String
-;; The server's message and the variables it names. Never a variable's
-;; value: only an irritant that is a CHEZ_HTTP_ name is repeated.
-(define (server-config-refusal e)
-  (let ((names (filter (lambda (x)
-                         (and (string? x)
-                              (>= (string-length x) 10)
-                              (string=? (substring x 0 10) "CHEZ_HTTP_")))
-                       (if (irritants-condition? e) (condition-irritants e) '()))))
-    (apply string-append
-           (if (message-condition? e) (condition-message e) "the server refused its settings")
-           (map (lambda (n) (string-append " (" n ")")) names))))
 
 ;; config! : -> Config
 ;; Techo's own settings. A refused environment prints the problems on standard
@@ -81,22 +70,24 @@
               (result->ending-lines result))
     (exit status)))
 
-;; serve! : -> [does not return until the server stops]
-;; Techo's settings, then the database check: a file that is not current and
-;; in WAL is refused on standard error and exits 1. Then the server starts.
+;; serve! : -> [does not return until the server has stopped]
+;; Techo's settings, then machine 3 (ADR-0013) in (techo serve): the database
+;; check, the write thread, the read threads, the server, and the stops in
+;; the reverse order. The loop decides nothing and calls no `exit`: this
+;; prints what it lists on standard error, then exits with its status (0, 1
+;; for a database refused or an error, 2 for settings the server refuses).
 ;; The server's host and port are chez-http-server's own variables,
-;; CHEZ_HTTP_HOST and CHEZ_HTTP_PORT, which run-server reads. A value it
-;; refuses is reported like one of Techo's own, and exits 2.
+;; CHEZ_HTTP_HOST and CHEZ_HTTP_PORT, which run-server reads.
 (define (serve!)
   (let* ((config (config!))
-         (verdict (check-db (config-db-path config) migrations)))
-    (unless (eq? verdict 'serve)
-      (say (current-error-port) "techo: " (caddr verdict))
-      (exit 1))
-    (guard (e ((http-server-config-error? e)
-               (say (current-error-port) "techo: " (server-config-refusal e))
-               (exit 2)))
-      (run-server (make-app)))))
+         (doorway (make-doorway (config-db-path config) (config-db-readers config)
+                                migrations)))
+    (let-values (((status prints)
+                  (serve-loop (config-db-path config) migrations doorway
+                              (lambda ()
+                                (run-server (wrap-app (make-app doorway) stdout-log!))))))
+      (print-serve-ends! (current-error-port) prints)
+      (exit status))))
 
 (let ((command (parse-command (cdr (command-line)))))
   (cond ((eq? command 'serve) (serve!))

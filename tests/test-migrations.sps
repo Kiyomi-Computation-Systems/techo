@@ -830,7 +830,7 @@
                                                          (string->list word)))
                                                    ";")))))))))
  '("BEGIN" "COMMIT" "END" "ROLLBACK" "SAVEPOINT" "RELEASE" "ATTACH" "DETACH"
-   "VACUUM" "PRAGMA"))
+   "VACUUM" "PRAGMA" "EXPLAIN"))
 
 (test-equal "check-migrations: a comment in front does not hide the word"
   '((forbidden-statement 2 1 "COMMIT") (forbidden-statement 2 2 "BEGIN"))

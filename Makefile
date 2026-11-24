@@ -64,12 +64,12 @@ GOAL = $(strip $(if $(MAKECMDGOALS),$(MAKECMDGOALS),$@))
 # submodule is shallow and brings no tags, so a tag would not resolve there.
 # Moving a pin is its own commit, with the reason (ADR-0011); `make
 # check-pins` fails unless each gitlink is its PIN.
-#   circuit           442dd85 (no release yet): hands on await-outside
+#   circuit           b7e6f95 (no release yet): await-outside, and (circuit worker)
 #   chez-sqlite3      v0.1.1
 #   chez-curl         v0.1.2
 #   chez-http-server  v0.12.0, until the index has it (ADR-0011, amended)
 SUBMODULE_PINS := \
-  circuit:442dd85123022e294fadebaa50febf31ca5dd562 \
+  circuit:b7e6f95951a2a684e16d9f1fce9525d5765105a2 \
   chez-sqlite3:960d9f0028ce09b51019cd7050d5833af30f98e0 \
   chez-curl:15197e8a699c4b2d6c12e2b62c7dc76be7729780 \
   chez-http-server:bba2ba6fea252996d31bffc6255d8be36e9bdfd2
@@ -461,14 +461,18 @@ check-suites: deps ## Fail unless every tests/test-*.sps ends with the shared ex
 run: deps ## Run techo on the library path: make run ARGS="serve" (ARGS="help" lists the commands)
 	@$(CHEZ) --libdirs $(LIBDIRS) --program techo.sps $(ARGS)
 
-# Renders the migrate machines' diagrams from their tables into
-# .plans/machines/migrate.md (scripts/render-machines.sps prints the text).
-# tests/test-migrations.sps fails when the file differs.
-machines: deps ## Write .plans/machines/migrate.md from the migrate tables
+# Renders the machines' diagrams from their tables into
+# .plans/machines/migrate.md and .plans/machines/doorway.md
+# (scripts/render-machines.sps prints the text of the one it is named, the
+# migrate one by default). tests/test-migrations.sps and
+# tests/test-transaction.sps fail when a file differs.
+machines: deps ## Write .plans/machines/migrate.md and doorway.md from the tables
 	@scripts/require-tools "$(GOAL)" $(CHEZ)
 	@mkdir -p .plans/machines
-	@$(CHEZ) --libdirs $(LIBDIRS) --program scripts/render-machines.sps > .plans/machines/migrate.md.tmp
-	@mv .plans/machines/migrate.md.tmp .plans/machines/migrate.md
+	@for m in migrate doorway; do \
+	  $(CHEZ) --libdirs $(LIBDIRS) --program scripts/render-machines.sps $$m > .plans/machines/$$m.md.tmp || exit 1; \
+	  mv .plans/machines/$$m.md.tmp .plans/machines/$$m.md; \
+	done
 
 # Every action a workflow uses is pinned to a full commit SHA, with its tag in
 # a comment (scripts/ci/check-action-pins.sh).

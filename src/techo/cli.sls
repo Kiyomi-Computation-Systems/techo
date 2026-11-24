@@ -21,7 +21,7 @@
      "\n"
      "commands:\n"
      "  serve     run the server\n"
-     "  migrate   create or update the database\n"
+     "  migrate   create or update the database; stop the server first\n"
      "  version   print the version\n"))
 
   ;; parse-command : (Listof String) -> Command

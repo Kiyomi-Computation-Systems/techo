@@ -105,24 +105,52 @@
   #t
   (attempt (lambda () (string? usage-text))))
 
-(test-equal "usage-text lists serve on a line of its own"
-  #t
-  (attempt (lambda () (and (exists (lambda (l) (contains? l "serve")) (lines usage-text)) #t))))
+;; starts-with? : String String -> Boolean
+(define (starts-with? s prefix)
+  (and (>= (string-length s) (string-length prefix))
+       (string=? (substring s 0 (string-length prefix)) prefix)))
 
-(test-equal "usage-text lists version on a line of its own"
-  #t
-  (attempt (lambda () (and (exists (lambda (l) (contains? l "version")) (lines usage-text)) #t))))
+;; line-for : String -> (U String #f)
+;; The usage line that BEGINS with "  WORD " (the command's own line), not one
+;; that merely mentions the word.
+(define (line-for word)
+  (let ((hits (filter (lambda (l) (starts-with? l (string-append "  " word " ")))
+                      (lines usage-text))))
+    (and (= (length hits) 1) (car hits))))
 
-(test-equal "usage-text lists migrate on a line of its own"
+(test-equal "usage-text has one line that begins with the serve command"
   #t
-  (attempt (lambda () (and (exists (lambda (l) (contains? l "migrate")) (lines usage-text)) #t))))
+  (attempt (lambda () (and (line-for "serve") #t))))
+
+(test-equal "usage-text has one line that begins with the version command"
+  #t
+  (attempt (lambda () (and (line-for "version") #t))))
+
+(test-equal "usage-text has one line that begins with the migrate command"
+  #t
+  (attempt (lambda () (and (line-for "migrate") #t))))
 
 (test-equal "usage-text: serve and version are different lines"
   #t
-  (attempt
-   (lambda ()
-     (let ((ls (lines usage-text)))
-       (not (exists (lambda (l) (and (contains? l "serve") (contains? l "version"))) ls))))))
+  (attempt (lambda () (not (equal? (line-for "serve") (line-for "version"))))))
+
+(test-equal "usage-text: the serve line does not mention the other commands"
+  #f
+  (attempt (lambda ()
+             (let ((l (line-for "serve")))
+               (or (not l) (contains? l "migrate") (contains? l "version"))))))
+
+(test-equal "usage-text: the migrate line tells you to stop the server first (D6)"
+  #t
+  (attempt (lambda ()
+             (let ((l (line-for "migrate")))
+               (and l (contains? l "stop the server first"))))))
+
+(test-equal "usage-text: the migrate line is one short line"
+  #t
+  (attempt (lambda ()
+             (let ((l (line-for "migrate")))
+               (and l (< (string-length l) 80))))))
 
 (test-end "cli")
 

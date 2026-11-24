@@ -101,3 +101,15 @@ Status: accepted (owner, 2026-11-23, answering the slice 2 plan's D1)
 - **"2b" and not a renumbering,** because the records name slices 3 to 9 by number.
 - **The first amendment's "slice 2 does not start until `await-outside` has landed"**
   now binds slice 2b. `await-outside` has landed.
+
+## Amendment, 2026-11-23: the doorway is decided in ADR-0013
+
+Status: accepted (owner, 2026-11-23, answering the slice 2b plan)
+
+- [ADR-0013](0013-the-doorway-is-two-workers-and-a-job-is-one-transaction-run-by-a-table.md)
+  replaces point 1, changes points 2 and 5, and settles the first amendment's open
+  list. It says which, by name.
+- **The write worker's tear-down closes and does not checkpoint by hand.** The close
+  of the last read-write connection checkpoints (probed).
+- Points 3, 4, 6 and 7 stand. Point 7, the password hash on the loop, is slice 3's to
+  revisit.

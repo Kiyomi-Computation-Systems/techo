@@ -83,3 +83,14 @@ Plan: [the slice 2 plan](../2026-11-23-slice-2-migrations.md)
   machine.
 - A restored `VACUUM INTO` backup is not in WAL. `techo migrate` converts it, so
   `migrate` is run after a restore.
+
+## Amendment, 2026-11-23: what holds when `migrate` runs beside a server
+
+Status: accepted (owner, 2026-11-23, answering the slice 2b plan's D6)
+
+- **"Stop the server before migrating" stays the rule.** Nothing stops a `migrate`
+  that breaks it.
+- **What holds then** is ADR-0013's item 6: every job of the server reads
+  `user_version` first, inside its transaction, and does not run if it has moved.
+- **`forbidden-statement?` is exported** from `(techo migrations)`. The doorway's
+  handle refuses the same first words a migration may not use.

@@ -21,5 +21,16 @@ Each release's changes. Dates are UTC.
 - `techo serve` checks the database before it listens. It refuses, with exit
   status 1, a file that is missing, behind, newer, not Techo's, or not in WAL
   mode.
-- `make machines` writes the migrate state machines' diagrams from their
-  tables.
+- `make machines` writes the state machines' diagrams from their tables.
+- The database doorway: one thread writes and `TECHO_DB_READERS` threads read
+  (default 2), so a slow write will not hold up a read or `/health`. No
+  route uses the database yet.
+- `techo serve` refuses a database file it may not write, and exits 1 on a
+  port in use (it was 255).
+- `techo serve` closes the database when it stops, readers first.
+- A server whose database was migrated under it answers 503 to database
+  requests and says why once. `docs/running.md` has an "Upgrading" section.
+
+### Changed
+
+- circuit moves to b7e6f95, which adds its worker.

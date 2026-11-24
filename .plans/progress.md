@@ -9,7 +9,7 @@ close-out under **Close-outs**, newest first.
 - **The outline is merged**, squashed from
   [PR #1](https://github.com/Kiyomi-Computation-Systems/techo/pull/1) on 2026-11-22
   (4b06708). It is [outline.md](outline.md).
-- **Twelve decisions are recorded**, ADR-0001 to ADR-0012, in [decisions/](decisions/),
+- **Thirteen decisions are recorded**, ADR-0001 to ADR-0013, in [decisions/](decisions/),
   with the rules they make in [global-constraints.md](global-constraints.md).
 - **Slice 1 is merged**, squashed from
   [PR #2](https://github.com/Kiyomi-Computation-Systems/techo/pull/2) on 2026-11-22
@@ -23,12 +23,13 @@ close-out under **Close-outs**, newest first.
   `techo migrate`, `serve`'s database check, and the migrate state machine verified in six layers
   ([the plan](2026-11-23-slice-2-migrations.md), ADR-0012). No table yet:
   [schema.md](schema.md) sketches them.
-- **Slice 2b, the doorway, waits for circuit's worker**, the third item of
-  [circuit issue 53](https://github.com/Kiyomi-Computation-Systems/circuit/issues/53)
-  ([the brief](briefs/circuit-worker.md)). Its design is merged there
-  ([circuit PR 55](https://github.com/Kiyomi-Computation-Systems/circuit/pull/55),
-  06f1894, with its ADR-0013). circuit builds it in three slices, and Techo needs the
-  second, which has `make-worker` and `worker-call` (ADR-0008, amended 2026-11-23).
+- **Slice 2b, the doorway, is merged**, squashed from
+  [PR #7](https://github.com/Kiyomi-Computation-Systems/techo/pull/7) on 2026-11-24:
+  one write thread and `TECHO_DB_READERS` read threads on circuit's worker, each job
+  one transaction run by a table, through a handle
+  ([the plan](2026-11-23-slice-2b-doorway.md), ADR-0013). No route uses it yet.
+- **circuit is pinned at b7e6f95,** its W2, which has the worker. Its W3 (a39346c,
+  2026-11-24) adds only docs and an example: the pin has not moved to it.
 - **`techo user add` moved to slice 3** (owner, 2026-11-22).
 - **ADR-0006's amendment is accepted** (owner, 2026-11-23): a key is looked up by its
   BLAKE2b hash.
@@ -37,13 +38,23 @@ close-out under **Close-outs**, newest first.
 
 ## Next
 
-Plan slice 2b against circuit's merged worker design, once
-circuit's shell slice, W2, lands. The plan starts from ADR-0008's amendments, the
-brief's §9 and §10, and the slice 2 plan's "For slice 2b".
+Slice 3, accounts, which waits on chez-sodium M3 and brings the
+first table, the first route through the doorway and the first request log.
 
 **Watch for:** the Akku index gaining chez-http-server 0.12.0 and a chez-websocket
 that admits it. That ends the server's submodule (ADR-0011, amended 2026-11-23).
 Nothing fails when it happens.
+
+**Carry into slice 3** (asked for by the owner, 2026-11-24, from a fresh clone on macOS):
+
+- **A make command that loads the submodules.** `make deps` on a fresh clone only says
+  to run `git submodule update --init`. Add a target that runs it (on the host: the
+  container has no git), and name that target in the message.
+- **The Makefile supports macOS for development** (owner, 2026-11-24). Today
+  `make deps` fails there with `mv: illegal option -- T`: `mv -T` and `ln -sT` are GNU
+  only, and the Makefile uses them at the `deps` link step and the libuv step. The
+  owner tests on the Mac by hand now and then. No macOS CI runner: CI stays Linux only.
+- **Move the circuit pin to `a39346c`** (W3, docs only), as its own commit.
 
 ## Slices
 
@@ -51,7 +62,7 @@ Nothing fails when it happens.
 |---|---|---|---|
 | 1 | Skeleton, health endpoint, loop-stall spike | merged (PR #2) | |
 | 2 | Migrations, the CLI's `migrate`, `serve`'s check | merged (PR #6) | |
-| 2b | The database doorway: write and read workers | not planned | circuit issue 53's worker, W2 |
+| 2b | The database doorway: write and read workers | merged (PR #7) | |
 | 3 | Accounts, `techo user add`, login, API keys | not planned | chez-sodium M3 |
 | 4 | Node create, read, update; revisions; `If-Match` | not planned | unique-id |
 | 5 | The tree and move; links | not planned | |
@@ -71,7 +82,7 @@ own `.plans/` is the truth from then on.**
 | chez-sodium | `../chez-sodium` | Repository made; its brief under adversarial review |
 | unique-id | `../unique-id` | v0.1.0 released (2026-11-23, e0ed128); not pinned here yet: slice 4 takes it |
 | chez-http-server: `await-outside` | `../chez-http-server` | Released in v0.12.0 (bba2ba6); not on the Akku index yet |
-| circuit: the worker | `../circuit` | Issue 53: items 1 and 2 merged (442dd85); the worker's design is merged (06f1894); W1, the machine, is next, then W2, the shell |
+| circuit: the worker | `../circuit` | Issue 53 done: W2, the shell (b7e6f95, pinned here); W3, the docs (a39346c, 2026-11-24) |
 
 ## Open questions
 
@@ -84,8 +95,52 @@ From [outline.md](outline.md) §14, each for the slice named:
 | A Contact's first fields, exactly | 6 |
 | The login rate limit's numbers | 3 |
 | Is an account's id a UUID or an integer? ([schema.md](schema.md)) | 3 |
+| Does password hashing go to a worker of its own? (ADR-0013) | 3 |
+| One write job a request, so that a 503 is a "no" for the whole request? | 3 |
+| May two `serve` processes share one file? Nothing stops them today. | 3 |
+| The container's stop grace (30 s) and a check that asks more than `/health` | 9 |
 
 ## Close-outs
+
+### Slice 2b: the doorway (PR #7, 2026-11-24)
+
+- **Built:** `(techo transaction)`, `(techo doorway)` and `(techo serve)`;
+  `TECHO_DB_READERS`; `serve` opening and stopping the workers by a table; six new
+  suites, fifteen in all; ADR-0013; the "Upgrading" section of `docs/running.md`.
+- **Decided on the way:** D1 to D11 of the plan, all as recommended. A job gets a
+  handle, never the connection. Every job checks the file's version first. A
+  connection is never reopened. The writer's tear-down only closes.
+- **Verified:** every `make` check on the final tree. Nine model configurations, up
+  to 325,355 worlds each, with T1, T2, T4 to T6 and T8 to T10 holding. 921 traces and
+  17,876 steps replayed on real SQLite, 94% of them real. Real threads and a real
+  server: 1,000 writes each read back, a read during a held write, a full queue,
+  `SIGTERM` idle and mid-write, `kill -9` mid-write, a `migrate` beside the server.
+- **Not verified:** CI, until the pull request runs it. A signal in the 70 ms
+  between the workers opening and the server listening. Nine table rows on real
+  SQLite: they are reached only by injection, since SQLite cannot be made to fail a
+  plain `BEGIN`, a version read, a `ROLLBACK` or a close. That SQLite is busy nowhere
+  but at `BEGIN IMMEDIATE`.
+- **Left for later:**
+  - What the third review recorded and did not fix (the plan's last section).
+  - Two places where the model is wrong off the real tables' paths, pinned as
+    expected failures in the replay suite. The model is the one to change.
+  - Keeping `migrate` out by a lock, and exiting on "moved" (ADR-0013).
+  - A count of unfinished statements from chez-sqlite3, as a second guard.
+  - Slice 2's "nothing stops `migrate` beside a running server" is now detected, not
+    prevented.
+- **Found on the way** (each in [traps.md](traps.md)):
+  - A statement a job leaves open outlives its transaction.
+  - SQLite can end a transaction and raise in the same call.
+  - A `PRAGMA` run inside a transaction can outlive it, and `EXPLAIN` does not stop
+    one.
+  - A read-only connection that closes last leaves the `-wal`.
+  - `exit` does not wait for threads.
+  - Lines written from two threads run together.
+- **What each review caught:** the first, that a dropped statement survives the
+  rollback, which made the handle. The second, that the handle's check missed a call
+  that raises after SQLite ended the transaction. The third, `EXPLAIN PRAGMA`, and a
+  write thread on a file it may not write. Each was in a part the review before it
+  had caused to be written.
 
 ### Slice 2: migrations (PR #6, 2026-11-23)
 
