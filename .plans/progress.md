@@ -9,7 +9,7 @@ close-out under **Close-outs**, newest first.
 - **The outline is merged**, squashed from
   [PR #1](https://github.com/Kiyomi-Computation-Systems/techo/pull/1) on 2026-11-22
   (4b06708). It is [outline.md](outline.md).
-- **Twelve decisions are recorded**, ADR-0001 to ADR-0012, in [decisions/](decisions/),
+- **Thirteen decisions are recorded**, ADR-0001 to ADR-0013, in [decisions/](decisions/),
   with the rules they make in [global-constraints.md](global-constraints.md).
 - **Slice 1 is merged**, squashed from
   [PR #2](https://github.com/Kiyomi-Computation-Systems/techo/pull/2) on 2026-11-22
@@ -23,7 +23,8 @@ close-out under **Close-outs**, newest first.
   `techo migrate`, `serve`'s database check, and the migrate state machine verified in six layers
   ([the plan](2026-11-23-slice-2-migrations.md), ADR-0012). No table yet:
   [schema.md](schema.md) sketches them.
-- **Slice 2b, the doorway, is built** on branch `slice-2b-doorway`, not yet merged:
+- **Slice 2b, the doorway, is merged**, squashed from
+  [PR #7](https://github.com/Kiyomi-Computation-Systems/techo/pull/7) on 2026-11-24:
   one write thread and `TECHO_DB_READERS` read threads on circuit's worker, each job
   one transaction run by a table, through a handle
   ([the plan](2026-11-23-slice-2b-doorway.md), ADR-0013). No route uses it yet.
@@ -37,12 +38,23 @@ close-out under **Close-outs**, newest first.
 
 ## Next
 
-Merge slice 2b. Then slice 3, accounts, which waits on chez-sodium M3 and brings the
+Slice 3, accounts, which waits on chez-sodium M3 and brings the
 first table, the first route through the doorway and the first request log.
 
 **Watch for:** the Akku index gaining chez-http-server 0.12.0 and a chez-websocket
 that admits it. That ends the server's submodule (ADR-0011, amended 2026-11-23).
 Nothing fails when it happens.
+
+**Carry into slice 3** (asked for by the owner, 2026-11-24, from a fresh clone on macOS):
+
+- **A make command that loads the submodules.** `make deps` on a fresh clone only says
+  to run `git submodule update --init`. Add a target that runs it (on the host: the
+  container has no git), and name that target in the message.
+- **The Makefile supports macOS for development** (owner, 2026-11-24). Today
+  `make deps` fails there with `mv: illegal option -- T`: `mv -T` and `ln -sT` are GNU
+  only, and the Makefile uses them at the `deps` link step and the libuv step. The
+  owner tests on the Mac by hand now and then. No macOS CI runner: CI stays Linux only.
+- **Move the circuit pin to `a39346c`** (W3, docs only), as its own commit.
 
 ## Slices
 
@@ -50,7 +62,7 @@ Nothing fails when it happens.
 |---|---|---|---|
 | 1 | Skeleton, health endpoint, loop-stall spike | merged (PR #2) | |
 | 2 | Migrations, the CLI's `migrate`, `serve`'s check | merged (PR #6) | |
-| 2b | The database doorway: write and read workers | built, not merged | |
+| 2b | The database doorway: write and read workers | merged (PR #7) | |
 | 3 | Accounts, `techo user add`, login, API keys | not planned | chez-sodium M3 |
 | 4 | Node create, read, update; revisions; `If-Match` | not planned | unique-id |
 | 5 | The tree and move; links | not planned | |
@@ -90,7 +102,7 @@ From [outline.md](outline.md) §14, each for the slice named:
 
 ## Close-outs
 
-### Slice 2b: the doorway (built 2026-11-23, not yet merged)
+### Slice 2b: the doorway (PR #7, 2026-11-24)
 
 - **Built:** `(techo transaction)`, `(techo doorway)` and `(techo serve)`;
   `TECHO_DB_READERS`; `serve` opening and stopping the workers by a table; six new
