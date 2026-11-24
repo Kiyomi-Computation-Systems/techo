@@ -49,7 +49,7 @@
 ;;;   IMMEDIATE or outside any migration names #f.
 (library (techo migrations)
   (export techo-application-id migrations latest-version check-migrations
-          facts-sql classify facts-wal?
+          facts-sql classify facts-wal? forbidden-statement?
           state-kind run-rows check-rows run-start check-start
           event-kind check-event-kind make-stepper run-step check-step
           run-cant-happen check-cant-happen
@@ -124,7 +124,16 @@
 
   (define forbidden-words
     '("BEGIN" "COMMIT" "END" "ROLLBACK" "SAVEPOINT" "RELEASE" "ATTACH"
-      "DETACH" "VACUUM" "PRAGMA"))
+      "DETACH" "VACUUM" "PRAGMA"
+      ;; SQLite applies a flag pragma while it prepares the statement, so an
+      ;; EXPLAIN in front does not stop one taking effect (probed).
+      "EXPLAIN"))
+
+  ;; forbidden-statement? : String -> Boolean
+  ;; True when the statement's first word, read after whitespace and SQL
+  ;; comments as `first-word` does, is one of `forbidden-words`.
+  (define (forbidden-statement? s)
+    (if (member (first-word s) forbidden-words) #t #f))
 
   ;; well-formed? : Any -> Boolean
   (define (well-formed? m)

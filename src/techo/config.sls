@@ -6,11 +6,11 @@
 ;;; variable is one row of `variables`: its name and a checker. Adding a
 ;;; variable is adding a row and a field.
 (library (techo config)
-  (export read-config config? config-db-path problem->string)
+  (export read-config config? config-db-path config-db-readers problem->string)
   (import (rnrs))
 
   (define-record-type config
-    (fields db-path))
+    (fields db-path db-readers))
 
   ;; check-db-path : (U String #f) -> (U Symbol #f)
   ;; The reason VALUE is refused, or #f when it is good.
@@ -25,9 +25,27 @@
            'names-a-directory)
           (else #f)))
 
-  ;; variables : (Listof (Pairof String (-> (U String #f) (U Symbol #f))))
+  ;; readers-of : (U String #f) -> (U Natural #f)
+  ;; The number VALUE writes in decimal digits (ASCII 0 to 9, at least one),
+  ;; 2 when unset, else #f. Not yet range-checked.
+  (define (readers-of value)
+    (cond ((not value) 2)
+          ((and (positive? (string-length value))
+                (for-all (lambda (c) (char<=? #\0 c #\9)) (string->list value)))
+           (string->number value 10))
+          (else #f)))
+
+  ;; check-db-readers : (U String #f) -> (U Symbol #f)
+  (define (check-db-readers value)
+    (let ((n (readers-of value)))
+      (if (and n (<= 1 n 16)) #f 'not-1-to-16)))
+
+  ;; variables : (Listof (List String Checker Reader))
+  ;; A row is the variable's name, its checker (the reason it is refused, or
+  ;; #f) and its reader (the field's value, once the checker passed).
   (define variables
-    (list (cons "TECHO_DB_PATH" check-db-path)))
+    (list (list "TECHO_DB_PATH" check-db-path (lambda (v) v))
+          (list "TECHO_DB_READERS" check-db-readers readers-of)))
 
   ;; read-config : (String -> (U String #f)) -> (values (U Config #f) (Listof Problem))
   ;; Problem is (Pairof String Symbol): the variable's name and why it is refused.
@@ -38,13 +56,14 @@
             (let loop ((rows variables) (vals values-read) (acc '()))
               (if (null? rows)
                   (reverse acc)
-                  (let ((reason ((cdar rows) (car vals))))
+                  (let ((reason ((cadar rows) (car vals))))
                     (loop (cdr rows) (cdr vals)
                           (if reason
                               (cons (cons (caar rows) reason) acc)
                               acc)))))))
       (if (null? problems)
-          (values (make-config (car values-read)) '())
+          (values (apply make-config
+                 (map (lambda (row v) ((caddr row) v)) variables values-read)) '())
           (values #f problems))))
 
   ;; config? : Any -> Boolean
@@ -52,6 +71,10 @@
 
   ;; config-db-path : Config -> String
   ;; (config-db-path is the record accessor for TECHO_DB_PATH.)
+
+  ;; config-db-readers : Config -> Natural
+  ;; (config-db-readers is the record accessor for TECHO_DB_READERS: 1 to 16,
+  ;; 2 when unset.)
 
   ;; problem->string : Problem -> String
   ;; One line for a person, naming the variable, never its value.
@@ -65,5 +88,7 @@
          (string-append name " must be an absolute path (start with /)"))
         ((names-a-directory)
          (string-append name " must name a file (it ends with /)"))
+        ((not-1-to-16)
+         (string-append name " must be a whole number from 1 to 16"))
         (else (assertion-violation 'problem->string "unknown reason" reason)))))
 )

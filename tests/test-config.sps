@@ -88,8 +88,8 @@
   '(("TECHO_DB_PATH" . not-absolute))
   (run-problems (env '(("TECHO_DB_PATH" . "./techo.db")))))
 
-(test-equal "lookup: asked for the variable by its name, once"
-  '("TECHO_DB_PATH")
+(test-equal "lookup: asked for each variable by its name, once"
+  '("TECHO_DB_READERS" "TECHO_DB_PATH")
   (let ((asked '()))
     (attempt
      (lambda ()
@@ -133,6 +133,55 @@
             (#t (list 'raised (describe e))))
     (problem->string '("TECHO_DB_PATH" . bogus))
     'no-raise))
+
+;; TECHO_DB_READERS: unset is 2; a whole number 1 to 16 in decimal digits.
+(define db-path-row '("TECHO_DB_PATH" . "/a/b"))
+
+(test-equal "readers: unset gives 2"
+  2
+  (attempt (lambda () (config-db-readers (car (run (env (list db-path-row))))))))
+
+(test-equal "readers: 1 is the lowest"
+  1
+  (attempt (lambda ()
+    (config-db-readers (car (run (env (list db-path-row '("TECHO_DB_READERS" . "1")))))))))
+
+(test-equal "readers: 16 is the highest"
+  16
+  (attempt (lambda ()
+    (config-db-readers (car (run (env (list db-path-row '("TECHO_DB_READERS" . "16")))))))))
+
+(test-equal "readers: 7"
+  7
+  (attempt (lambda ()
+    (config-db-readers (car (run (env (list db-path-row '("TECHO_DB_READERS" . "7")))))))))
+
+(let loop ((bad '("0" "17" "" "-1" "+2" "2.0" "1e1" "two" " 2" "2 " "0x10" "007x" "１" "99999999999999999999")))
+  (unless (null? bad)
+    (test-equal (string-append "readers: " (call-with-string-output-port (lambda (p) (write (car bad) p))) " is refused")
+      '(("TECHO_DB_READERS" . not-1-to-16))
+      (run-problems (env (list db-path-row (cons "TECHO_DB_READERS" (car bad))))))
+    (loop (cdr bad))))
+
+(test-equal "readers: leading zeros in decimal digits are a whole number"
+  3
+  (attempt (lambda ()
+    (config-db-readers (car (run (env (list db-path-row '("TECHO_DB_READERS" . "03")))))))))
+
+(test-equal "readers: a bad one and a bad path are both reported, in table order"
+  '(("TECHO_DB_PATH" . missing) ("TECHO_DB_READERS" . not-1-to-16))
+  (run-problems (env '(("TECHO_DB_READERS" . "x")))))
+
+(test-equal "problem->string: readers names the variable"
+  "TECHO_DB_READERS must be a whole number from 1 to 16"
+  (attempt (lambda () (problem->string '("TECHO_DB_READERS" . not-1-to-16)))))
+
+(test-equal "problem->string: readers never includes the value"
+  '(#f)
+  (attempt
+   (lambda ()
+     (map (lambda (p) (contains? (problem->string p) "hunter2"))
+          (cadr (run (env (list db-path-row '("TECHO_DB_READERS" . "hunter2")))))))))
 
 (test-end "config")
 

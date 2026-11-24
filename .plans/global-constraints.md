@@ -54,9 +54,23 @@ disagree, the record wins and this file gets fixed.
 
 ## The database
 
-- **One doorway.** A handler reaches SQLite only through it (ADR-0008).
-- **Nothing waits inside the doorway's closure:** no `await`, no `sleep-ms`, no body
-  read. Read the request first (ADR-0008).
+- **One doorway.** A handler reaches SQLite only through `db-write` and `db-read`
+  (ADR-0008, ADR-0013).
+- **A job is one transaction, and the doorway owns it.** A job never runs `BEGIN`,
+  `COMMIT`, `ROLLBACK`, a savepoint or a `PRAGMA` (ADR-0013).
+- **A job sees a handle, never the connection** (ADR-0013).
+- **A request that writes and then reads its own change does both in one write job**
+  (ADR-0013).
+- **Nothing waits inside a job:** no `await`, no `sleep-ms`, no body read. Read the
+  request first. A job never calls `exit` (ADR-0008, ADR-0013).
+- **A job is handed plain data, never a parameter** (ADR-0013).
+- **A job changes no schema,** temporary objects included: a temporary trigger stays
+  on the connection for every later job (ADR-0013, probed by its closing review).
+- **Every job checks the file's version first.** It is what holds when someone
+  migrates beside a running server (ADR-0013).
+- **A 503 from the database is a "no". A 500 or no answer to a write is a "maybe"**
+  (ADR-0008, ADR-0013).
+- **Readers stop before the writer** (ADR-0013).
 - **WAL mode, foreign keys on, a busy timeout set** (ADR-0008, ADR-0009). `migrate`'s
   connection alone has foreign keys off, and checks them before each commit
   (ADR-0012).
@@ -73,13 +87,14 @@ disagree, the record wins and this file gets fixed.
   since 1970, UTC; JSON as text with a `json_valid` check; a `CREATE INDEX` on an owner-scoped
   table begins with the owner; foreign keys declared (ADR-0012).
 - **A file that will be refused is opened only read-only** (ADR-0012).
-- **`serve` starts only on a current file in WAL.** Stop the server before migrating
-  (ADR-0012).
+- **`serve` starts only on a current file in WAL.** Stop the server before migrating,
+  and before a restore (ADR-0012, ADR-0013).
 
 ## Secrets
 
 - **A password is hashed with argon2id.** It is never logged, and never put in a
-  condition's message (ADR-0006).
+  condition's message (ADR-0006). A job's raise is logged whole, so this binds every
+  job (ADR-0013).
 - **An API key is stored only as its hash,** and shown once (ADR-0006).
 - **An API key is 32 random bytes, found by its BLAKE2b hash on a unique index.** A raw
   secret or a signature is compared with `constant-time-bytevector=?`, never
@@ -91,7 +106,8 @@ disagree, the record wins and this file gets fixed.
 - **All configuration comes from the environment** (ADR-0009).
 - **`TECHO_DB_PATH` is absolute and names a file,** with no trailing slash: SQLite and
   Chez must agree on whether it exists (ADR-0012).
-- **The server logs to standard output** (ADR-0009).
+- **The server logs to standard output** (ADR-0009). A line is one write, from the
+  loop's thread: lines from two threads run together (ADR-0013's plan, probed).
 - **One binary is the server and the CLI** (ADR-0009).
 
 ## Tests

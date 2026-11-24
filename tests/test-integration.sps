@@ -436,6 +436,11 @@
 (define cli-empty-db #f)
 (define cli-relative-db #f)
 (define cli-bad-port #f)
+(define cli-port-used #f)
+(define serve-leftovers #f)
+(define bad-port-leftovers #f)
+(define readers-zero #f)
+(define readers-x #f)
 
 ;; observe-migrate! : String -> Void
 ;; The migrate and refusal rows, and the real-process rows.
@@ -477,6 +482,11 @@
   (observe "serve-foreign" (serve-run dir "srvforeign" (at "foreign")))
   (observe "serve-backup" (serve-run dir "srvbackup" (at "backup2"))))
 
+;; leftovers : String -> (Listof Boolean)
+;; Whether DB's `-wal` and `-shm` exist.
+(define (leftovers db)
+  (map (lambda (x) (file-exists? (string-append db x))) '("-wal" "-shm")))
+
 ;; observe! : -> Void
 (define (observe! dir)
   (let ((db (string-append dir "/techo.db")))
@@ -492,9 +502,20 @@
           (set! serve-port (attempt (lambda () (listening-port server))))
           (when (integer? serve-port)
             (set! health (attempt (lambda () (get serve-port "/health"))))
-            (set! nope (attempt (lambda () (get serve-port "/nope")))))
+            (set! nope (attempt (lambda () (get serve-port "/nope"))))
+            ;; A second server on the port the first holds.
+            (set! cli-port-used
+                  (attempt (lambda ()
+                             (run-cli dir "portused" '()
+                                      (list (string-append "CHEZ_HTTP_PORT="
+                                                           (number->string serve-port))
+                                            (string-append "TECHO_DB_PATH=" db))
+                                      '("serve"))))))
           (signal! server "TERM")
           (set! serve-exit (attempt (lambda () (await-status server deadline-ms))))
+          ;; Looked for before any connection is opened on the file again: a
+          ;; read-only open makes a `-wal` of its own.
+          (set! serve-leftovers (leftovers db))
           (set! serve-out (file-text (child-file server "out")))
           (set! serve-err (file-text (child-file server "err"))))
         (lambda () (kill! server))))
@@ -514,6 +535,19 @@
           (attempt (lambda ()
                      (run-cli dir "badport" '()
                               (list "CHEZ_HTTP_PORT=abc" (string-append "TECHO_DB_PATH=" db))
+                              '("serve")))))
+    ;; The server refused the port after the workers were opened, and still
+    ;; stopped them: no `-wal` or `-shm`.
+    (set! bad-port-leftovers (leftovers db))
+    (set! readers-zero
+          (attempt (lambda ()
+                     (run-cli dir "readers0" '()
+                              (list "TECHO_DB_READERS=0" (string-append "TECHO_DB_PATH=" db))
+                              '("serve")))))
+    (set! readers-x
+          (attempt (lambda ()
+                     (run-cli dir "readersx" '()
+                              (list "TECHO_DB_READERS=x" (string-append "TECHO_DB_PATH=" db))
                               '("serve")))))))
 
 ;; The temporary directory goes however observing ends.
@@ -562,6 +596,9 @@
   '("draining 0" "stopped")
   (let ((ls (split-lines serve-out)))
     (filter (lambda (l) (or (string=? l "draining 0") (string=? l "stopped"))) ls)))
+
+(test-equal "serve: SIGTERM leaves no -wal and no -shm (the readers stop before the writer)"
+  '(#f #f) serve-leftovers)
 
 (test-equal "version: exit 0"
   0 (status-of cli-version))
@@ -618,6 +655,25 @@
                 (list (if (string? e) (contains? e "techo: ") e)
                       (if (string? e) (contains? e "CHEZ_HTTP_PORT") e)
                       (out-of cli-bad-port))))
+
+(test-equal "serve on a port in use: exit 1, and a techo: line says so"
+  '(1 #t #t) (let ((e (err-of cli-port-used)))
+               (list (status-of cli-port-used)
+                     (if (string? e) (contains? e "techo: ") e)
+                     (if (string? e) (contains? e "in use") e))))
+
+(test-equal "serve with a bad CHEZ_HTTP_PORT: no -wal and no -shm are left (the workers were stopped)"
+  '(#f #f) bad-port-leftovers)
+
+(for-each
+ (lambda (value result)
+   (test-equal (string-append "serve with TECHO_DB_READERS=" value
+                              ": refused, exit 2, stderr names the variable, stdout is empty")
+     '(2 #t "")
+     (list (status-of result)
+           (let ((e (err-of result))) (if (string? e) (contains? e "TECHO_DB_READERS") e))
+           (out-of result))))
+ '("0" "x") (list readers-zero readers-x))
 
 
 ;; --- `techo migrate`, `techo serve`'s check, the real processes ----------
