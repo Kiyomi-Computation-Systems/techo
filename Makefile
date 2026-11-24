@@ -64,12 +64,12 @@ GOAL = $(strip $(if $(MAKECMDGOALS),$(MAKECMDGOALS),$@))
 # submodule is shallow and brings no tags, so a tag would not resolve there.
 # Moving a pin is its own commit, with the reason (ADR-0011); `make
 # check-pins` fails unless each gitlink is its PIN.
-#   circuit           442dd85 (no release yet): hands on await-outside
+#   circuit           b7e6f95 (no release yet): await-outside, and (circuit worker)
 #   chez-sqlite3      v0.1.1
 #   chez-curl         v0.1.2
 #   chez-http-server  v0.12.0, until the index has it (ADR-0011, amended)
 SUBMODULE_PINS := \
-  circuit:442dd85123022e294fadebaa50febf31ca5dd562 \
+  circuit:b7e6f95951a2a684e16d9f1fce9525d5765105a2 \
   chez-sqlite3:960d9f0028ce09b51019cd7050d5833af30f98e0 \
   chez-curl:15197e8a699c4b2d6c12e2b62c7dc76be7729780 \
   chez-http-server:bba2ba6fea252996d31bffc6255d8be36e9bdfd2

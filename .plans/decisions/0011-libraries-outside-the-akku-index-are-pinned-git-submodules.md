@@ -72,3 +72,12 @@ circuit's ADR-0012, item 7.
   range admits it. Then circuit's ranges move, Techo's pin and manifest follow, and the
   submodule, `SERVER_DIR` and `SERVER_VERSION` go, on one commit. Nothing turns CI red
   when that day comes: the ledger holds the reminder.
+
+## Amendment, 2026-11-23: circuit's pin moves to its worker
+
+Status: accepted (owner, 2026-11-23: "start working on it", on circuit's notice)
+
+- **circuit's pin moves to `b7e6f95`,** its W2 slice, which adds `(circuit worker)`.
+  Slice 2b's doorway is built on it (ADR-0013).
+- Its manifest names the same four index dependencies, so `Akku.manifest` and
+  `Akku.lock` do not change.
