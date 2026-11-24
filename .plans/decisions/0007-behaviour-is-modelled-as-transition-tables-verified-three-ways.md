@@ -30,3 +30,14 @@ Plan: [the outline](../outline.md) §6
 
 - A small table library comes first, in the slice that has the first machine.
 - The same approach was offered to chez-http-server for `await-outside`.
+
+## Amendment, 2026-11-24: a table may have no end
+
+Status: accepted (owner, 2026-11-24, with slice 3's D5)
+
+A key's lifecycle never ends: a revoked key is still checked and still refused.
+`(techo machine)` called every state of such a table a dead end.
+
+- **`machine-problems` takes `#f` for its terminal states to mean "no end, on
+  purpose".** The dead-end check is skipped; every other check runs.
+- **An empty list is still checked,** so forgetting the terminals is still caught.

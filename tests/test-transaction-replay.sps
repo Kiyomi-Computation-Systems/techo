@@ -678,8 +678,8 @@
   (let* ((p (fresh-path)) (_ (remove-db-files! p)))
     (let ((bv (call-with-port (open-file-input-port template) get-bytevector-all)))
       (call-with-port (open-file-output-port p) (lambda (port) (put-bytevector port bv))))
-    (let* ((wb (doorway-set-up p 'read-write migrations 0))
-           (rb (doorway-set-up p 'read-only migrations 0))
+    (let* ((wb (doorway-set-up p 'read-write (list (car migrations)) 0))
+           (rb (doorway-set-up p 'read-only (list (car migrations)) 0))
            (other (open-database p 'read-write '((busy-timeout . 0)))))
       (dynamic-wind
         (lambda () #f)

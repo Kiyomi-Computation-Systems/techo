@@ -28,9 +28,18 @@ close-out under **Close-outs**, newest first.
   one write thread and `TECHO_DB_READERS` read threads on circuit's worker, each job
   one transaction run by a table, through a handle
   ([the plan](2026-11-23-slice-2b-doorway.md), ADR-0013). No route uses it yet.
-- **circuit is pinned at b7e6f95,** its W2, which has the worker. Its W3 (a39346c,
-  2026-11-24) adds only docs and an example: the pin has not moved to it.
-- **`techo user add` moved to slice 3** (owner, 2026-11-22).
+- **The pins moved** in
+  [PR #8](https://github.com/Kiyomi-Computation-Systems/techo/pull/8) on 2026-11-24,
+  rebased so each is its own commit: circuit to a39346c, its worker's docs; and
+  chez-sodium (3a14085) and unique-id (e0ed128) joined, with libsodium.
+- **Slice 3a is merged**, squashed from
+  [PR #9](https://github.com/Kiyomi-Computation-Systems/techo/pull/9) on 2026-11-24: the `accounts`
+  and `api_keys` tables, the key check, four routes under `/v1`, RFC 9457 errors and
+  the request log ([the plan](2026-11-24-slice-3-accounts.md); ADR-0002 and ADR-0006,
+  amended). No account can be made until 3b, so a real server answers 401.
+- **chez-sodium (3a14085, its M2) and unique-id (v0.1.0) are pinned submodules,** and
+  circuit's pin is at a39346c (ADR-0011, amended 2026-11-24).
+- **`techo user add` moved to slice 3** (owner, 2026-11-22), and now to 3b.
 - **ADR-0006's amendment is accepted** (owner, 2026-11-23): a key is looked up by its
   BLAKE2b hash.
 - **T5 is restated** (owner, 2026-11-23; ADR-0008's second amendment), since circuit's
@@ -38,23 +47,20 @@ close-out under **Close-outs**, newest first.
 
 ## Next
 
-Slice 3, accounts, which waits on chez-sodium M3 and brings the
-first table, the first route through the doorway and the first request log.
+**Slice 3b: `techo user add`, `techo user password`, login, the
+rate limit and the hashing worker.** It waits on chez-sodium's M3, the password verbs,
+which is planned and being built. Its outline and decisions D11 to D14 are in
+[slice 3's plan](2026-11-24-slice-3-accounts.md); they are not yet accepted.
 
 **Watch for:** the Akku index gaining chez-http-server 0.12.0 and a chez-websocket
 that admits it. That ends the server's submodule (ADR-0011, amended 2026-11-23).
 Nothing fails when it happens.
 
-**Carry into slice 3** (asked for by the owner, 2026-11-24, from a fresh clone on macOS):
-
-- **A make command that loads the submodules.** `make deps` on a fresh clone only says
-  to run `git submodule update --init`. Add a target that runs it (on the host: the
-  container has no git), and name that target in the message.
-- **The Makefile supports macOS for development** (owner, 2026-11-24). Today
-  `make deps` fails there with `mv: illegal option -- T`: `mv -T` and `ln -sT` are GNU
-  only, and the Makefile uses them at the `deps` link step and the libuv step. The
-  owner tests on the Mac by hand now and then. No macOS CI runner: CI stays Linux only.
-- **Move the circuit pin to `a39346c`** (W3, docs only), as its own commit.
+**Still GNU-only, found by the macOS audit and left:** `make test` needs `timeout` or
+`gtimeout`; `make help`'s awk pattern `.*?` is untested on BSD awk; `check-pins` and
+`fetch` use `diff --no-dereference`. On macOS chez-sodium needs
+`CHEZ_SODIUM_LIBRARY`. The `mv -h` branch of `scripts/mv-no-follow-flag` has never
+run: the owner tests on the Mac by hand.
 
 ## Slices
 
@@ -63,7 +69,8 @@ Nothing fails when it happens.
 | 1 | Skeleton, health endpoint, loop-stall spike | merged (PR #2) | |
 | 2 | Migrations, the CLI's `migrate`, `serve`'s check | merged (PR #6) | |
 | 2b | The database doorway: write and read workers | merged (PR #7) | |
-| 3 | Accounts, `techo user add`, login, API keys | not planned | chez-sodium M3 |
+| 3a | The tables, the key check, the key routes, the error format, the request log | merged (PR #9) | |
+| 3b | `techo user add`, login, the rate limit, the hashing worker | outlined | chez-sodium M3 |
 | 4 | Node create, read, update; revisions; `If-Match` | not planned | unique-id |
 | 5 | The tree and move; links | not planned | |
 | 6 | Kinds and props; task transitions | not planned | |
@@ -79,8 +86,8 @@ own `.plans/` is the truth from then on.**
 
 | Project | Where | State on 2026-11-22 |
 |---|---|---|
-| chez-sodium | `../chez-sodium` | Repository made; its brief under adversarial review |
-| unique-id | `../unique-id` | v0.1.0 released (2026-11-23, e0ed128); not pinned here yet: slice 4 takes it |
+| chez-sodium | `../chez-sodium` | M2 on `main` (3a14085, pinned here). M3, the password verbs, planned and being built. Asked on 2026-11-24 whether `password-verify` can tell "could not check" from "wrong" ([brief](briefs/chez-sodium-verify-out-of-memory.md)): no, settled in its M3 plan |
+| unique-id | `../unique-id` | v0.1.0 released (2026-11-23, e0ed128), pinned here since slice 3a |
 | chez-http-server: `await-outside` | `../chez-http-server` | Released in v0.12.0 (bba2ba6); not on the Akku index yet |
 | circuit: the worker | `../circuit` | Issue 53 done: W2, the shell (b7e6f95, pinned here); W3, the docs (a39346c, 2026-11-24) |
 
@@ -93,14 +100,40 @@ From [outline.md](outline.md) §14, each for the slice named:
 | Does the server refuse an id that is not version 7? | 4 |
 | The node lifecycle's states, and which transitions can be undone | 4 |
 | A Contact's first fields, exactly | 6 |
-| The login rate limit's numbers | 3 |
-| Is an account's id a UUID or an integer? ([schema.md](schema.md)) | 3 |
-| Does password hashing go to a worker of its own? (ADR-0013) | 3 |
-| One write job a request, so that a 503 is a "no" for the whole request? | 3 |
-| May two `serve` processes share one file? Nothing stops them today. | 3 |
+| The login rate limit's numbers (plan's D12, not yet accepted) | 3b |
+| Does password hashing go to a worker of its own? (plan's D11, not yet accepted) | 3b |
+| May two `serve` processes share one file? (plan's D14, not yet accepted) | 3b |
+| Is a password normalised (NFC) before it is hashed? | 3b |
+| Does a regenerate that timed out need a way to be told whose key changed? | 3b |
 | The container's stop grace (30 s) and a check that asks more than `/health` | 9 |
 
 ## Close-outs
+
+### Slice 3a: keys (merged 2026-11-24, PR #9)
+
+- **Built:** migration 2; `(techo errors)`, `(techo keys)`, `(techo accounts)`,
+  `(techo store)`, `(techo auth)`, `(techo routes)`, `(techo log)`; `GET /v1/account`,
+  `GET /v1/keys`, and revoke and regenerate; `docs/api.md`; eight new suites, 23 in
+  all. With it, the carry-overs: `make submodules`, the Makefile on macOS, `make
+  clean` on a read-only directory, `make check-makefile`.
+- **Answered:** an id is a UUID; a request is one job, so a 503 is a "no" for all of
+  it; the error format, paging and times (ADR-0002, amended).
+- **Three reviews, two of the plan and one of the build.** Each found what the last
+  could not: the key table could not pass its own library's checks; a 409 that could
+  never be reached; and, in the build, that nothing tested the program's random bytes.
+- **What went well:** probes first; mutants planted on every hand-back (about twenty,
+  and five more by the closing review); the reviewer shipping migration 2 in a
+  scratch copy to find the suites it would break before any builder met them.
+- **What did not:**
+  - an agent's test of `make clean` deleted the real `build/` under two running
+    probes (`traps.md`: a variable does nothing to a path the recipe spells out);
+  - two builders wrote code before its tests (the store, and the integration tests
+    of behaviour already built), and showed teeth by mutants afterwards;
+  - the plan's checks never reached `techo.sps`'s own wiring, so three program-level
+    mutants survived until the closing review.
+- **Recorded, not fixed:** see the plan's third review. The fixture's migrations now
+  follow the shipped list, and the replay is pinned to the first migration, so the
+  next shipped migration should break neither.
 
 ### Slice 2b: the doorway (PR #7, 2026-11-24)
 

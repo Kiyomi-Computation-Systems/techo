@@ -34,7 +34,9 @@ it.
   directory, which here was the fetched chez-srfi tree.
 - **Rule:** a step that every run repeats never clears shared build output. It keeps
   what is already right and renames each new piece into place. A temporary name
-  comes from `mktemp`, never from `$$`. A link is made with `ln -sT`.
+  comes from `mktemp`, never from `$$`. A link is made with `ln -sn` and renamed
+  into place with the flag `scripts/mv-no-follow-flag` finds: GNU's `mv -T` or BSD's
+  `mv -h` (2026-11-24; it was `ln -sT`, which macOS does not have).
 
 ## A shallow checkout has no tags
 
@@ -171,6 +173,53 @@ it.
   and then a `newline`. Count the lines longer than one line's text.
 - **Rule:** a log line is one `put-string`, newline included, and the server's lines
   are written from the loop's thread.
+
+## `rm -rf` stops at a directory it may not write
+
+- **Expected:** `make clean` removes `build/`, whatever is in it.
+- **Happened:** a probe left a directory with its write permission taken away, and
+  `rm -rf build` failed on each file in it with "Permission denied".
+- **See it again:** `mkdir -p d/ro && touch d/ro/f && chmod a-w d/ro && rm -rf d`.
+- **Rule:** `clean` runs `chmod -R u+w` first. A probe that takes a permission away
+  gives it back before it ends.
+
+## A variable on make's command line does nothing to a path the recipe spells out
+
+- **Expected:** `make clean BUILD_DIR=/tmp/scratch` removes the scratch directory.
+- **Happened:** the recipe was `rm -rf build`, so it removed the real `build/`, and
+  with it two other agents' work in progress.
+- **See it again:** `git show f1d5b44:Makefile | grep -n 'rm -rf build'`.
+- **Rule:** before a test runs a target that deletes, it runs it with `make -n` and
+  checks the command names the scratch path (`tests/check-makefile.sh`).
+
+## `number->string` writes hex in capitals
+
+- **Expected:** `(number->string 244 16)` is `"f4"`.
+- **Happened:** Chez answers `"F4"`. A test that compared a hash with Python's
+  lowercase hex failed on case alone.
+- **See it again:** `(number->string 244 16)` at a Chez prompt.
+- **Rule:** hex that is compared, stored or hashed is lowercased on purpose. A key's
+  hash is taken over its text (slice 3's D3), so one capital letter is another key.
+
+## Chez does not evaluate arguments left to right
+
+- **Expected:** `(append (list (act!)) (list n))` reads `n` after `act!` has changed it.
+- **Happened:** it answered `(acted 0)`: `n` was read first. A test that did an action
+  and read a counter in one call compared against the count from before.
+- **See it again:** `(define n 0) (define (act!) (set! n (+ n 1)) 'acted)`, then
+  `(append (list (act!)) (list n))`.
+- **Rule:** bind an action's result with `let` or `let*` before reading what it
+  changed.
+
+## `parameterize` does not work on `(rnrs)`'s `current-output-port`
+
+- **Expected:** `(parameterize ((current-output-port p)) …)` sends output to `p`.
+- **Happened:** "incorrect number of arguments". `(rnrs)`'s `current-output-port` is
+  a plain procedure of no arguments. Chez's own is the parameter.
+- **See it again:** import `(rnrs)` and only `parameterize` from `(chezscheme)`, then
+  run the form above.
+- **Rule:** to capture output, import Chez's `current-output-port` under another
+  name and parameterize that (`tests/http-support.sls`, `capture-output`).
 
 The siblings' traps apply wherever Techo touches the same ground. Read them there:
 

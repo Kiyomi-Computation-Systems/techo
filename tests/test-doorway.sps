@@ -921,7 +921,7 @@
        (list (db-unavailable-expected e) (db-unavailable-found e))))))
 
 (test-equal "run-job!: (raise-carried) with nothing carried raises a condition of the shell's own, naming the command"
-  '(#t (read-version . 3) #t)
+  (list #t (cons 'read-version fixture-latest-version) #t)
   (attempt
    (lambda ()
      (let ((p (fresh "r6.db")))
@@ -1101,7 +1101,8 @@
        (refusal-of (lambda () (doorway-set-up p 'read-write fixture-migrations 100)))))))
 
 (test-equal "set-up: a file that is ahead is refused, with the check's line"
-  '(refused "this binary is older than the database (version 3)")
+  (list 'refused (string-append "this binary is older than the database (version "
+                                (number->string fixture-latest-version) ")"))
   (attempt
    (lambda ()
      (let ((p (fresh "s2.db")))

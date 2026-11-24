@@ -1,0 +1,33 @@
+#!/bin/sh
+# scripts/mv-no-follow-flag
+#
+# Prints the flag this system's mv takes so that a destination that is a
+# symbolic link is replaced, never followed into: GNU's -T, or BSD's (macOS's)
+# -h. Neither has the other's. It tries each on a scratch link to a
+# directory, and keeps the first that replaces the link and leaves the
+# directory empty. Prints nothing, and exits 1, when neither does.
+#
+# `mv $(sh scripts/mv-no-follow-flag) SRC DST`: the Makefile asks once per
+# recipe. Needs mktemp and ln -sn, which GNU and BSD share.
+set -u
+
+scratch=$(mktemp -d "${TMPDIR:-/tmp}/mv-flag.XXXXXX") || exit 2
+reset() {
+  rm -f "$scratch/link" "$scratch/new" "$scratch/real/"* 2>/dev/null
+  rmdir "$scratch/real" 2>/dev/null
+}
+trap 'reset; rmdir "$scratch"' EXIT
+
+for flag in -T -h; do
+  reset
+  mkdir "$scratch/real"
+  : > "$scratch/new"
+  ln -sn real "$scratch/link"
+  if mv "$flag" "$scratch/new" "$scratch/link" 2>/dev/null \
+     && [ -f "$scratch/link" ] && [ ! -L "$scratch/link" ] \
+     && [ -z "$(ls "$scratch/real")" ]; then
+    printf '%s\n' "$flag"
+    exit 0
+  fi
+done
+exit 1

@@ -99,11 +99,14 @@
                       '() rows)))
             (loop (append seen new) new)))))
 
-  ;; machine-problems : Machine (Listof StateKind) (Listof StateKind)
+  ;; machine-problems : Machine (Listof StateKind) (U (Listof StateKind) #f)
   ;;                    (Listof (List StateKind EventKind String))
   ;;                    -> (Listof Problem)
   ;; Arguments: the machine; the start state kinds; the terminal state
-  ;; kinds; the "can't happen" pairs, each with its reason.
+  ;; kinds, or #f for "no end, on purpose" (a table whose states all go on
+  ;; for ever: the dead-end check is skipped, and so is terminal-has-row;
+  ;; every other check runs; '() is not #f, and still reports every state
+  ;; as a dead end); the "can't happen" pairs, each with its reason.
   ;; The state kinds are every kind in a row (either column) plus the starts
   ;; and the terminals; the event kinds are every kind in a row.
   ;; Problem is one of
@@ -115,8 +118,10 @@
   ;;   (dead-end state)                  no terminal reachable from it
   ;;   (terminal-has-row state)          a terminal state with a row
   ;; Grouped in that order, each group in table order.
-  (define (machine-problems m starts terminals cants)
-    (let* ((rows (machine-rows m))
+  (define (machine-problems m starts terminals-or-false cants)
+    (let* ((no-end? (not terminals-or-false))
+           (terminals (or terminals-or-false '()))
+           (rows (machine-rows m))
            (states (adjoin-all terminals
                     (adjoin-all starts
                      (fold-left (lambda (acc r)
@@ -152,8 +157,10 @@
             (filter (lambda (c) (> (count (car c) (cadr c)) 0)) cants))
        (map (lambda (s) (list 'unreachable s))
             (filter (lambda (s) (not (memq s fwd))) states))
-       (map (lambda (s) (list 'dead-end s))
-            (filter (lambda (s) (not (memq s back))) states))
+       (if no-end?
+           '()
+           (map (lambda (s) (list 'dead-end s))
+                (filter (lambda (s) (not (memq s back))) states)))
        (map (lambda (s) (list 'terminal-has-row s))
             (filter (lambda (s) (exists (lambda (r) (eq? (row-state r) s)) rows))
                     terminals)))))

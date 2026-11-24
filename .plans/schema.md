@@ -13,13 +13,12 @@ whole milliseconds since 1970, UTC; JSON as text with a `json_valid` check; a
 | Version | Migration | What it does |
 |---|---|---|
 | 1 | techo's database | Sets `application_id` to `0x74656368`. No table. |
+| 2 | accounts and api keys | Creates `accounts`, `api_keys` and the index `api_keys_account`. |
 
 ## The tables to come
 
 | Table | Slice | State |
 |---|---|---|
-| `accounts` | 3 | decided, but for the id's type |
-| `api_keys` | 3 | decided, but for the key's lifecycle states |
 | `nodes` | 4 | core decided; lifecycle open |
 | `revisions` | 4 | decided |
 | `changes` | 4, read in 8 | decided |
@@ -28,30 +27,32 @@ whole milliseconds since 1970, UTC; JSON as text with a `json_valid` check; a
 | `nodes_fts` | 7 | sketched, from the spike |
 | attachments | not in v1 | shape fixed (ADR-0010) |
 
-### accounts (slice 3; ADR-0006)
+### accounts (shipped in migration 2; ADR-0006)
 
 ```sql
 CREATE TABLE accounts (
   id            BLOB    NOT NULL PRIMARY KEY CHECK (length(id) = 16),
-  username      TEXT    NOT NULL UNIQUE,
-  email         TEXT    NOT NULL UNIQUE,
+  username      TEXT    NOT NULL UNIQUE CHECK (username GLOB '[a-z0-9]*' AND username NOT GLOB '*[^a-z0-9_-]*' AND length(username) <= 32),
+  email         TEXT    NOT NULL UNIQUE CHECK (email NOT GLOB '*[A-Z]*'),
   password_hash TEXT    NOT NULL,          -- argon2id's own string
   created       INTEGER NOT NULL
 ) STRICT;
 ```
 
-- **Open:** whether an account's id is a UUID or an integer. The spike used an integer
-  owner. A blob keeps one rule for every id; an integer makes every owner-led index
-  smaller.
-- **Open:** how email is compared (case).
+- **Decided:** the id is a UUIDv7 blob, one rule for every id.
+- **Decided:** email is stored in lowercase, by ASCII's letters alone, and the
+  table's `CHECK` holds it there. It uses `GLOB`, whose range is ASCII on every
+  build. `lower()` folds more on a build with ICU, and would then refuse what the
+  code hands it.
+- **Decided:** the table also holds a username's shape, and a key's name's length.
 
-### api_keys (slice 3; ADR-0006, amended)
+### api_keys (shipped in migration 2; ADR-0006, amended)
 
 ```sql
 CREATE TABLE api_keys (
   id        BLOB    NOT NULL PRIMARY KEY CHECK (length(id) = 16),
   account   BLOB    NOT NULL REFERENCES accounts(id),
-  name      TEXT    NOT NULL,              -- the device
+  name      TEXT    NOT NULL CHECK (length(name) BETWEEN 1 AND 64),  -- the device
   key_hash  BLOB    NOT NULL UNIQUE CHECK (length(key_hash) = 32),  -- BLAKE2b
   created   INTEGER NOT NULL,
   last_used INTEGER,
@@ -61,10 +62,9 @@ CREATE INDEX api_keys_account ON api_keys(account, id);
 ```
 
 - **Decided:** a key is found by `WHERE key_hash = ?` on the unique index.
-- **Open:** the key lifecycle's states (ADR-0007 lists it as a machine), and so
-  whether `revoked` is a time or a state column. Whether `last_used` is written on
-  every request.
-- **Open:** where the login rate limit's counters live: memory or a table.
+- **Decided:** `revoked` is a time, and null means active.
+- **Decided:** `last_used` is set only by a request that writes, at most once a day.
+- **Open:** the login rate limit's counters. Slice 3b: in memory.
 
 ### nodes (slice 4; ADR-0003, ADR-0004)
 

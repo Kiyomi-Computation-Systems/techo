@@ -127,7 +127,8 @@
                               fixture-migrations
                               (string->number (env "CHILD_WCAP" "64"))
                               64))
-       (app (make-app doorway))
+       (app (make-app (lambda (job) (db-read doorway job)) (lambda (job) (db-write doorway job))
+                      (lambda () 0) (lambda (n) (make-bytevector n 0))))
        (db-routes (routes doorway))
        (handler (lambda (req)
                   (if (string=? (req-path req) "/health") (app req) (db-routes req))))

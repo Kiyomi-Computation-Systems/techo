@@ -862,15 +862,26 @@
 (test-equal "shipped list: the list equals its recorded copy"
   (read-datum "tests/shipped-migrations.scm")
   migrations)
-(test-equal "shipped list: the copy is one datum, a list of one migration"
-  '(1 "techo's database" ("PRAGMA application_id = 1952801640"))
+(test-equal "shipped list: the copy is one datum, a list of two migrations, versions 1 and 2"
+  '(1 2)
   (let ((r (read-datum "tests/shipped-migrations.scm")))
-    (if (and (list? r) (= (length r) 1)) (car r) r)))
+    (if (and (list? r) (= (length r) 2)) (map car r) r)))
+(test-equal "shipped list: migration 1 is the one that sets the id"
+  '(1 "techo's database" ("PRAGMA application_id = 1952801640"))
+  (car migrations))
+(test-equal "shipped list: migration 2 is three statements, creating accounts, api_keys and the index"
+  '(#t #t #t)
+  (let ((ss (caddr (cadr migrations))))
+    (map (lambda (s prefix)
+           (and (>= (string-length s) (string-length prefix))
+                (string=? prefix (substring s 0 (string-length prefix)))))
+         ss
+         '("CREATE TABLE accounts" "CREATE TABLE api_keys" "CREATE INDEX api_keys_account"))))
 (test-equal "shipped list: the id is `tech`"
   #x74656368
   techo-application-id)
 (test-equal "shipped list: latest-version"
-  '(1 3 0)
+  (list (length migrations) 3 0)
   (attempt (lambda () (list (latest-version migrations) (latest-version tm)
                             (latest-version '())))))
 

@@ -207,12 +207,12 @@
               '("" "-wal" "-shm")))
 
   ;; make-template! : String -> Void
-  ;; At PATH: techo's shipped migrations applied (version 1, in WAL), then
+  ;; At PATH: techo's shipped migration 1 alone applied (version 1, in WAL), then
   ;; the replay's two tables, made by a plain connection and closed cleanly,
   ;; so that no -wal is left and the file can be copied. Raises if one is.
   (define (make-template! path)
     (remove-db-files! path)
-    (migrate! path migrations)
+    (migrate! path (list (car migrations)))
     (let ((db (open-database path 'read-write '((busy-timeout . 0)))))
       (dynamic-wind
         (lambda () #f)
@@ -367,9 +367,9 @@
   ;; The three connections on PATH (the writer's first: the read-only open
   ;; needs the -shm it makes), and the temp traps.
   (define (open-run c rm opts path)
-    (let* ((wb (doorway-set-up path 'read-write migrations 0))
+    (let* ((wb (doorway-set-up path 'read-write (list (car migrations)) 0))
            (rb (guard (e (#t (doorway-tear-down wb) (raise e)))
-                 (doorway-set-up path 'read-only migrations 0)))
+                 (doorway-set-up path 'read-only (list (car migrations)) 0)))
            (other (guard (e (#t (doorway-tear-down rb) (doorway-tear-down wb) (raise e)))
                     (open-database path 'read-write '((busy-timeout . 0))))))
       (for-each (lambda (b)
