@@ -116,7 +116,7 @@ jobs:
         run: make deps
 
       - name: Check help and suites
-        run: make check-help check-suites check-ci
+        run: make check-help check-suites check-ci check-makefile
 
       - name: Test
         run: make test

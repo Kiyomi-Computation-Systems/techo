@@ -12,10 +12,9 @@
 #   lock pins, checks its sha256 and unpacks it (scripts/fetch-akku-lock):
 #   hashing into vendor/akku, and the others into vendor/akku-trees.
 # - The owner's libraries outside the index, circuit, chez-sqlite3,
-#   chez-curl, chez-sodium and unique-id, are git submodules under vendor/,
-#   each pinned at a commit
-#   (SUBMODULE_PINS). A fresh clone runs `git submodule update
-#   --init` on the host once, before `make deps`.
+#   chez-curl, chez-sodium and unique-id, are git submodules under vendor/, each pinned at a commit
+#   (SUBMODULE_PINS). A fresh clone runs `make submodules` on the
+#   host once, before `make deps`.
 # - chez-http-server is both, for now (ADR-0011, amended 2026-11-23): the
 #   index has 0.11.0, and Techo needs 0.12.0's await-outside. Akku.manifest
 #   and Akku.lock keep ^0.11.0, which brings the libraries the server needs,
@@ -177,7 +176,7 @@ TIMEOUT ?= $(or $(shell command -v timeout 2>/dev/null),$(shell command -v gtime
 
 # One physical line: check-help reads it with awk, and fails if it ends in
 # a backslash.
-.PHONY: help check-help check-guix check-guix-inside akku-deps lock check-akku-lock fetch check-pins check-chez deps dev libdirs test check-suites check-test-fails check-ci run machines clean
+.PHONY: help submodules check-help check-makefile check-guix check-guix-inside akku-deps lock check-akku-lock fetch check-pins check-chez deps dev libdirs test check-suites check-test-fails check-ci run machines clean
 
 .DEFAULT_GOAL := help
 
@@ -326,6 +325,12 @@ check-akku-lock: ## (host) Fail unless Akku.lock is what Akku 1.2.0 makes of Akk
 check-chez: ## Fail unless CHEZ is Chez Scheme 10.4.1 or later, threaded, naming what it found
 	@scripts/require-chez "$(GOAL)" "$(CHEZ)"
 
+# git submodule update --init: a fresh clone's submodules, each at its
+# pin. It needs git, so it runs on the host: the container has none.
+submodules: ## (host) Check out each submodule at its pin (git submodule update --init)
+	@scripts/require-tools "$(GOAL)" git
+	git submodule update --init
+
 # Never fetches: the container has no network, so a missing tree is
 # fetched on the host. chez-srfi ships Akku's percent-encoded filenames
 # (%3a64.sls) and Chez resolves (srfi :64) only from the decoded spelling
@@ -334,18 +339,20 @@ check-chez: ## Fail unless CHEZ is Chez Scheme 10.4.1 or later, threaded, naming
 # that is already right is kept, a new one is made beside its place and
 # renamed onto it, and a link whose file has gone is unlinked last. The
 # name beside its place comes from mktemp, not the shell's PID: every
-# container counts PIDs from 1, so two runs share them. `ln -sT` never
-# follows a link that is already there into the fetched tree. A name a
+# container counts PIDs from 1, so two runs share them. `ln -sn`, and
+# the rename with the flag scripts/mv-no-follow-flag finds (GNU mv -T, BSD
+# mv -h), never follow a link that is already there into the fetched tree. A name a
 # killed run left behind is removed once it is an hour old.
 define link-srfi
 	@mkdir -p $(SRFI_LIBS)/srfi
 	@set -e; \
 	src="$(abspath $(SRFI_DIR))"; dst="$(abspath $(SRFI_LIBS))/srfi"; \
 	tok=$$(mktemp -u XXXXXXXXXXXX); \
+	mvf=$$(sh scripts/mv-no-follow-flag) || { echo "deps: this mv has neither -T nor -h" >&2; exit 1; }; \
 	find "$$dst" -maxdepth 1 -name '.tmp.*' -mmin +60 -delete; \
 	link() { \
 	  [ "$$(readlink "$$dst/$$2" 2>/dev/null)" = "$$1" ] && return 0; \
-	  ln -sT "$$1" "$$dst/.tmp.$$tok.$$2" && mv -T "$$dst/.tmp.$$tok.$$2" "$$dst/$$2"; \
+	  ln -sn "$$1" "$$dst/.tmp.$$tok.$$2" && mv $$mvf "$$dst/.tmp.$$tok.$$2" "$$dst/$$2"; \
 	}; \
 	for f in "$$src"/*; do \
 	  b=$$(basename "$$f"); \
@@ -373,12 +380,12 @@ deps: check-chez ## Copy chez-libuv to build/chez-libuv and build its shim there
 	@scripts/require-tools "$(GOAL)" $(CHEZ) $(CC) pkg-config
 	@for d in $(CIRCUIT_DIR) $(SQLITE3_DIR) $(CURL_DIR) $(SERVER_DIR) $(SODIUM_DIR) $(UNIQUE_ID_DIR); do \
 	  if [ ! -d $$d/src ]; then \
-	    echo "deps: $$d/src not found, so the submodule isn't checked out. Run 'git submodule update --init' on the host: the container has no git." >&2; \
+	    echo "deps: $$d/src not found, so the submodule isn't checked out. Run 'make submodules' on the host: the container has no git." >&2; \
 	    exit 1; \
 	  fi; \
 	done
 	@if ! grep -qF '("chez-http-server" "$(SERVER_VERSION)")' $(SERVER_DIR)/Akku.manifest; then \
-	  echo "deps: $(SERVER_DIR) isn't chez-http-server $(SERVER_VERSION). Run 'git submodule update --init' on the host: the container has no git." >&2; \
+	  echo "deps: $(SERVER_DIR) isn't chez-http-server $(SERVER_VERSION). Run 'make submodules' on the host: the container has no git." >&2; \
 	  exit 1; \
 	fi
 	@if ! $(CHECK_LOCKED) > /dev/null; then \
@@ -406,10 +413,11 @@ deps: check-chez ## Copy chez-libuv to build/chez-libuv and build its shim there
 	fi
 	@if [ ! -e $(LIBUV_DIR) ] || ! $(CHECK_LIBUV_COPY) > /dev/null; then \
 	  mkdir -p $(dir $(LIBUV_DIR)) && \
+	  mvf=$$(sh scripts/mv-no-follow-flag) && \
 	  tmp=$$(mktemp -d $(LIBUV_DIR).tmp.XXXXXXXX) && \
 	  cp -R $(LIBUV_TREE)/. $$tmp && \
 	  rm -rf $(LIBUV_DIR) && \
-	  mv -T $$tmp $(LIBUV_DIR) && \
+	  mv $$mvf $$tmp $(LIBUV_DIR) && \
 	  echo "deps: $(LIBUV_TREE) copied to $(LIBUV_DIR)" || exit 1; \
 	fi
 	@$(MAKE) --no-print-directory -C $(LIBUV_DIR) build
@@ -471,14 +479,14 @@ run: deps ## Run techo on the library path: make run ARGS="serve" (ARGS="help" l
 	@$(CHEZ) --libdirs $(LIBDIRS) --program techo.sps $(ARGS)
 
 # Renders the machines' diagrams from their tables into
-# .plans/machines/migrate.md and .plans/machines/doorway.md
+# .plans/machines/migrate.md, doorway.md and key.md
 # (scripts/render-machines.sps prints the text of the one it is named, the
-# migrate one by default). tests/test-migrations.sps and
-# tests/test-transaction.sps fail when a file differs.
-machines: deps ## Write .plans/machines/migrate.md and doorway.md from the tables
+# migrate one by default). tests/test-migrations.sps,
+# tests/test-transaction.sps and tests/test-keys.sps fail when a file differs.
+machines: deps ## Write .plans/machines/migrate.md, doorway.md and key.md from the tables
 	@scripts/require-tools "$(GOAL)" $(CHEZ)
 	@mkdir -p .plans/machines
-	@for m in migrate doorway; do \
+	@for m in migrate doorway key; do \
 	  $(CHEZ) --libdirs $(LIBDIRS) --program scripts/render-machines.sps $$m > .plans/machines/$$m.md.tmp || exit 1; \
 	  mv .plans/machines/$$m.md.tmp .plans/machines/$$m.md; \
 	done
@@ -495,8 +503,17 @@ check-test-fails: ## Plant a failing suite, a hanging one and others in a copy; 
 	@scripts/require-tools "$(GOAL)" $(TIMEOUT) $(CHEZ) tar
 	@MAKE='$(MAKE)' TIMEOUT='$(TIMEOUT)' CHEZ='$(CHEZ)' sh tests/check-test-fails.sh
 
-# Removes build/, and with it chez-libuv's copy and its shim, and Akku
+# Holds make submodules, deps' hint, the absence of GNU-only mv and ln
+# flags, scripts/mv-no-follow-flag and make clean on a read-only directory,
+# in scratch directories (tests/check-makefile.sh).
+check-makefile: ## Check make submodules, deps' hint, the mv flag and make clean on a read-only directory
+	@MAKE='$(MAKE)' CHEZ='$(CHEZ)' sh tests/check-makefile.sh
+
+# Removes build/ (BUILD_DIR), and with it chez-libuv's copy and its shim, and Akku
 # 1.2.0 (akku-deps). vendor/akku and vendor/akku-trees stay: `make fetch`
-# got them, and the container can't.
+# got them, and the container can't. A read-only directory in it would stop
+# the removal, so write permission comes back first (chmod -R u+w is BSD's
+# too).
 clean: ## Remove build/, chez-libuv's copy and its shim with it
-	rm -rf build
+	@if [ -e $(BUILD_DIR) ]; then chmod -R u+w $(BUILD_DIR); fi
+	rm -rf $(BUILD_DIR)
