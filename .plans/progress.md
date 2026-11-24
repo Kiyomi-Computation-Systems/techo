@@ -28,9 +28,12 @@ close-out under **Close-outs**, newest first.
   one write thread and `TECHO_DB_READERS` read threads on circuit's worker, each job
   one transaction run by a table, through a handle
   ([the plan](2026-11-23-slice-2b-doorway.md), ADR-0013). No route uses it yet.
-- **circuit was pinned at b7e6f95,** its W2, which has the worker. Its W3 (a39346c,
-  2026-11-24) adds only docs and an example: the pin has not moved to it.
-- **Slice 3a is built** on branch `slice-3-accounts`, not yet merged: the `accounts`
+- **The pins moved** in
+  [PR #8](https://github.com/Kiyomi-Computation-Systems/techo/pull/8) on 2026-11-24,
+  rebased so each is its own commit: circuit to a39346c, its worker's docs; and
+  chez-sodium (3a14085) and unique-id (e0ed128) joined, with libsodium.
+- **Slice 3a is merged**, squashed from
+  [PR #9](https://github.com/Kiyomi-Computation-Systems/techo/pull/9) on 2026-11-24: the `accounts`
   and `api_keys` tables, the key check, four routes under `/v1`, RFC 9457 errors and
   the request log ([the plan](2026-11-24-slice-3-accounts.md); ADR-0002 and ADR-0006,
   amended). No account can be made until 3b, so a real server answers 401.
@@ -44,9 +47,9 @@ close-out under **Close-outs**, newest first.
 
 ## Next
 
-Merge slice 3a. Then **slice 3b: `techo user add`, `techo user password`, login, the
+**Slice 3b: `techo user add`, `techo user password`, login, the
 rate limit and the hashing worker.** It waits on chez-sodium's M3, the password verbs,
-which has no plan yet. Its outline and decisions D11 to D14 are in
+which is planned and being built. Its outline and decisions D11 to D14 are in
 [slice 3's plan](2026-11-24-slice-3-accounts.md); they are not yet accepted.
 
 **Watch for:** the Akku index gaining chez-http-server 0.12.0 and a chez-websocket
@@ -66,7 +69,7 @@ run: the owner tests on the Mac by hand.
 | 1 | Skeleton, health endpoint, loop-stall spike | merged (PR #2) | |
 | 2 | Migrations, the CLI's `migrate`, `serve`'s check | merged (PR #6) | |
 | 2b | The database doorway: write and read workers | merged (PR #7) | |
-| 3a | The tables, the key check, the key routes, the error format, the request log | built, not merged | |
+| 3a | The tables, the key check, the key routes, the error format, the request log | merged (PR #9) | |
 | 3b | `techo user add`, login, the rate limit, the hashing worker | outlined | chez-sodium M3 |
 | 4 | Node create, read, update; revisions; `If-Match` | not planned | unique-id |
 | 5 | The tree and move; links | not planned | |
@@ -106,7 +109,7 @@ From [outline.md](outline.md) §14, each for the slice named:
 
 ## Close-outs
 
-### Slice 3a: keys (built 2026-11-24, not yet merged)
+### Slice 3a: keys (merged 2026-11-24, PR #9)
 
 - **Built:** migration 2; `(techo errors)`, `(techo keys)`, `(techo accounts)`,
   `(techo store)`, `(techo auth)`, `(techo routes)`, `(techo log)`; `GET /v1/account`,
