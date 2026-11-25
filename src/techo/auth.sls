@@ -1,6 +1,7 @@
 #!r6rs
-;;; (techo auth): the key check, inside the request's own job (D3, D4, D5,
-;;; D6, D10). The imperative shell.
+;;; (techo auth): the key check, inside the request's own job, and for a
+;;; write with a body in a read job before the body too (D3, D4, D5, D6,
+;;; D10; ADR-0006, amended 2026-11-25). The imperative shell.
 ;;;
 ;;; A handler calls db-read-as or db-write-as with a job runner, the request
 ;;; and a thunk that makes its plan. On the loop's thread they:
@@ -20,17 +21,42 @@
 ;;;      the account and db_ms into the request's note (D10); then hand
 ;;;      what the work returned to the plan's answer.
 ;;;
+;;; A write whose request has a body calls db-write-with-body-as, so that
+;;; no body is read before its key is known to be good: the body is up to
+;;; 2 MiB of JSON, and anyone with a key of the right shape could make the
+;;; loop parse it. It runs two jobs. On the loop's thread it:
+;;;
+;;;   1. and 2. as above;
+;;;   3. asks the handler for its Reader: the cheap checks that need
+;;;      neither the database nor the body come first, and a response here
+;;;      is the answer, with no job;
+;;;   4. runs one read job, the pre-check: the key found by its hash and
+;;;      `check` stepped as in 4 above, the account read, nothing written
+;;;      (a read never writes last_used); a refusal is answered as in 5,
+;;;      and the account goes into the cell and the note as in 5;
+;;;   5. calls the Reader: the body is read only now, and may wait; a
+;;;      response is the answer;
+;;;   6. reads the wall clock once, so a slow upload's time is when its
+;;;      body had come, and asks for the plan of the Reader's data and
+;;;      that time;
+;;;   7. runs one write job as db-write-as does, with that time: the key
+;;;      checked again (it may have been revoked while the body came),
+;;;      last_used set when due, the plan's work; then 5 above, its db_ms
+;;;      added to the read job's, and the read job's account kept on the
+;;;      note when this job's refusal names none.
+;;;
 ;;; A job closes over plain data only, and one cell (below): the hash, the
 ;;; time, and the plan's work, which closes over plain data too. Never the
 ;;; request, never a parameter (ADR-0013). The note is written here, on the
 ;;; loop's thread, never from inside a job.
 ;;;
 ;;; The cell is the one exception (slice 3b's L8): one slot, made for each
-;;; request, read and written under its mutex. The job puts the account's
-;;; id in it as soon as the key check passes. When the runner raises
-;;; anything but a &refusal (a deadline, a hung-up client, a 500), the
-;;; note gets the cell's account: the key's, once it was checked; #f for a
-;;; job still queued, or waiting for the lock, at that moment.
+;;; request, read and written under its mutex; a write with a body's two
+;;; jobs share it. The job puts the account's id in it as soon as the key
+;;; check passes. When the runner raises anything but a &refusal (a
+;;; deadline, a hung-up client, a 500), the note gets the cell's account:
+;;; the key's, once it was checked; #f for a job still queued, or waiting
+;;; for the lock, at that moment, unless the pre-check had passed.
 ;;;
 ;;; Login has no key, so it reaches the database by two procedures of its
 ;;; own (L7), and no others: login-read, one read job, and login-write, one
@@ -45,7 +71,7 @@
 ;;; wrap-timeout and wrap-catch as if this were not here.
 (library (techo auth)
   (export key-hash key-state touch-due? make-plan plan?
-          db-read-as db-write-as
+          db-read-as db-write-as db-write-with-body-as
           login-read login-write)
   (import (rnrs)
           (only (chezscheme) make-mutex with-mutex)
@@ -54,7 +80,7 @@
           (techo errors)
           (only (techo keys) key-step read-bearer)
           (except (techo store) key-hash)
-          (only (techo log) note-request! note-add-db-ms!))
+          (only (techo log) note-request! note-account! note-add-db-ms!))
 
   ;; Runner = ((Tx -> Any) -> Any)      db-read or db-write, given a doorway
   ;; Clock = (-> Integer)               milliseconds, for durations
@@ -140,47 +166,67 @@
                        key)))
           (cons (account-id account) (work tx account key))))))
 
+  ;; with-key : Req (Bytevector -> Res) -> Res
+  ;; Steps 1 and 2 of the header: REQ's one well-shaped bearer key, hashed
+  ;; and handed to THEN; or the 401, with no job. Only the hash goes on.
+  (define (with-key req then)
+    (let ((secret (read-bearer (req-header-values req "authorization"))))
+      (if secret
+          (then (key-hash secret))
+          (problem-res 'unauthorized))))
+
+  ;; answered : Plan (U Res (Pair Bytevector A)) -> Res
+  ;; A job's outcome as the request's answer: a refusal's answer as it is,
+  ;; else what the work returned handed to PLAN's answer.
+  (define (answered plan outcome)
+    (if (res? outcome) outcome ((plan-answer plan) (cdr outcome))))
+
   ;; run-as : Symbol Runner Clock Req (-> (U Res Plan)) (Bytevector Work Cell -> Job) -> Res
   ;; Steps 1 to 5 of the header, MAKE-JOB building the job of the hash, the
   ;; plan's work and the request's cell.
   (define (run-as who run clock req prepare make-job)
-    (let ((secret (read-bearer (req-header-values req "authorization"))))
-      (if (not secret)
-          (problem-res 'unauthorized)
-          (let* ((hash (key-hash secret))
-                 (step (prepare)))
-            (cond ((res? step) step)
-                  ((plan? step)
-                   (let* ((cell (new-cell))
-                          (outcome (outcome-of run (make-job hash (plan-work step) cell)
-                                               clock req cell)))
-                     (if (res? outcome)
-                         outcome
-                         ((plan-answer step) (cdr outcome)))))
-                  (else (assertion-violation who "a plan is a make-plan or a response" step)))))))
+    (with-key req
+      (lambda (hash)
+        (let ((step (prepare)))
+          (cond ((res? step) step)
+                ((plan? step)
+                 (let ((cell (new-cell)))
+                   (answered step (outcome-of run (make-job hash (plan-work step) cell)
+                                              clock req cell note-request!))))
+                (else (assertion-violation who "a plan is a make-plan or a response" step)))))))
 
-  ;; outcome-of : Runner Job Clock Req Cell -> (U Res (Pair Bytevector A))
+  ;; Noter = (Req (U Bytevector #f) Integer -> Void)
+  ;;         how a job's account and db_ms go into the request's note
+
+  ;; note-more! : Noter
+  ;; A second job's: its account written when it names one, so a 401 from
+  ;; a key revoked since the first job keeps the account that job found;
+  ;; and its time added to the first job's db_ms.
+  (define (note-more! req account ms)
+    (when account (note-account! req account))
+    (note-add-db-ms! req ms))
+
+  ;; outcome-of : Runner Job Clock Req Cell Noter -> (U Res (Pair Bytevector A))
   ;; RUN's answer to JOB, or a &refusal's answer in the format. Whichever
-  ;; way the runner comes back, a raise too, db_ms is written into REQ's
-  ;; note: the time from handing the job over to its answer, the queue's
-  ;; wait included; and the account when it is known: the job's, the
-  ;; refusal's, or, for any other raise, CELL's (L8). Anything but a
+  ;; way the runner comes back, a raise too, NOTE! writes into REQ's note
+  ;; the job's db_ms, the time from handing the job over to its answer, the
+  ;; queue's wait included; and the account when it is known: the job's,
+  ;; the refusal's, or, for any other raise, CELL's (L8). Anything but a
   ;; &refusal goes on, raised again from where it was raised.
-  (define (outcome-of run job clock req cell)
+  (define (outcome-of run job clock req cell note!)
     (let ((start (clock)))
       (call/cc
        (lambda (k)
          (with-exception-handler
           (lambda (e)
             (let ((refused? (refusal? e)))
-              (note-request! req (if refused? (refusal-account e) (cell-take cell))
-                             (- (clock) start))
+              (note! req (if refused? (refusal-account e) (cell-take cell)) (- (clock) start))
               (if refused?
                   (k (problem-res (refusal-code e)))
                   (raise-continuable e))))
           (lambda ()
             (let ((r (run job)))
-              (note-request! req (car r) (- (clock) start))
+              (note! req (car r) (- (clock) start))
               r)))))))
 
   ;; db-read-as : Runner Clock Req (-> (U Res Plan)) -> Res
@@ -197,6 +243,51 @@
   (define (db-write-as run clock now req prepare)
     (run-as 'db-write-as run clock req prepare
             (lambda (hash work cell) (write-job hash now work cell))))
+
+  ;; checked-only : Work     the pre-check's work: none; its job's key check is all
+  (define (checked-only tx account key) #t)
+
+  ;; Reader = (-> (U Res A))     reads the request's body; may wait; a Res refuses
+
+  ;; db-write-with-body-as : Runner Runner Clock (-> Natural) Req (-> (U Res Reader))
+  ;;                         (A Natural -> Plan) -> Res
+  ;; A write whose request has a body, as the header's second list: two
+  ;; jobs for REQ, the key checked before the body is read and again in the
+  ;; write. READ and WRITE are the runners, CLOCK the duration clock,
+  ;; WALL-CLOCK the time of day in whole milliseconds since 1970, UTC.
+  ;; PREPARE is asked once the header has passed; its Reader is called once
+  ;; the read job has found the key good. WALL-CLOCK is read once, after
+  ;; the Reader has returned: NOW, which PLAN-OF is handed with the Reader's
+  ;; data, and the write job's last_used. The two jobs share REQ's cell,
+  ;; and the note's db_ms is their sum. A raise from the Reader, a deadline
+  ;; or the body's 413 among them, goes on as it was raised, the note
+  ;; holding the account. What PREPARE answers that is neither a response
+  ;; nor a procedure, and what PLAN-OF answers that is no plan, are an
+  ;; assertion violation.
+  (define (db-write-with-body-as read write clock wall-clock req prepare plan-of)
+    (with-key req
+      (lambda (hash)
+        (let ((reader (prepare)))
+          (cond
+            ((res? reader) reader)
+            ((procedure? reader)
+             (let* ((cell (new-cell))
+                    (pre (outcome-of read (read-job hash checked-only cell) clock req cell
+                                     note-request!)))
+               (if (res? pre)
+                   pre
+                   (let ((data (reader)))
+                     (if (res? data)
+                         data
+                         (let* ((now (wall-clock))
+                                (plan (plan-of data now)))
+                           (unless (plan? plan)
+                             (assertion-violation 'db-write-with-body-as "plan-of answers a make-plan"
+                                                  plan))
+                           (answered plan (outcome-of write (write-job hash now (plan-work plan) cell)
+                                                      clock req cell note-more!))))))))
+            (else (assertion-violation 'db-write-with-body-as
+                                       "prepare answers a Reader or a response" reader)))))))
 
   ;;; Login's two jobs (L7)
 

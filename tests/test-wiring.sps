@@ -36,9 +36,11 @@
         (only (jsonparse easy) string->json json->string)
         (only (unique-id) bytevector->uuid string->uuid uuid->bytevector uuid-version
               uuid-v7-timestamp)
-        (only (http-support) request-bytes fresh-dir open-test-store store-reader store-writer
+        (only (techo keys) key-secret)
+        (only (techo auth) key-hash)
+        (only (http-support) request-bytes exchange answer-status answer-json bearer fresh-dir open-test-store store-reader store-writer
               store-path run-write run-read close-test-store!)
-        (only (techo store) insert-account! account-by-email account-password-hash
+        (only (techo store) insert-account! insert-key! account-by-email account-password-hash
               account-created)
         (only (techo migrations) migrations)
         (only (techo hasher) hasher-open! hasher-stop! hasher-verify hasher-doubt)
@@ -315,6 +317,46 @@
 (test-equal "program-user-kit: the password typed in NFD logs in when sent in NFC"
   201
   (attempt (lambda () (status-of (post (world-app world) "nfd@example.com" nfc-password)))))
+
+;;; program-app and the node routes
+
+;; The program's own app, as techo.sps builds it, over a file of its own
+;; with one account and one key: a node is created, then read, through real
+;; SQLite. A program wired without the node routes answers both 404.
+(define node-secret (key-secret (make-bytevector 32 7)))
+(define node-id "0190b3a4-5c6d-7e8f-9a0b-000000000009")
+(define node-app
+  (attempt
+   (lambda ()
+     (let ((s (open-test-store (fresh-dir "test-wiring-nodes") "nodes.db")))
+       (run-write s (lambda (tx)
+                      (insert-account! tx (make-bytevector 16 #xB1) "nodey" "nodey@example.com"
+                                       "argon2id-hash" 1000)
+                      (insert-key! tx (make-bytevector 16 7) (make-bytevector 16 #xB1) "k"
+                                   (key-hash node-secret) 1100)))
+       (cons s (wrap-server (program-app (store-reader s) (store-writer s) wall-clock
+                                         random-bytes #f)
+                            (lambda (line) #f)))))))
+
+(test-equal "program-app: a node is created (201, created the wall clock's time) then read (200), through SQLite"
+  (list 201 now-ms 200 "t" "b")
+  (attempt
+   (lambda ()
+     (let* ((h (cdr node-app))
+            (path (string-append "/v1/nodes/" node-id))
+            (key (bearer node-secret))
+            (put (exchange h 'PUT path
+                           (list key (cons "Content-Type" "application/json")
+                                 (cons "If-None-Match" "*"))
+                           (json->string (list (cons "kind" "note") (cons "title" "t")
+                                               (cons "body" "b")
+                                               (cons "content_type" "text/plain")))))
+            (get (exchange h 'GET path (list key))))
+       (list (answer-status put) (cdr (assoc "created" (answer-json put)))
+             (answer-status get) (cdr (assoc "title" (answer-json get)))
+             (cdr (assoc "body" (answer-json get))))))))
+
+(guard (e (#t #f)) (close-test-store! (car node-app)))
 
 (guard (e (#t #f)) (hasher-stop! (world-hasher world)))
 (guard (e (#t #f)) (close-test-store! (world-store world)))

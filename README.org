@@ -8,8 +8,8 @@ Document storage API specifically geared for note taking.
 
 ** Status
 
-Early. The server answers =GET /health=, makes accounts and API keys, and lets
-a person log in; the notes themselves are not built yet.
+Early. The server makes accounts and API keys, lets a person log in, and stores
+notes with their full history. Folders, tags, search and sync are not built yet.
 [[file:.plans/outline.md][The outline]] says what is planned, and
 [[file:.plans/progress.md][the ledger]] where it stands.
 

@@ -35,3 +35,40 @@ Plan: [the outline](../outline.md) §4
 - Storage grows with every write. A retention setting is future work.
 - Open: whether the server refuses an id that is not version 7, and whether ids are
   stored as blobs or text.
+
+## Amendment, 2026-11-25: what slice 4 decided
+
+Status: accepted (owner, 2026-11-25, as slice 4's D2, D3, D4, D9 and D11)
+Plan: [slice 4](../2026-11-25-slice-4-nodes.md)
+
+1. **An id must be a UUID of version 7.** Any other is refused. The id's time is
+   not checked against the server's clock. This closes the record's open question.
+2. **A node is made by `PUT` to its id with `If-None-Match: *`,** and answers 412
+   when the id is in use. So "a write must carry `If-Match`" reads: a write carries
+   `If-Match`, or `If-None-Match: *` to make the node. With neither it is 428.
+3. **The ETag is the revision in quotes.** `If-Match` is accepted only as one such
+   tag. `*`, a list and a weak tag are refused: `If-Match: *` would overwrite
+   whatever is there.
+4. **A replace sends the whole content.** There is no `PATCH`. Every accepted write
+   is a new revision, the same content too.
+5. **The versioned write is a table** (ADR-0007):
+   [machines/write.md](../machines/write.md).
+6. **A snapshot also holds the content type and the author.** Tags and the parent
+   join it with the slices that bring them.
+7. **A body is kept once, in its snapshot.** A node's row holds no body: its body
+   is the snapshot at its revision. Read with 100 bodies of 1 MiB, a column behind
+   the body cost 17 ms a list and under 1 ms without one.
+8. **A node has an integer key beside its id,** which never leaves the database.
+   A search index points at a row by number, and SQLite may renumber a table that
+   has no integer key when it is vacuumed.
+9. **A body may be 1 MiB,** a title 1,000 characters, a request 2 MiB. The cap is
+   "for now" (owner): a larger one wants the key checked before the body is read.
+
+**Consequences**
+
+- Reading a node is two lookups.
+- Slice 7's search index is built over a view of each node and its newest
+  snapshot, with its trigger on `revisions`. Probed, not measured at size.
+- A node written 2^53 times can never be written again: no `If-Match` names its
+  next revision. Not guarded.
+- The lifecycle (archive, trash, purge) is slice 4b.

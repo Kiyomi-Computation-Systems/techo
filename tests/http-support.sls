@@ -8,7 +8,7 @@
 ;;; the responses the client read out. The host has no peer address.
 ;;;
 ;;;   the wire       request-bytes, exchange, exchange-bytes, exchange-closed,
-;;;                  answers
+;;;                  exchange-steps, answers
 ;;;   inputs         bearer, step-clock, byte-sequence, counting
 ;;;   the database   fresh-dir, open-test-store, store-reader, store-writer,
 ;;;                  run-write, run-read, close-test-store!, in-host
@@ -17,7 +17,7 @@
 ;;; Everything here raises as it is: a suite computes what it calls under a
 ;;; guard of its own.
 (library (http-support)
-  (export request-bytes exchange exchange-bytes exchange-closed
+  (export request-bytes exchange exchange-bytes exchange-closed exchange-steps
           answer? answer-status answer-headers answer-header answer-body answer-json
           answer-complete?
           bearer step-clock byte-sequence counting
@@ -120,6 +120,23 @@
       (test-client-close! c)
       (test-host-advance! host advance-ms)
       (map ->answer (test-client-responses c))))
+
+  ;; Step = (U Bytevector (-> Any))
+
+  ;; exchange-steps : Handler (Listof Step) -> (values (Listof Answer) Boolean Boolean)
+  ;; A test host for HANDLER and one client, taking STEPS in order: a
+  ;; bytevector is sent, and the host runs until it is quiet; a thunk is
+  ;; called between sends, the host quiet, as a test moves its own clocks
+  ;; while a body is on its way. The responses the client read, in order;
+  ;; whether its handler's code still waits (test-client-waiting?); and
+  ;; whether the server has ended the connection.
+  (define (exchange-steps handler steps)
+    (let* ((host (make-test-host (circuit->handler handler unset) unset))
+           (c (test-host-connect! host)))
+      (for-each (lambda (s) (if (procedure? s) (s) (test-client-send! c s))) steps)
+      (values (map ->answer (test-client-responses c))
+              (test-client-waiting? c)
+              (test-client-connection-closed? c))))
 
   ;; exchange : Handler Symbol String (Listof Header) [(U String #f)] -> Answer
   ;; One request, its one response. Any other count of responses is an

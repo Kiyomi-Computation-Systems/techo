@@ -5,7 +5,8 @@ Status: the owner accepted D1 to D10 on 2026-11-25, each as recommended, with th
 body's cap at 1 MiB "for now". The plan is reviewed (the review section, near the
 end), and what the review changed is there: where it and the text above it
 disagree, the review wins. D11, which the review raised, is decided too, and its
-tables replace D9's. Not built.
+tables replace D9's. Built, and the build reviewed (the last review section),
+which added D12: the key is checked before the body is read.
 Records: ADR-0002 (the API), ADR-0003 (nodes), ADR-0004 (revisions), ADR-0005
 (bodies), ADR-0007 (machines), ADR-0012 (migrations), ADR-0013 (the doorway). Read
 [global-constraints.md](global-constraints.md) first.
@@ -168,7 +169,8 @@ performs it.
 - **The cost to know:** the body is read and parsed before the key is checked,
   because the key is checked in the request's own job (ADR-0006) and nothing waits
   inside a job. So anyone who can send a well-shaped key can make the loop parse
-  2 MiB, about 20 ms a request. The other choice is a lower cap: 256 KiB of JSON
+  2 MiB, about 20 ms a request. **This figure was wrong, and D12 replaced the
+  design: see the review of the build.** The other choice is a lower cap: 256 KiB of JSON
   parses in 1 ms.
 - **Why refuse U+0000:** SQLite's text functions and search stop at it, so a body
   holding one would be stored whole and searched in part.
@@ -607,9 +609,7 @@ CREATE TABLE revisions (
 - A node's body is read by `(node, revision)` from `revisions`, in the same job.
   `node-of-owner` answers the node with its body; the write's check reads
   `revision` and `kind` from `nodes` alone.
-- `shipped-objects` becomes 15, not 14: `nodes`' unique index on `id` is one more
-  object than a blob primary key's, and `revisions` has its key's index. Task 1
-  counts them from `sqlite_schema` and does not trust this number.
+- `shipped-objects` becomes 14 (measured by task 1; this line first said 15).
 - H2 is now: a node's title, content type and props equal its newest snapshot's,
   and a snapshot at the node's revision exists.
 - H20: a node's `num` is in no answer and no log line.
@@ -658,6 +658,65 @@ This replaces "The work" above.
 - H8: the request's cap is tested in `test-node-routes.sps`.
 - H10: the RFC variant too.
 - H11: `kind` sent left out, the same and different.
+
+## The review of the build (Opus, 2026-11-25)
+
+Read-only, with probes and its own mutants under `build/review-close/`. Each
+finding below was checked again before it was acted on.
+
+**One fault: the loop's cost in D6 was wrong.** "About 20 ms a request" holds for
+a request shaped like a note, one long string. The parse runs before the key is
+checked, and 2 MiB of other JSON costs far more (`jsoncost.sps`, rerun):
+
+| 2 MiB of | Parse, on the loop |
+|---|---|
+| one long string | 14 ms |
+| small numbers | 78 ms |
+| floats such as `7.7e-300` | 199 ms |
+| integers of 1,000 digits | 258 ms |
+
+A key of the right shape, with no account behind it, was enough. H13's test timed
+`parse-content` alone, never the JSON reader.
+
+**D12 (owner, 2026-11-25): the key is checked before the body is read.** A write
+with a body checks the key twice: in a read job of its own, before any byte of
+the body is read, and again in the write's own job (ADR-0006, amended). So only a
+working key can make the server parse anything. The other choices were a 256 KiB
+cap, and a scan of the bytes before the parse.
+
+- The order of checks for the `PUT` is now: the key's shape; the id and the
+  preconditions; the key; the Content-Type and the body; the write job.
+- The write's time is read after the body has arrived. It was read with the
+  headers, so a slow upload was stamped up to 10 s early.
+- A request refused for its body now logs its account.
+
+**Three mutants survived every suite, and are now caught**
+
+- A list that joined the snapshots and read every body, then dropped it: 3.3 s a
+  page with 100 bodies of 1 MiB, against 1 ms. No answer showed it.
+- The same for the revisions list.
+- A second query with no owner.
+
+The store's SQL is now one named list, `node-store-statements`. Tests read each
+statement's text and SQLite's plan for it, hold the owner in every one but the
+named exceptions, and read the source for a statement written outside the list.
+
+**The table's cell for a stale restore was never stepped by the route.** The
+handler looked for the snapshot only when the revision matched. It now asks
+whether the snapshot exists, by an index alone, and reads the body only to copy
+it.
+
+**Weak tests, fixed:** a read counted with the writes; a snapshot never tested
+with two nodes at the same revision; an integration test that passed when no
+output was captured.
+
+**Left as they are**
+
+- A row with props other than `{}`, put there by hand, makes the list a 500.
+  Slice 6 gives props a meaning.
+- A replace leaves the node's `author`, and the snapshot's is the owner. The same
+  account in v1; sharing must decide.
+- `differ` x `restore` and `differ` x `restore-unknown` both answer 412.
 
 ## Not in this slice
 

@@ -271,6 +271,31 @@ it.
   what it expected and what it saw, and six copies of it pinned to two cores
   (`taskset -c 0,1`) showed the failure in one run.
 
+## A closure does not hold a variable it only names
+
+- **Expected:** a mutant that puts a request into a job's closure, as
+  `(begin req ...)`, is caught by the test that walks the closure for it
+  (`reaches?`).
+- **Happened:** the mutant survived. Chez's optimizer drops a reference whose
+  value is not used, so the closure never held the request (slice 4, task 3).
+- **See it again:** `(lambda (y) (begin extra (+ y 1)))` against
+  `(lambda (y) (if (eq? (car extra) 'never) 0 (+ y 1)))`, each walked with
+  `reaches?` for `extra`'s value: `#f`, then `#t`.
+- **Rule:** a mutant that tests what a closure holds must use the value.
+
+## A column behind a large text costs a walk of the text's pages
+
+- **Expected:** a list that does not select `body` is cheap however large the
+  bodies are.
+- **Happened:** with 100 rows of 1 MiB, reading `revision` and `created` took
+  17 ms when they came after the body in the table, and under 1 ms when the body
+  was last (slice 4's plan review). SQLite walks a row's overflow pages to reach
+  a later column. `ALTER TABLE ADD COLUMN` always adds behind.
+- **A probe can miss it:** the integers 0 and 1 are kept in the row's header and
+  cost nothing to read. Store real values.
+- **Rule:** a large column is the table's last, and a table that will grow has
+  none.
+
 The siblings' traps apply wherever Techo touches the same ground. Read them there:
 
 - chez-sqlite3: `.plans/traps.md`

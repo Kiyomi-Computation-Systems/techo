@@ -12,6 +12,9 @@
 ;;;   last_used       set by a write when due, never by a read (D6)
 ;;;   the note        the account and db_ms on the request's line (D10)
 ;;;   the job         reaches no request and no secret
+;;;   with a body     db-write-with-body-as: the key checked in a read job
+;;;                   before the Reader, the time read after it, the key
+;;;                   checked again in the write job; db_ms the two jobs' sum
 ;;;
 ;;; Stand-in handlers call db-read-as and db-write-as as the routes do.
 ;;; Clocks are fixed; accounts and keys go in through the store's own
@@ -817,6 +820,264 @@
                       (note-account! req acct-a)
                       (login-write (lambda (job) (sleep-ms 500) ((store-writer store) job))
                                    clock req acct-a "hash-a" #f (new-key 54))))))
+
+;;; db-write-with-body-as: the key checked before the body, and again in the write
+
+;; Trace : what one request did, oldest first: prepare (prepare was
+;; called), read and write (a job handed to that runner), reader (the
+;; Reader was called), wall (the wall clock was read), and (plan-of DATA
+;; NOW).
+
+;; body-app : Store Clock (Req (Any -> Void) (Vector Natural) -> (U Res Reader))
+;;            -> (values Handler (-> Trace))
+;; A stand-in write with a body, through db-write-with-body-as on S: its
+;; runners S's, each noting its job; its wall clock a box at now0, noted at
+;; each reading; PREPARE-OF making what prepare answers, of the request,
+;; the noter and the box. plan-of notes its arguments; its plan's work
+;; makes carol's account at NOW, so a work that ran shows, and answers the
+;; account's username and the asking key's name, 200 as JSON.
+(define (body-app s clock prepare-of)
+  (let* ((trace '())
+         (note! (lambda (e) (set! trace (cons e trace))))
+         (wall (vector now0))
+         (read (lambda (job) (note! 'read) ((store-reader s) job)))
+         (write (lambda (job) (note! 'write) ((store-writer s) job)))
+         (wall-clock (lambda () (note! 'wall) (vector-ref wall 0)))
+         (plan-of (lambda (data now)
+                    (note! (list 'plan-of data now))
+                    (make-plan (lambda (tx account key)
+                                 (insert-account! tx acct-c "carol" "carol@example.com" "h" now)
+                                 (list (account-username account) (key-name key)))
+                               (lambda (v)
+                                 (make-json-res 200 (list (cons "username" (car v))
+                                                          (cons "key" (cadr v)))))))))
+    (values (lambda (req)
+              (db-write-with-body-as read write clock wall-clock req
+                                     (lambda () (note! 'prepare) (prepare-of req note! wall))
+                                     plan-of))
+            (lambda () (reverse trace)))))
+
+;; moving-reader : (Any -> Void) (Vector Natural) [(-> Any)] -> Reader
+;; A Reader that notes itself, moves the wall clock on 5000 ms, as a slow
+;; upload would, runs DURING when given, and answers the-data.
+(define moving-reader
+  (case-lambda
+    ((note! wall) (moving-reader note! wall (lambda () #f)))
+    ((note! wall during)
+     (lambda ()
+       (note! 'reader)
+       (vector-set! wall 0 (+ (vector-ref wall 0) 5000))
+       (during)
+       'the-data))))
+
+;; lu : Store Natural -> (U Natural #f 'missing)     key N's last_used in S
+(define (lu s n)
+  (run-read s (lambda (tx)
+                (let ((k (key-by-hash tx (key-hash (secret-of n)))))
+                  (if k (key-last-used k) 'missing)))))
+
+;; carol? : Store -> Boolean     whether a work made carol's account
+(define (carol? s) (run-read s (lambda (tx) (and (account-by-id tx acct-c) #t))))
+
+;; body-try : String (Listof Header) (Store -> PrepareOf) -> (List Status Code Trace Boolean)
+;; PUT /x with HEADERS through body-app on a fresh seeded file NAME: the
+;; status and code, the trace, and whether a work wrote.
+(define (body-try name headers prepare-of-for)
+  (attempt
+   (lambda ()
+     (with-login-store name
+       (lambda (s)
+         (let-values (((app trace) (body-app s (step-clock 0 1) (prepare-of-for s))))
+           (let ((a (exchange app 'PUT "/x" headers "{}")))
+             (append (status+code a) (list (trace) (carol? s))))))))))
+
+(define (a-reader s) (lambda (req note! wall) (moving-reader note! wall)))
+
+(test-equal "with-body: a good key: prepare, the key's read job, the Reader, the wall clock once, plan-of with the Reader's data and that time, the write job; 200"
+  (list 200 '(("username" . "alice") ("key" . "laptop"))
+        (list 'prepare 'read 'reader 'wall (list 'plan-of 'the-data (+ now0 5000)) 'write)
+        #t)
+  (attempt
+   (lambda ()
+     (with-login-store "body-ok.db"
+       (lambda (s)
+         (let-values (((app trace) (body-app s (step-clock 0 1) (a-reader s))))
+           (let ((a (exchange app 'PUT "/x" (list (bearer (secret-of 1))) "{}")))
+             (list (answer-status a) (answer-json a) (trace) (carol? s)))))))))
+
+(test-equal "with-body: last_used is null while the Reader runs, so the read job wrote none; the write job sets it to the time read after the Reader"
+  (list #f (+ now0 5000))
+  (attempt
+   (lambda ()
+     (with-login-store "body-touch.db"
+       (lambda (s)
+         (let* ((seen 'unseen)
+                (look (lambda ()
+                        (set! seen ((store-reader s)
+                                    (lambda (tx) (key-last-used (key-by-hash tx (key-hash (secret-of 1))))))))))
+           (let-values (((app trace) (body-app s (step-clock 0 1)
+                                               (lambda (req note! wall) (moving-reader note! wall look)))))
+             (exchange app 'PUT "/x" (list (bearer (secret-of 1))) "{}")
+             (list seen (lu s 1)))))))))
+
+(test-equal "with-body: a key used an hour ago is left as it was (D6); one used two days ago is set to the time after the Reader"
+  (list 200 (- now0 3600000) 200 (+ now0 5000))
+  (attempt
+   (lambda ()
+     (let ((one (lambda (name n)
+                  (with-login-store name
+                    (lambda (s)
+                      (let-values (((app trace) (body-app s (step-clock 0 1) (a-reader s))))
+                        (let ((a (exchange app 'PUT "/x" (list (bearer (secret-of n))) "{}")))
+                          (list (answer-status a) (lu s n)))))))))
+       (append (one "body-hour.db" 5) (one "body-days.db" 4))))))
+
+(for-each
+ (lambda (case)
+   (test-equal (string-append "with-body: " (car case)
+                              ": 401, the key's read job alone, the Reader never called, nothing written")
+     '(401 "unauthorized" (prepare read) #f)
+     (body-try "body-key.db" (list (bearer (cdr case))) a-reader)))
+ (list (cons "a well-shaped key in no row" (secret-of 9))
+       (cons "a revoked key" (secret-of 2))))
+
+(for-each
+ (lambda (case)
+   (test-equal (string-append "with-body: " (car case) ": 401, prepare never called, no job")
+     '(401 "unauthorized" () #f)
+     (body-try "body-shape.db" (cdr case) a-reader)))
+ (list (list "no Authorization")
+       (list "capital hex" (bearer (upcase-hex (secret-of #xAB))))
+       (list "two keys" (bearer (secret-of 1)) (bearer (secret-of 1)))))
+
+(test-equal "with-body: prepare's response is the answer: no job, the Reader never called"
+  '(400 "invalid_request" (prepare) #f)
+  (body-try "body-prepare.db" (list (bearer (secret-of 1)))
+            (lambda (s) (lambda (req note! wall)
+                          (let ((never (moving-reader note! wall)))
+                            (problem-res 'invalid_request))))))
+
+(test-equal "with-body: what prepare answers that is neither a Reader nor a response raises, with no job"
+  '(raised (prepare))
+  (attempt
+   (lambda ()
+     (with-login-store "body-neither.db"
+       (lambda (s)
+         (let-values (((app trace) (body-app s (step-clock 0 1) (lambda (req note! wall) 'neither))))
+           (let* ((r (guard (e ((assertion-violation? e) 'raised))
+                       (in-host (lambda ()
+                                  (app (make-test-req 'PUT "/x" (list (bearer (secret-of 1)))))))
+                       'no-raise))
+                  (t (trace)))
+             (list r t))))))))
+
+(test-equal "with-body: the Reader's response is the answer: the key's read job, no write job, nothing written"
+  '(415 "unsupported_media_type" (prepare read reader) #f)
+  (body-try "body-reader-res.db" (list (bearer (secret-of 1)))
+            (lambda (s) (lambda (req note! wall)
+                          (lambda () (note! 'reader) (problem-res 'unsupported_media_type))))))
+
+(test-equal "with-body: a key revoked while the body was read: 401 from the write job, the work never run, last_used still null"
+  (list 401 "unauthorized"
+        (list 'prepare 'read 'reader 'wall (list 'plan-of 'the-data (+ now0 5000)) 'write)
+        #f #f)
+  (attempt
+   (lambda ()
+     (with-login-store "body-revoked.db"
+       (lambda (s)
+         (let-values (((app trace)
+                       (body-app s (step-clock 0 1)
+                                 (lambda (req note! wall)
+                                   (moving-reader note! wall
+                                                  (lambda ()
+                                                    ((store-writer s)
+                                                     (lambda (tx) (revoke-key! tx acct-a (kid 1) 1700)))))))))
+           (let ((a (exchange app 'PUT "/x" (list (bearer (secret-of 1))) "{}")))
+             (append (status+code a) (list (trace) (carol? s) (lu s 1))))))))))
+
+;; body-line : Store (Req (Any -> Void) (Vector Natural) -> (U Res Reader)) (Listof Header) String
+;;             -> (U String Any)
+;; The one request line of PUT /x with HEADERS and BODY through body-app on
+;; S, inside wrap-app with a 50 ms deadline and wrap-request-log, the two
+;; sharing a clock of 0, 10, 20 ..., the host's clock then moved 1000 ms.
+(define (body-line s prepare-of headers body)
+  (attempt
+   (lambda ()
+     (let* ((lines '())
+            (clock (step-clock 0 10))
+            (app (let-values (((app trace) (body-app s clock prepare-of))) app))
+            (h (wrap (wrap-app app (lambda (l) #f) 50)
+                     (wrap-request-log (lambda (l) (set! lines (cons l lines))) clock))))
+       (exchange-bytes h (request-bytes 'PUT "/x" headers body) 1000)
+       (if (= (length lines) 1) (car lines) (list 'lines lines))))))
+
+(define (put-line status ms db-ms account)
+  (string-append "request method=PUT path=/x status=" status " ending=written ms=" ms
+                 " db_ms=" db-ms " account=" account " address=-"))
+
+(test-equal "with-body: db_ms is the sum of the two jobs, and the account is the key's"
+  (put-line "200" "50" "20" acct-a-text)
+  (with-login-store "body-ms.db"
+    (lambda (s) (body-line s (a-reader s) (list (bearer (secret-of 1))) "{}"))))
+
+(test-equal "with-body: the Reader's response logs the account the read job found, and its db_ms"
+  (put-line "415" "30" "10" acct-a-text)
+  (with-login-store "body-ms-415.db"
+    (lambda (s) (body-line s (lambda (req note! wall) (lambda () (problem-res 'unsupported_media_type)))
+                           (list (bearer (secret-of 1))) "{}"))))
+
+(test-equal "with-body: a key the read job refused logs - and its db_ms; the Reader is never called"
+  (put-line "401" "30" "10" "-")
+  (with-login-store "body-ms-401.db"
+    (lambda (s) (body-line s (lambda (req note! wall) (lambda () (error 'reader "never called")))
+                           (list (bearer (secret-of 9))) "{}"))))
+
+(test-equal "with-body: a key revoked while the body was read: the write job's 401 keeps the account the read job found on the line, and db_ms is both jobs'"
+  (put-line "401" "50" "20" acct-a-text)
+  (with-login-store "body-ms-revoked.db"
+    (lambda (s) (body-line s (lambda (req note! wall)
+                               (moving-reader note! wall
+                                              (lambda ()
+                                                ((store-writer s)
+                                                 (lambda (tx) (revoke-key! tx acct-a (kid 1) 1700))))))
+                           (list (bearer (secret-of 1))) "{}"))))
+
+(test-equal "with-body: a deadline while the Reader waits goes on to wrap-timeout, a 504; the line has the account and the read job's db_ms"
+  (put-line "504" "30" "10" acct-a-text)
+  (with-login-store "body-504.db"
+    (lambda (s) (body-line s (lambda (req note! wall) (lambda () (sleep-ms 500) 'the-data))
+                           (list (bearer (secret-of 1))) "{}"))))
+
+(test-equal "with-body: a body past the cap raises the body's 413 from the Reader, which goes on as it was raised; the line has the account"
+  (put-line "413" "30" "10" acct-a-text)
+  (with-login-store "body-413.db"
+    (lambda (s) (body-line s (lambda (req note! wall)
+                               (lambda () (((wrap-json-body 16) (lambda (r) 'the-data)) req)))
+                           (list (bearer (secret-of 1)) (cons "Content-Type" "application/json"))
+                           "{\"a\": \"a long value past the cap\"}"))))
+
+(test-equal "with-body: the read job and the write job each reach neither the request nor the secret; each holds the hash"
+  '((read #f #f #t) (write #f #f #t))
+  (attempt
+   (lambda ()
+     (with-login-store "body-jobs.db"
+       (lambda (s)
+         (let* ((jobs '())
+                (keep (lambda (which run) (lambda (job) (set! jobs (cons (cons which job) jobs)) (run job))))
+                (hash (key-hash (secret-of 1)))
+                (app (lambda (req)
+                       (db-write-with-body-as
+                        (keep 'read (store-reader s)) (keep 'write (store-writer s)) (step-clock 0 1)
+                        (lambda () now0) req
+                        (lambda () (lambda () 'the-data))
+                        (lambda (data now) (make-plan (lambda (tx account key) #t)
+                                                      (lambda (v) (make-res 200 '() #f))))))))
+           (exchange app 'PUT "/x" (list (bearer (secret-of 1))) "{}")
+           (map (lambda (j)
+                  (list (car j) (reaches? (cdr j) req?)
+                        (reaches? (cdr j) (secret-string? (secret-of 1)))
+                        (reaches? (cdr j) (lambda (x) (and (bytevector? x) (bytevector=? x hash))))))
+                (reverse jobs))))))))
 
 (when (and store (not (pair? store))) (close-test-store! store))
 

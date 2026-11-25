@@ -53,3 +53,13 @@ first refusals and the first list, so they are decided here.
 
 - A client compares and sorts times as numbers, and formats them itself.
 - A later slice's list uses the same two parameters.
+
+## Amendment, 2026-11-25: a list may page by a number
+
+Status: accepted (owner, 2026-11-25, with slice 4's plan)
+Plan: [slice 4](../2026-11-25-slice-4-nodes.md)
+
+A node's revisions are listed newest first. Their `after` and `next` are revision
+numbers, not ids, and the page starts below `after`. Every other rule of paging
+holds. Three codes join the error format: `precondition_failed` (412),
+`precondition_required` (428) and `kind_fixed` (409).

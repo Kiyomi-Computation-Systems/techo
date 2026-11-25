@@ -491,14 +491,15 @@ run: deps ## Run techo on the library path: make run ARGS="serve" (ARGS="help" l
 	@$(CHEZ) --libdirs $(LIBDIRS) --program techo.sps $(ARGS)
 
 # Renders the machines' diagrams from their tables into
-# .plans/machines/migrate.md, doorway.md, key.md and login.md
+# .plans/machines/migrate.md, doorway.md, key.md, login.md and write.md
 # (scripts/render-machines.sps prints the text of the one it is named, the
 # migrate one by default). tests/test-migrations.sps,
-# tests/test-transaction.sps and tests/test-keys.sps fail when a file differs.
-machines: deps ## Write .plans/machines/migrate.md, doorway.md, key.md and login.md from the tables
+# tests/test-transaction.sps, tests/test-keys.sps, tests/test-login.sps and
+# tests/test-nodes.sps fail when a file differs.
+machines: deps ## Write .plans/machines/migrate.md, doorway.md, key.md, login.md and write.md from the tables
 	@scripts/require-tools "$(GOAL)" $(CHEZ)
 	@mkdir -p .plans/machines
-	@for m in migrate doorway key login; do \
+	@for m in migrate doorway key login write; do \
 	  $(CHEZ) --libdirs $(LIBDIRS) --program scripts/render-machines.sps $$m > .plans/machines/$$m.md.tmp || exit 1; \
 	  mv .plans/machines/$$m.md.tmp .plans/machines/$$m.md; \
 	done

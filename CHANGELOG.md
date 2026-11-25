@@ -43,6 +43,19 @@ Each release's changes. Dates are UTC.
   how to count.
 - Passwords are hashed with Argon2 (64 MiB, one at a time) on a thread of their
   own; a full queue answers 503.
+- Notes. `PUT /v1/nodes/{id}` makes a node, with `If-None-Match: *`, or replaces
+  its content, with `If-Match`. `GET /v1/nodes/{id}` reads one and `GET /v1/nodes`
+  lists them. A node's id is a version 7 UUID the client makes.
+- Every write is checked against the node's revision, which is its `ETag`: a
+  stale write is a 412 and a write with no precondition a 428. New codes:
+  `precondition_failed`, `precondition_required`, `kind_fixed`.
+- Every write is kept. `GET /v1/nodes/{id}/revisions` lists a node's history,
+  `.../revisions/{n}` reads one, and `POST .../revisions/{n}/restore` makes a new
+  revision from an old one.
+- A node's body may be 1 MiB, its title 1,000 characters, a request 2 MiB. A
+  write's body is read only after its key has been checked.
+- The third migration: the `nodes`, `revisions` and `changes` tables. Run
+  `techo migrate` with the server stopped.
 
 ### Changed
 
