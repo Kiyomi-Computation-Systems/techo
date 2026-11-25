@@ -970,8 +970,8 @@
 (define first-only (list (car migrations)))
 
 ;; objects in the shipped schema: accounts, api_keys, the index, and the
-;; automatic indexes of the primary and unique keys (2 + 1 + 2 + 3 + 2).
-(define shipped-objects 8)
+;; automatic indexes of the primary and unique keys, then migration 3 (counted from sqlite_schema: 14).
+(define shipped-objects 14)
 
 (let ((p (path "m-missing.db")))
   (clean! p)

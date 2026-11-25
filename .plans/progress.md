@@ -48,6 +48,11 @@ close-out under **Close-outs**, newest first.
   ([the plan](2026-11-24-slice-3b-login.md); ADR-0006, ADR-0009 and ADR-0013,
   amended 2026-11-25). A real server can now be used: make an account, log in, use
   the key.
+- **Slice 4 is built**, on `slice-4-nodes`, not merged: migration 3, seven routes
+  under `/v1/nodes`, the versioned write as a table, and the key checked before a
+  write's body is read ([the plan](2026-11-25-slice-4-nodes.md); ADR-0002,
+  ADR-0003, ADR-0004 and ADR-0006, amended 2026-11-25). A person can now store
+  notes and read their history.
 - **ADR-0006's amendment is accepted** (owner, 2026-11-23): a key is looked up by its
   BLAKE2b hash.
 - **T5 is restated** (owner, 2026-11-23; ADR-0008's second amendment), since circuit's
@@ -55,7 +60,14 @@ close-out under **Close-outs**, newest first.
 
 ## Next
 
-**Slice 4: node create, read, update; revisions; `If-Match`.** Not planned yet.
+**Slice 4b: the node lifecycle** (archive, trash, purge, tombstones). Not planned
+yet. Its plan decides the states, which can be undone, and what a write to a
+trashed node gets.
+
+**chez-sodium v0.1.0 is released** (981ba2e, told by its session on 2026-11-25).
+Techo pins d53e83c, its M3: no export changed since. Moving the pin is its own
+pull request, after slice 4 merges. Its docs say to bound a password before
+verify: compare Techo's limit with theirs then.
 
 **Watch for:** the Akku index gaining chez-http-server 0.12.0 and a chez-websocket
 that admits it. That ends the server's submodule (ADR-0011, amended 2026-11-23).
@@ -83,7 +95,8 @@ pin.
 | 2b | The database doorway: write and read workers | merged (PR #7) | |
 | 3a | The tables, the key check, the key routes, the error format, the request log | merged (PR #9) | |
 | 3b | `techo user add`, login, the rate limit, the hashing worker | merged (PR #12) | |
-| 4 | Node create, read, update; revisions; `If-Match` | not planned | unique-id |
+| 4 | Node create, read, update; revisions; `If-Match` | built, on `slice-4-nodes` | |
+| 4b | The node lifecycle: archive, trash, purge | not planned | |
 | 5 | The tree and move; links | not planned | |
 | 6 | Kinds and props; task transitions | not planned | |
 | 7 | Tags and search | not planned | |
@@ -109,12 +122,45 @@ From [outline.md](outline.md) §14, each for the slice named:
 
 | Question | Slice |
 |---|---|
-| Does the server refuse an id that is not version 7? | 4 |
-| The node lifecycle's states, and which transitions can be undone | 4 |
+| The node lifecycle's states, and which transitions can be undone | 4b |
+| Whether a snapshot holds the parent, so a restore can undo a move | 5 |
+| Search over a join of each node and its newest snapshot, measured at size | 7 |
+| Whether `VACUUM INTO` keeps a search index true (it did in a small probe) | 9 |
 | A Contact's first fields, exactly | 6 |
 | The container's stop grace (30 s) and a check that asks more than `/health` | 9 |
 
 ## Close-outs
+
+### Slice 4: nodes, revisions and `If-Match` (built 2026-11-25, not merged)
+
+- **Built:** `(techo nodes)`, `(techo node-store)`, `(techo node-routes)`,
+  `(techo requests)`; `db-write-with-body-as` in `(techo auth)`; migration 3;
+  seven routes; the write machine; four new suites, 35 in all, one a model test of
+  300 random sequences by two accounts.
+- **Answered:** an id must be version 7; a node is made by `PUT` with
+  `If-None-Match: *`; the ETag is the revision; a body is kept once, in its
+  snapshot; a node has an integer key beside its id; the key is checked before a
+  body is read (D1 to D12).
+- **Moved on:** the lifecycle, to 4b.
+- **What the reviews caught that the builders could not:**
+  - the plan's: a column behind a large body costs a walk of its pages; login's
+    member check, copied, would have held the loop a minute a request;
+  - the build's: my figure for the loop's cost was 13 times too low, because I
+    measured a request shaped like a note and not a hostile one; a list that read
+    every body passed every test, since no answer showed it.
+- **What to keep:**
+  - Measure a cost with the worst input, not the usual one, before putting it to
+    the owner.
+  - A probe that stores 0 hides what a real value costs.
+  - What an answer cannot show needs a check on the statement itself.
+  - A brief that says "at least one row" or "101 is a 400" from memory is wrong
+    as often as right: three builders corrected mine against the records.
+- **Agents:** the plan's review (Opus, 289k tokens, 20 min); tasks 1 (Sonnet,
+  121k, 13 min), 2 (Opus, 238k, 26 min), 3 (Opus, 286k, 30 min), 4 (Sonnet, 92k,
+  12 min), 5a (Opus, 330k, 34 min), 5b (Sonnet, 130k, 19 min); the build's review
+  (Opus, 362k, 28 min); task 9, its fixes (Opus, 262k, 31 min); task 10, the key
+  before the body (Opus, 360k, 43 min).
+- **Not run:** macOS, by hand.
 
 ### The clause 11 flake (2026-11-25)
 

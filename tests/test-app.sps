@@ -32,6 +32,10 @@
         (only (chezscheme) directory-list port-closed?)
         (http-support)
         (techo errors)
+        (only (techo keys) key-secret id->string)
+        (only (techo auth) key-hash)
+        (only (techo store) insert-account! insert-key!)
+        (only (unique-id) uuid->string bytevector->uuid)
         (techo app)
         (techo doorway))
 
@@ -601,6 +605,143 @@
                        (let ((ds (datums path)))
                          (or (mentions? ds 'db-read) (mentions? ds 'db-write))))
                      sources))))
+
+
+;;; --- the node routes, joined (slice 4) ---------------------------------------
+
+;; Real SQLite behind make-app: one account with one key, the wall clock a
+;; fixed time, the duration clock stepping by 1 (so the two differ).
+(define node-dir (fresh-dir "test-app-nodes"))
+(define node-acct (make-bytevector 16 #xA1))
+(define node-secret (key-secret (make-bytevector 32 1)))
+(define node-wall 1795515226123)
+(define node-id-text "0190b3a4-5c6d-7e8f-9a0b-000000000001")
+(define marker "zxqmarkerword")
+
+;; node-world : String -> (U (List Handler (-> (Listof String))) (List 'raised String))
+;; A seeded file, the app over it inside wrap-server, and a reader of the
+;; request log's lines.
+(define (node-world name)
+  (attempt
+   (lambda ()
+     (let* ((s (open-test-store node-dir name))
+            (lines '())
+            (clock (step-clock 0 1)))
+       (run-write s (lambda (tx)
+                      (insert-account! tx node-acct "alice" "alice@example.com" "argon2id-hash" 1000)
+                      (insert-key! tx (make-bytevector 16 1) node-acct "laptop"
+                                   (key-hash node-secret) 1100)))
+       (list (wrap-server (make-app (store-reader s) (store-writer s) (lambda () node-wall)
+                                    no-bytes clock)
+                          (lambda (l) (set! lines (cons l lines))) 10000 clock)
+             (lambda () (reverse lines)))))))
+
+(define node-key (bearer node-secret))
+(define json-h (cons "Content-Type" "application/json"))
+(define (node-body title body)
+  (json->string (list (cons "kind" "note") (cons "title" title) (cons "body" body)
+                      (cons "content_type" "text/plain"))))
+
+;; ask : World Symbol String (Listof Header) [String] -> (U Answer (List 'raised String))
+(define (ask w method target headers . body)
+  (attempt (lambda () (apply exchange (car w) method target headers body))))
+
+;; code-of : Answer -> (U String #f)
+(define (code-of a)
+  (let ((j (answer-json a))) (and (list? j) (assoc "code" j) (cdr (assoc "code" j)))))
+
+;; shape : (U Answer (List 'raised String)) -> (U (List Nat String String) (List 'raised String))
+(define (shape a)
+  (if (answer? a) (list (answer-status a) (answer-header a "content-type") (code-of a)) a))
+
+(define w1 (node-world "one.db"))
+(define node-path (string-append "/v1/nodes/" node-id-text))
+
+(test-equal "nodes: GET /v1/nodes with no key is 401 unauthorized in the format, not 404"
+  '(401 "application/problem+json" "unauthorized")
+  (shape (ask w1 'GET "/v1/nodes" '())))
+
+(define created
+  (ask w1 'PUT node-path (list node-key json-h (cons "If-None-Match" "*"))
+       (node-body "t" "b")))
+
+(test-equal "nodes: PUT with a key and If-None-Match: * creates, 201, created is the wall clock's time"
+  '(201 #t)
+  (if (answer? created)
+      (list (answer-status created)
+            (let ((j (answer-json created)))
+              (and (list? j) (equal? (cdr (assoc "created" j)) node-wall))))
+      created))
+
+(test-equal "nodes: the GET after it is 200 with the same content"
+  '(200 "t" "b" "text/plain" "note")
+  (let ((a (ask w1 'GET node-path (list node-key))))
+    (if (answer? a)
+        (let ((j (answer-json a)))
+          (list (answer-status a) (cdr (assoc "title" j)) (cdr (assoc "body" j))
+                (cdr (assoc "content_type" j)) (cdr (assoc "kind" j))))
+        a)))
+
+(test-equal "nodes: an unknown path under /v1/nodes/ is the 404 in the format"
+  '(404 "application/problem+json" "not_found")
+  (shape (ask w1 'GET "/v1/nodes/a/b/c/d" (list node-key))))
+
+(test-equal "nodes: DELETE on a node is 405 in the format, with allow"
+  '(405 "application/problem+json" #t)
+  (let ((a (ask w1 'DELETE node-path (list node-key))))
+    (if (answer? a)
+        (list (answer-status a) (answer-header a "content-type") (and (answer-header a "allow") #t))
+        a)))
+
+(test-equal "nodes: a stale If-Match is 412 precondition_failed, application/problem+json"
+  '(412 "application/problem+json" "precondition_failed")
+  (shape (ask w1 'PUT node-path (list node-key json-h (cons "If-Match" "\"7\""))
+              (node-body "t2" "b2"))))
+
+(test-equal "nodes: a PUT with neither If-Match nor If-None-Match is 428 precondition_required"
+  '(428 "application/problem+json" "precondition_required")
+  (shape (ask w1 'PUT node-path (list node-key json-h) (node-body "t2" "b2"))))
+
+(test-equal "nodes: the request log's line for a node write holds no title or body, and shows the account"
+  '(201 #t #f)
+  (let* ((w (node-world "log.db"))
+         (a (ask w 'PUT "/v1/nodes/0190b3a4-5c6d-7e8f-9a0b-000000000002"
+                 (list node-key json-h (cons "If-None-Match" "*"))
+                 (node-body (string-append "title " marker) (string-append "body " marker)))))
+    (if (answer? a)
+        (let ((line (car ((cadr w)))))
+          (list (answer-status a)
+                (contains? line (string-append "account="
+                                               (uuid->string (bytevector->uuid node-acct))))
+                (contains? line marker)))
+        a)))
+
+;;; the node libraries' imports
+
+(test-equal "imports: (techo node-store) takes tx-execute!, tx-query and tx-query-row from the doorway, nothing more"
+  '(tx-execute! tx-query tx-query-row)
+  (attempt (lambda () (doorway-visible "src/techo/node-store.sls"))))
+
+(test-equal "imports: (techo node-routes) takes nothing from the doorway"
+  '()
+  (attempt (lambda () (doorway-visible "src/techo/node-routes.sls"))))
+
+;; importers-of : (Listof Symbol) -> (Listof String)     the sources importing LIB
+(define (importers-of lib)
+  (filter (lambda (path)
+            (exists (lambda (spec)
+                      (let-values (((target visible?) (import-target spec)))
+                        (equal? target lib)))
+                    (import-specs path)))
+          sources))
+
+(test-equal "imports: only (techo node-routes) imports (techo node-store)"
+  '("src/techo/node-routes.sls")
+  (attempt (lambda () (importers-of '(techo node-store)))))
+
+(test-equal "imports: only (techo app) imports (techo node-routes)"
+  '("src/techo/app.sls")
+  (attempt (lambda () (importers-of '(techo node-routes)))))
 
 (test-end "app")
 

@@ -42,8 +42,17 @@ disagree, the record wins and this file gets fixed.
   `after` (ADR-0002, amended; ADR-0008).
 - **A time in the API is whole milliseconds since 1970, UTC** (ADR-0002, amended).
 - **Routes live under `/v1`,** but `/health` (ADR-0002, amended).
-- **Every write to a node carries `If-Match`.** Stale answers 412, missing 428
-  (ADR-0004).
+- **Every write to a node carries `If-Match`,** or `If-None-Match: *` to make it.
+  Stale answers 412, neither 428 (ADR-0004, amended 2026-11-25).
+- **`If-Match` is one revision in quotes.** `*`, a list and a weak tag are refused
+  (ADR-0004, amended).
+- **A node's id is a UUID of version 7** (ADR-0004, amended).
+- **A request's JSON is checked in time linear in its size** (slice 4's plan
+  review).
+- **No body is read before the key is known to be good.** A write with a body
+  checks the key in a read job first, and again in its own job (ADR-0006, amended
+  2026-11-25). Login has no key: its body is capped at 16 KiB.
+- **A write's time is read after its body has arrived** (ADR-0006, amended).
 
 ## Data
 
@@ -54,7 +63,22 @@ disagree, the record wins and this file gets fixed.
   (ADR-0004).
 - **The server never interprets or merges a body** (ADR-0005).
 - **Every query is scoped to the owner.** No handler reads another account's rows
-  (ADR-0003).
+  (ADR-0003). The one exception is `node-in-use?`, which reads an id alone
+  (ADR-0003, amended 2026-11-25), as `key-by-hash` is the one for keys. A test
+  holds it over `node-store-statements`: every statement there names the owner,
+  but that one, the inserts and `SELECT changes()`.
+- **The node store's SQL is in `node-store-statements`,** and nowhere else: a
+  test reads the source for a statement written in place (slice 4's closing
+  review).
+- **A list never selects a body.** A test holds it on the statements' text and
+  plans: the answers cannot show it (slice 4's closing review).
+- **A node's kind never changes** (ADR-0003, amended).
+- **A body is kept once, in its snapshot.** A node's row holds none (ADR-0004,
+  amended).
+- **A node's integer key never leaves the database** (ADR-0004, amended).
+- **A large column is its table's last** (ADR-0004, amended; traps.md).
+- **No raise in a node's job carries a title or a body:** a job's raise is logged
+  whole (ADR-0013).
 - **The five kinds are fixed,** and props are validated per kind before any write
   (ADR-0003).
 
@@ -123,8 +147,8 @@ disagree, the record wins and this file gets fixed.
 - **Login is rate-limited before any hashing** (ADR-0006).
 - **A key is hashed on the loop's thread, and only its hash enters a job** (ADR-0006,
   amended 2026-11-24).
-- **A route reaches the database only through `db-read-as` and `db-write-as`,** which
-  check the key in the request's own job. Only `techo.sps` names `db-read` and
+- **A route reaches the database only through `db-read-as`, `db-write-as` and
+  `db-write-with-body-as`,** which check the key in the request's own job. Only `techo.sps` names `db-read` and
   `db-write` (ADR-0006, amended).
 - **A refusal leaves a job as `&refusal`,** which holds a code and an account id and
   nothing of the request (ADR-0006, amended).

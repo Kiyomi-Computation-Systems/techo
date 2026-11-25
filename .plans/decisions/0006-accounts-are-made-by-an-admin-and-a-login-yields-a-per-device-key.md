@@ -164,3 +164,29 @@ Plan: [slice 3b](../2026-11-24-slice-3b-login.md)
   one hash, so item 5 helps only where memory is limited another way.
 - A stored hash that is unreadable, or made at other limits, answers in a different
   time than a good one. Only a hand-edited row or a later change of limits makes one.
+
+## Amendment, 2026-11-25: a write with a body checks the key twice
+
+Status: accepted (owner, 2026-11-25, as slice 4's D12)
+Plan: [slice 4](../2026-11-25-slice-4-nodes.md), the review of the build
+
+The key is checked in the request's own job, and nothing waits in a job, so a
+body was read and parsed before the key was known to be good. Parsing 2 MiB of
+hostile JSON held the loop 258 ms, for anyone with a key of the right shape.
+
+1. **A write that has a body checks the key first, in a read job of its own,**
+   before any byte of the body is read. A key that fails gets its 401 there.
+2. **The write's own job checks it again,** as every job does. A key revoked in
+   between gets a 401, and nothing is written.
+3. **The first check writes nothing.** `last_used` is set by the write's job.
+4. **The write's time is read after the body has arrived.**
+5. `db-write-with-body-as` does this, beside `db-read-as` and `db-write-as`. A
+   route still reaches the database through these three alone.
+
+**Consequences**
+
+- A write with a body is two jobs. A read, and a write with no body, are one.
+- A request refused for its body logs its account.
+- A person with a working key can still make the loop parse 2 MiB. Accounts are
+  made by the admin. Open signup would want more: a scan before the parse, or a
+  lower cap.

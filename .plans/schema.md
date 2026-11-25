@@ -14,14 +14,12 @@ whole milliseconds since 1970, UTC; JSON as text with a `json_valid` check; a
 |---|---|---|
 | 1 | techo's database | Sets `application_id` to `0x74656368`. No table. |
 | 2 | accounts and api keys | Creates `accounts`, `api_keys` and the index `api_keys_account`. |
+| 3 | nodes, revisions and changes | Creates `nodes`, `revisions`, `changes` and the index `nodes_owner`. |
 
 ## The tables to come
 
 | Table | Slice | State |
 |---|---|---|
-| `nodes` | 4 | core decided; lifecycle open |
-| `revisions` | 4 | decided |
-| `changes` | 4, read in 8 | decided |
 | `links` | 5 | sketched |
 | `tags`, or a column | 7 | open |
 | `nodes_fts` | 7 | sketched, from the spike |
@@ -66,55 +64,60 @@ CREATE INDEX api_keys_account ON api_keys(account, id);
 - **Decided:** `last_used` is set only by a request that writes, at most once a day.
 - **Open:** the login rate limit's counters. Slice 3b: in memory.
 
-### nodes (slice 4; ADR-0003, ADR-0004)
+### nodes (shipped in migration 3; ADR-0003, ADR-0004 amended)
 
 ```sql
 CREATE TABLE nodes (
-  id           BLOB    NOT NULL PRIMARY KEY CHECK (length(id) = 16),
+  num          INTEGER PRIMARY KEY,
+  id           BLOB    NOT NULL UNIQUE CHECK (length(id) = 16),
   owner        BLOB    NOT NULL REFERENCES accounts(id),
   author       BLOB    NOT NULL REFERENCES accounts(id),
   kind         TEXT    NOT NULL CHECK (kind IN ('project','journal','note','task','contact')),
-  title        TEXT    NOT NULL,
-  body         TEXT    NOT NULL,
-  content_type TEXT    NOT NULL,
+  title        TEXT    NOT NULL CHECK (length(title) <= 1000),
+  content_type TEXT    NOT NULL CHECK (length(content_type) BETWEEN 1 AND 255),
   props        TEXT    NOT NULL CHECK (json_valid(props)),
-  parent       BLOB    REFERENCES nodes(id),
-  state        TEXT    NOT NULL,           -- the lifecycle
-  revision     INTEGER NOT NULL,
+  revision     INTEGER NOT NULL CHECK (revision >= 1),
   created      INTEGER NOT NULL,
   updated      INTEGER NOT NULL
 ) STRICT;
-CREATE INDEX nodes_owner_parent ON nodes(owner, parent, id);
+CREATE INDEX nodes_owner ON nodes(owner, id);
 ```
 
-- **Decided:** one table for all five kinds; one parent or none; the revision is the
-  ETag.
-- **Open (slice 4):** the lifecycle's states and which can be undone. Whether a purged
-  node keeps a row.
+- **Decided:** no body here. A node's body is its snapshot's at `revision`.
+- **Decided:** `num` is for a search index to point at, and never leaves the
+  database. Every lookup is by `id`.
+- **To come, each by `ADD COLUMN`:** `state` (4b), `parent` (5), tags (7, or a
+  table). The table has no large column: at worst a title of 4,000 bytes puts later
+  columns on one more page, not a walk of many.
+- **Open (4b):** the lifecycle's states. Whether a purged node keeps a row.
 - **Open (slice 5):** how a move is kept from making a loop.
 - **Open (slice 6):** each kind's props.
 
-### revisions (slice 4; ADR-0004)
+### revisions (shipped in migration 3; ADR-0004 amended)
 
 ```sql
 CREATE TABLE revisions (
-  node     BLOB    NOT NULL REFERENCES nodes(id),
-  revision INTEGER NOT NULL,
-  title    TEXT    NOT NULL,
-  body     TEXT    NOT NULL,
-  props    TEXT    NOT NULL CHECK (json_valid(props)),
-  tags     TEXT    NOT NULL CHECK (json_valid(tags)),
-  parent   BLOB,
-  created  INTEGER NOT NULL,
+  node         BLOB    NOT NULL REFERENCES nodes(id),
+  revision     INTEGER NOT NULL CHECK (revision >= 1),
+  author       BLOB    NOT NULL REFERENCES accounts(id),
+  title        TEXT    NOT NULL,
+  content_type TEXT    NOT NULL,
+  props        TEXT    NOT NULL CHECK (json_valid(props)),
+  created      INTEGER NOT NULL,
+  body         TEXT    NOT NULL,
   PRIMARY KEY (node, revision)
-) STRICT, WITHOUT ROWID;
+) STRICT;
 ```
 
-- **Decided:** a full snapshot for every write, append-only.
-- **Known cost:** the spike measured about 4.7 KB for each snapshot of a 2 KB note.
-- **Open:** whether a snapshot holds the parent, so a restore can undo a move.
+- **Decided:** a full snapshot for every write, append-only, and the only copy of
+  a body. The body is the last column: one before others costs a walk of its
+  pages to read them.
+- **Decided:** a plain table. `WITHOUT ROWID` took 4,670 bytes a snapshot of a
+  2,000-character body against 4,135, and was slower to read.
+- **Open (slice 5):** whether a snapshot holds the parent, so a restore can undo a
+  move. **Open (slice 7):** how it holds tags.
 
-### changes (slice 4 writes it, slice 8 reads it; ADR-0004)
+### changes (shipped in migration 3; slice 8 reads it; ADR-0004)
 
 ```sql
 CREATE TABLE changes (
@@ -130,7 +133,8 @@ CREATE TABLE changes (
 
 - **Decided:** each owner has its own sequence, and a change gets the next number in
   the write's own transaction.
-- **Open:** the list of `op` values, which follows the node lifecycle.
+- **Decided:** `op` has no `CHECK`: SQLite cannot change one. Today's values are
+  `create`, `update` and `restore`; the code's list is the truth.
 
 ### links (slice 5; ADR-0003)
 
@@ -157,8 +161,10 @@ CREATE INDEX links_target ON links(owner, target, type, source);
 
 ### nodes_fts (slice 7)
 
-- **Sketched from the spike:** an external-content FTS5 table over title and body,
-  kept in step by three triggers. A migration that creates a trigger is a single
+- **Sketched from the spike, changed by slice 4:** an external-content FTS5 table
+  over a view of each node's title and its newest snapshot's body, pointing at
+  `nodes.num`, kept in step by one trigger on `revisions`
+  (`build/probe-4/fts.sps`; not measured at size). A migration that creates a trigger is a single
   statement, so it fits ADR-0012's rule.
 - **Known cost:** a ranked search for a word in nearly every note took 13 ms at medium
   size and 141 ms at large.

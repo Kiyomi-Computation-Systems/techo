@@ -31,8 +31,11 @@
       (not_found 404 "There is no such thing here.")
       (method_not_allowed 405 "That method is not allowed here.")
       (too_many_keys 409 "This account has 100 active keys; revoke one first.")
+      (kind_fixed 409 "A node's kind cannot be changed.")
+      (precondition_failed 412 "The node has changed or already exists; read it again.")
       (payload_too_large 413 "The request body is too large.")
       (unsupported_media_type 415 "The request body must be application/json.")
+      (precondition_required 428 "A write needs If-Match, or If-None-Match: * to create.")
       (rate_limited 429 "Too many login attempts; try again later.")
       (internal 500 "Something went wrong on the server.")
       (unavailable 503 "The service is busy or not ready; try again soon.")
@@ -59,10 +62,10 @@
 
   ;; status->code : Natural -> Symbol
   ;; The code a bare status gets: 400 is invalid_request (invalid_json is
-  ;; a handler's own choice); 401, 403, 404, 405, 413, 415, 500, 503 and 504
-  ;; are theirs; any other is `error`. invalid_credentials, too_many_keys and
-  ;; rate_limited are a handler's own choice, like invalid_json: a bare 401,
-  ;; 409 or 429 never gets them.
+  ;; a handler's own choice); 401, 403, 404, 405, 412, 413, 415, 428, 500,
+  ;; 503 and 504 are theirs; any other is `error`. invalid_credentials,
+  ;; too_many_keys, kind_fixed and rate_limited are a handler's own choice,
+  ;; like invalid_json: a bare 401, 409 or 429 never gets them.
   (define (status->code status)
     (case status
       ((400) 'invalid_request)
@@ -70,8 +73,10 @@
       ((403) 'forbidden)
       ((404) 'not_found)
       ((405) 'method_not_allowed)
+      ((412) 'precondition_failed)
       ((413) 'payload_too_large)
       ((415) 'unsupported_media_type)
+      ((428) 'precondition_required)
       ((500) 'internal)
       ((503) 'unavailable)
       ((504) 'timeout)

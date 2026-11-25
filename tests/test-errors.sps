@@ -1,8 +1,9 @@
 #!r6rs
 ;;; The errors suite: D7's table of codes, each one's status and message,
 ;;; the &refusal condition, and the answer in RFC 9457's format that
-;;; problem-res and status-problem-res make (slice 3a, task 3). A body is
-;;; parsed with jsonparse and compared as a value, never as a string.
+;;; problem-res and status-problem-res make (slice 3a, task 3); 3b's codes,
+;;; and slice 4's three (its D10). A body is parsed with jsonparse and
+;;; compared as a value, never as a string.
 ;;;
 ;;; Everything that can raise is computed under `attempt`, and a raise comes
 ;;; out as a value the expectation never is.
@@ -33,10 +34,11 @@
 
 (test-begin "errors")
 
-(test-equal "codes: the fifteen, in status order"
+(test-equal "codes: the eighteen, in status order"
   '(invalid_json invalid_request unauthorized invalid_credentials forbidden not_found
-    method_not_allowed too_many_keys payload_too_large unsupported_media_type
-    rate_limited internal unavailable timeout error)
+    method_not_allowed too_many_keys kind_fixed precondition_failed payload_too_large
+    unsupported_media_type precondition_required rate_limited internal unavailable timeout
+    error)
   error-codes)
 
 (test-assert "codes: no two share a name"
@@ -47,7 +49,9 @@
 
 ;; 3b's three codes share a status with a 3a code, so a bare status never gets them.
 (define three-b '(invalid_credentials too_many_keys rate_limited))
-(define old-fixed (filter (lambda (c) (not (memq c three-b))) fixed))
+;; Slice 4's three: kind_fixed shares 409 with too_many_keys; 412 and 428 are theirs alone.
+(define four '(kind_fixed precondition_failed precondition_required))
+(define old-fixed (filter (lambda (c) (not (or (memq c three-b) (memq c four)))) fixed))
 
 (test-assert "status: every fixed code has one in 400 to 599"
   (for-all (lambda (c) (let ((s (attempt (lambda () (error-status c)))))
@@ -55,7 +59,7 @@
            fixed))
 
 (test-equal "status: the table, code by code"
-  '(400 400 401 401 403 404 405 409 413 415 429 500 503 504)
+  '(400 400 401 401 403 404 405 409 409 412 413 415 428 429 500 503 504)
   (attempt (lambda () (map error-status fixed))))
 
 (test-equal "status: the fallback has none" #f (attempt (lambda () (error-status 'error))))
@@ -81,6 +85,16 @@
     "Too many login attempts; try again later.")
   (attempt (lambda () (map error-message three-b))))
 
+(test-equal "slice 4 codes: status, code by code"
+  '(409 412 428)
+  (attempt (lambda () (map error-status four))))
+
+(test-equal "slice 4 codes: message, code by code"
+  '("A node's kind cannot be changed."
+    "The node has changed or already exists; read it again."
+    "A write needs If-Match, or If-None-Match: * to create.")
+  (attempt (lambda () (map error-message four))))
+
 (test-equal "status: unknown code raises" 'assertion
   (raised-kind (lambda () (error-status 'nope))))
 (test-equal "message: unknown code raises" 'assertion
@@ -99,6 +113,16 @@
 (test-equal "status->code: a bare 401, 409 and 429 are not 3b's codes"
   '(unauthorized error error)
   (map status->code '(401 409 429)))
+
+(test-equal "status->code: a bare 412 and 428 get slice 4's codes, which alone have them"
+  '(precondition_failed precondition_required)
+  (attempt (lambda ()
+             (map (lambda (c) (status->code (error-status c)))
+                  '(precondition_failed precondition_required)))))
+
+(test-equal "status->code: 411 and 413 stay theirs; 427 and 429 are not 428's"
+  '(error payload_too_large error error)
+  (map status->code '(411 413 427 429)))
 
 (test-equal "status->code: 400 is invalid_request" 'invalid_request (status->code 400))
 (test-equal "status->code: 418 is error" 'error (status->code 418))
@@ -152,6 +176,10 @@
     "Service Unavailable" "Gateway Timeout")
   (attempt (lambda () (map status-phrase d7-statuses))))
 
+(test-equal "status-phrase: 412 and 428, slice 4's"
+  '("Precondition Failed" "Precondition Required")
+  (attempt (lambda () (map status-phrase '(412 428)))))
+
 (test-equal "status-phrase: 409, 429 and 431 have theirs; 418 and 599 have none, so their class's"
   '("Conflict" "Too Many Requests" "Request Header Fields Too Large" "Client Error" "Server Error")
   (attempt (lambda () (map status-phrase '(409 429 431 418 599)))))
@@ -204,6 +232,28 @@
      (("type" . "about:blank") ("title" . "Too Many Requests") ("status" . 429)
       ("code" . "rate_limited") ("detail" . "Too many login attempts; try again later."))))
   (map (lambda (c) (problem-summary (lambda () (problem-res c)))) three-b))
+
+(test-equal "problem-res: each slice 4 code, in the format"
+  '((409 "application/problem+json"
+     (("type" . "about:blank") ("title" . "Conflict") ("status" . 409)
+      ("code" . "kind_fixed") ("detail" . "A node's kind cannot be changed.")))
+    (412 "application/problem+json"
+     (("type" . "about:blank") ("title" . "Precondition Failed") ("status" . 412)
+      ("code" . "precondition_failed")
+      ("detail" . "The node has changed or already exists; read it again.")))
+    (428 "application/problem+json"
+     (("type" . "about:blank") ("title" . "Precondition Required") ("status" . 428)
+      ("code" . "precondition_required")
+      ("detail" . "A write needs If-Match, or If-None-Match: * to create."))))
+  (map (lambda (c) (problem-summary (lambda () (problem-res c)))) four))
+
+(test-equal "status-problem-res: a bare 412 and 428 answer slice 4's codes"
+  '("precondition_failed" "precondition_required")
+  (attempt (lambda ()
+             (map (lambda (s)
+                    (let ((j (string->json (utf8->string (res-body->bytevector (status-problem-res s))))))
+                      (cdr (assoc "code" j))))
+                  '(412 428)))))
 
 (test-equal "problem-res: rate_limited keeps its retry-after"
   "7"

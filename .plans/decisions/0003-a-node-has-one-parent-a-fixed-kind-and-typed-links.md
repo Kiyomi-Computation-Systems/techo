@@ -37,3 +37,16 @@ Plan: [the outline](../outline.md) §3
 - Which kinds may contain which is a rule for slice 5 to write down: a Journal holds
   Notes; a Project holds anything.
 - A move must refuse a cycle.
+
+## Amendment, 2026-11-25: what slice 4 decided
+
+Status: accepted (owner, 2026-11-25, as slice 4's D7 and D8)
+Plan: [slice 4](../2026-11-25-slice-4-nodes.md)
+
+1. **A node's kind is set when it is made and never changes.** A replace that names
+   another kind is refused, 409.
+2. **Props must be `{}` until slice 6** decides each kind's.
+3. **Another account's node is a missing node:** 404 on every route.
+4. **An id is unique across accounts.** So one query has no owner: whether an id is
+   in use, which reads the id alone. A create on an id another account holds is
+   412. Someone who already knows an id learns it is in use. Accepted.

@@ -33,7 +33,6 @@
   (import (rnrs)
           (only (circuit) res-set-header req-header-values req-remote-address)
           (only (circuit json) make-json-res wrap-json-body req-json? req-json)
-          (only (circuit params) req-query-params param-values)
           (only (circuit router) route GET POST req-path-param)
           (techo errors)
           (only (techo keys) key-step key-secret parse-id parse-limit parse-after id->string)
@@ -43,7 +42,8 @@
           (only (techo limiter) limiter-try! limiter-forgive! limiter-clear-email!)
           (only (techo login) login-start login-step login-event-kind parse-login-body
                 ending-code ending-count ending-retry-after ending-log-full?)
-          (techo auth))
+          (techo auth)
+          (techo requests))
 
   ;; Runner = ((Tx -> Any) -> Any)
   ;; Clock = (-> Integer)
@@ -81,10 +81,6 @@
       (res-set-header (make-json-res status (append (key->json k) (list (cons "key" secret))))
                       "cache-control" "no-store")))
 
-  ;; take : (Listof A) Natural -> (Listof A)     the first N
-  (define (take xs n)
-    (if (or (= n 0) (null? xs)) '() (cons (car xs) (take (cdr xs) (- n 1)))))
-
   ;; page-answer : Natural -> ((Listof Key) -> Res)
   ;; KEYS is what the store gave for LIMIT + 1: a key past LIMIT says there
   ;; is a next page, which starts after the last key shown.
@@ -98,17 +94,7 @@
                                               (id->string (key-id (car (reverse shown))))
                                               'null)))))))
 
-  (define (bad-request) (problem-res 'invalid_request))
-
   ;;; Parameters
-
-  ;; query-one : Req String -> (U String #f 'invalid)
-  ;; The query's one value for NAME, #f for none, 'invalid for two or more.
-  (define (query-one req name)
-    (let ((vs (param-values (req-query-params req) name)))
-      (cond ((null? vs) #f)
-            ((null? (cdr vs)) (car vs))
-            (else 'invalid))))
 
   ;; path-id : Req -> (U Bytevector 'invalid)
   (define (path-id req) (parse-id (req-path-param req "id")))
@@ -238,29 +224,6 @@
 
   ;; body-cap : Natural     slice 3's cap for a JSON body, 16 KiB
   (define body-cap 16384)
-
-  ;; json-type? : Req -> Boolean
-  ;; One Content-Type field whose media type is application/json, in any
-  ;; case, its parameters ignored.
-  (define (json-type? req)
-    (let ((fields (req-header-values req "content-type")))
-      (and (= (length fields) 1)
-           (let* ((v (car fields))
-                  (n (string-length v))
-                  (end (let loop ((i 0))
-                         (if (or (= i n) (char=? (string-ref v i) #\;)) i (loop (+ i 1)))))
-                  (end (let trim ((e end))
-                         (if (and (> e 0) (memv (string-ref v (- e 1)) '(#\space #\tab)))
-                             (trim (- e 1))
-                             e))))
-             (string=? (ascii-downcase (substring v 0 end)) "application/json")))))
-
-  ;; ascii-downcase : String -> String
-  (define (ascii-downcase s)
-    (list->string (map (lambda (c) (if (char<=? #\A c #\Z)
-                                       (integer->char (+ (char->integer c) 32))
-                                       c))
-                       (string->list s))))
 
   ;; retry-headers : (U Natural #f) -> Headers
   (define (retry-headers seconds)

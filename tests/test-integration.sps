@@ -269,8 +269,8 @@
 ;; The shipped schema, as the file's facts count it: accounts, api_keys, the
 ;; index, and the automatic indexes of the primary and unique keys.
 (define shipped-latest (latest-version migrations))
-(define shipped-objects 8)
-(define shipped-tables '("accounts" "api_keys"))
+(define shipped-objects 14)
+(define shipped-tables '("accounts" "api_keys" "changes" "nodes" "revisions"))
 
 ;; applied-lines : (Listof Natural) -> (Listof String)
 ;; The lines `techo migrate` prints for the versions it applied.
@@ -1038,6 +1038,149 @@
                      '("serve"))))
    '("x" "9" "zzq7")))
 
+;; --- nodes over the wire (slice 4) ----------------------------------------
+;;
+;; A server on a fresh file made by `techo migrate`; two accounts made by
+;; `techo user add`; a key each from POST /v1/login. Then the seven routes as
+;; a client calls them, in a fixed order. Each call is filed under a name, and
+;; the log line it should leave is remembered. The title's and the body's
+;; marker words are searched for in the server's standard output, and the
+;; file is read when the server has stopped.
+
+(define nd-pw-a "nodes pw of the first")
+(define nd-pw-b "nodes pw of the second")
+(define nd-n1 "0190b3a4-5c6d-7e8f-9a0b-000000000001")
+(define nd-n2 "0190b3a4-5c6d-7e8f-9a0b-000000000002")
+(define nd-n3 "0190b3a4-5c6d-7e8f-9a0b-000000000003")
+(define nd-n5 "0190b3a4-5c6d-7e8f-9a0b-000000000005")
+(define nd-v4 "0190b3a4-5c6d-4e8f-9a0b-000000000004")
+(define nd-n6 "0190b3a4-5c6d-7e8f-9a0b-000000000006")
+;; nd-unknown-key : String    a key of the right shape that no row holds
+(define nd-unknown-key (string-append "techo_" (make-string 64 #\7)))
+;; nd-hostile : String
+;; An array of 2,000 integers of 1,000 digits, about 2 MB: under the
+;; request's cap of 2 MiB, and about 260 ms of the loop's time to parse.
+(define nd-hostile
+  (call-with-string-output-port
+   (lambda (p)
+     (put-string p "[")
+     (let loop ((i 0))
+       (when (< i 2000)
+         (put-string p (make-string 1000 #\7))
+         (put-string p ",")
+         (loop (+ i 1))))
+     (put-string p "1]"))))
+(define nd-title-word "zebratitle")
+(define nd-body-word "quokkabody")
+(define nd-body-cap 1048576)
+
+;; the expected request log, newest first: (METHOD path status who)
+(define nd-calls '())
+
+;; nd-json : String String -> String    a create's or a replace's content
+(define (nd-json title body)
+  (string-append "{\"kind\":\"note\",\"title\":\"" title "\",\"body\":\"" body
+                 "\",\"content_type\":\"text/plain\"}"))
+
+;; nd-big : Nat -> String    N characters that start with the body marker
+(define (nd-big n)
+  (let ((m (string-length nd-body-word)))
+    (string-append nd-body-word
+                   (list->string
+                    (let loop ((i (- n 1)) (acc '()))
+                      (if (< i m)
+                          acc
+                          (loop (- i 1) (cons (integer->char (+ 97 (mod (* i 7) 26))) acc))))))))
+
+;; nd-call! : Nat String Symbol String String Headers (U String #f) Symbol -> Void
+;; One request with KEY, filed under NAME. BODY, when there is one, is sent as JSON.
+(define (nd-call! port name method path key headers body who)
+  (let ((r (attempt (lambda ()
+                      (hcall port method path (and body "application/json") (or body "")
+                             (append (bearer key) headers))))))
+    (obs-set! name r)
+    (when (and (pair? r) (not (eq? (car r) 'raised)))
+      (set! nd-calls (cons (list (string-upcase (symbol->string method)) path
+                                 (number->string (lg-status r)) who)
+                           nd-calls)))))
+
+(define nd-create (list (cons "If-None-Match" "*")))
+(define (nd-match n) (list (cons "If-Match" (string-append "\"" (number->string n) "\""))))
+
+;; observe-nodes! : String -> Void
+(define (observe-nodes! dir)
+  (define db (string-append dir "/nodes.db"))
+  (define env (list (string-append "TECHO_DB_PATH=" db)))
+  (define (add! name pw user)
+    (id-of-added (run-cli-in dir name (string-append pw "\n") '() env
+                             (list "user" "add" "--username" user "--email" (string-append user "@example.com")))))
+  (obs-set! "nd:migrate" (car (run-cli-in dir "ndmigrate" "" '() env '("migrate"))))
+  (obs-set! "nd:a-id" (add! "nd-add-a" nd-pw-a "nodea"))
+  (obs-set! "nd:b-id" (add! "nd-add-b" nd-pw-b "nodeb"))
+  (with-server dir "ndsrv" db #f
+    (lambda (port)
+      (define (key-of email pw)
+        (let* ((r (hcall port 'post "/v1/login" "application/json" (login-json email pw "nodes") '()))
+               (k (jget (lg-json r) "key")))
+          (if (string? k) k "techo_missing")))
+      (let* ((ka (key-of "nodea@example.com" nd-pw-a))
+            (kb (key-of "nodeb@example.com" nd-pw-b))
+            (p1 (string-append "/v1/nodes/" nd-n1))
+            (p2 (string-append "/v1/nodes/" nd-n2))
+            (p3 (string-append "/v1/nodes/" nd-n3))
+            (uni (string-append "quokkabody \x3053;\x3093;\x306b;\x3061;\x306f; \x1F38C; na\xEF;ve \x65E5;\x672C;\x8A9E;"))
+            (big (nd-big nd-body-cap)))
+        (define (a! name method path headers body) (nd-call! port name method path ka headers body 'a))
+        (define (b! name method path headers body) (nd-call! port name method path kb headers body 'b))
+        (a! "nd:create" 'put p1 nd-create (nd-json (string-append nd-title-word " one") (string-append nd-body-word " first")) )
+        (a! "nd:get" 'get p1 '() #f)
+        (a! "nd:replace" 'put p1 (nd-match 1) (nd-json (string-append nd-title-word " two") (string-append nd-body-word " second")))
+        (a! "nd:replace-again" 'put p1 (nd-match 1) (nd-json (string-append nd-title-word " three") (string-append nd-body-word " third")))
+        (a! "nd:get-after" 'get p1 '() #f)
+        (a! "nd:no-header" 'put p1 '() (nd-json (string-append nd-title-word " four") (string-append nd-body-word " fourth")))
+        (a! "nd:create-again" 'put p1 nd-create (nd-json (string-append nd-title-word " five") (string-append nd-body-word " fifth")))
+        (a! "nd:revisions" 'get (string-append p1 "/revisions") '() #f)
+        (a! "nd:revision-1" 'get (string-append p1 "/revisions/1") '() #f)
+        (a! "nd:restore" 'post (string-append p1 "/revisions/1/restore") (nd-match 2) #f)
+        (b! "nd:b-get" 'get p1 '() #f)
+        (b! "nd:b-replace" 'put p1 (nd-match 3) (nd-json (string-append nd-title-word " six") (string-append nd-body-word " sixth")))
+        (b! "nd:b-restore" 'post (string-append p1 "/revisions/1/restore") (nd-match 3) #f)
+        (b! "nd:b-revisions" 'get (string-append p1 "/revisions") '() #f)
+        (b! "nd:b-list" 'get "/v1/nodes" '() #f)
+        (b! "nd:b-create" 'put p1 nd-create (nd-json (string-append nd-title-word " seven") (string-append nd-body-word " seventh")))
+        (a! "nd:a-list" 'get "/v1/nodes" '() #f)
+        (a! "nd:uni-create" 'put p2 nd-create (nd-json (string-append nd-title-word " \x65E5;\x672C;") uni))
+        (a! "nd:uni-get" 'get p2 '() #f)
+        (obs-set! "nd:uni-sent" uni)
+        (a! "nd:big-create" 'put p3 nd-create (nd-json (string-append nd-title-word " big") big))
+        (a! "nd:big-get" 'get p3 '() #f)
+        (obs-set! "nd:big-sent" big)
+        (a! "nd:over" 'put (string-append "/v1/nodes/" nd-n5) nd-create
+            (nd-json (string-append nd-title-word " over") (string-append big "a")))
+        (a! "nd:v4" 'put (string-append "/v1/nodes/" nd-v4) nd-create
+            (nd-json (string-append nd-title-word " v4") (string-append nd-body-word " v4")))
+        (nd-call! port "nd:hostile" 'put (string-append "/v1/nodes/" nd-n6) nd-unknown-key
+                  nd-create nd-hostile 'none))))
+  (obs-set! "nd:expect" (reverse nd-calls))
+  (obs-set! "nd:db"
+    (attempt
+     (lambda ()
+       (with-db (open-techo-db db 'read-only)
+         (lambda (c)
+           (define (n sql) (vector-ref (query-row c sql) 0))
+           (define (seqs who)
+             (map (lambda (r) (vector-ref r 0))
+                  (query c (string-append "SELECT seq FROM changes WHERE owner = (SELECT id FROM accounts WHERE username = '"
+                                          who "') ORDER BY seq"))))
+           (list (n "SELECT count(*) FROM nodes")
+                 (n "SELECT count(*) FROM revisions")
+                 (n "SELECT count(*) FROM changes")
+                 (seqs "nodea") (seqs "nodeb")
+                 (map (lambda (r) (vector-ref r 0))
+                      (query c "SELECT op FROM changes ORDER BY seq"))
+                 (map (lambda (r) (vector-ref r 0))
+                      (query c "SELECT revision FROM nodes ORDER BY revision")))))))))
+
 ;; leftovers : String -> (Listof Boolean)
 ;; Whether DB's `-wal` and `-shm` exist.
 (define (leftovers db)
@@ -1079,6 +1222,7 @@
     (observe-migrate! dir)
     (observe "api-run" (observe-api! dir))
     (observe "login-run" (observe-login! dir))
+    (observe "nodes-run" (observe-nodes! dir))
     ;; The command line.
     (set! cli-version (attempt (lambda () (run-cli dir "version" '() '() '("version")))))
     (set! cli-none (attempt (lambda () (run-cli dir "none" '() '() '()))))
@@ -1312,7 +1456,7 @@
 (test-equal "clause 6: a normal migrate then applies the fixture's two on the same file"
   (list (list 'applied (list fixture-notes-version fixture-tags-version))
         (list techo-application-id fixture-latest-version (+ shipped-objects 3) 'wal)
-        (append shipped-tables '("notes" "tags")))
+        (list-sort string<? (append shipped-tables '("notes" "tags"))))
   (let ((r (obs "clause-6"))) (if (and (list? r) (= (length r) 7)) (tail r 4) r)))
 
 ;; The two clause 11 runs: the writer was killed with a full -wal, and
@@ -1906,6 +2050,165 @@
 (test-equal "Q3: each secret is in the 201 body that made it"
   #t (let ((bodies (map cdr lg-bodies-201)))
        (for-all (lambda (s) (exists (lambda (b) (bytes-contain? b (string->utf8 s))) bodies)) lg-secrets)))
+
+;; --- nodes over the wire (slice 4) ----------------------------------------
+
+(define (nd-j k) (if (lg-ok? k) (lg-json (obs k)) (obs k)))
+(define (nd-h k name) (if (lg-ok? k) (lg-header (obs k) name) (obs k)))
+(define node-members '("id" "kind" "title" "body" "content_type" "props" "revision" "created" "updated"))
+(define nd-problem "application/problem+json")
+
+(test-equal "nodes: the run's setup worked: migrated, two accounts, the server stopped with 0 and raised nothing"
+  '(0 #t #t 0 unobserved)
+  (list (obs "nd:migrate")
+        (and (string? (obs "nd:a-id")) (= 36 (string-length (obs "nd:a-id"))))
+        (and (string? (obs "nd:b-id")) (not (equal? (obs "nd:a-id") (obs "nd:b-id"))))
+        (obs "ndsrv:exit") (obs "ndsrv:raised")))
+
+(test-equal "nodes: PUT with If-None-Match: * is 201, ETag \"1\", Location, the whole node"
+  (list 201 "\"1\"" (string-append "/v1/nodes/" nd-n1) node-members
+        (list nd-n1 "note" "zebratitle one" "quokkabody first" "text/plain" '() 1))
+  (let ((j (nd-j "nd:create")))
+    (list (lg-st "nd:create") (nd-h "nd:create" "etag") (nd-h "nd:create" "location") (members j)
+          (map (lambda (k) (jget j k)) '("id" "kind" "title" "body" "content_type" "props" "revision")))))
+
+(test-equal "nodes: GET answers the same content and ETag \"1\""
+  (list 200 "\"1\"" #t)
+  (list (lg-st "nd:get") (nd-h "nd:get" "etag") (equal? (nd-j "nd:get") (nd-j "nd:create"))))
+
+(test-equal "nodes: replace with If-Match \"1\" is 200, ETag \"2\", revision 2 and the new content"
+  (list 200 "\"2\"" 2 "zebratitle two" "quokkabody second")
+  (let ((j (nd-j "nd:replace")))
+    (list (lg-st "nd:replace") (nd-h "nd:replace" "etag") (jget j "revision") (jget j "title") (jget j "body"))))
+
+(test-equal "nodes: the same replace again is 412 precondition_failed, a problem document"
+  (list 412 nd-problem "precondition_failed")
+  (list (lg-st "nd:replace-again") (nd-h "nd:replace-again" "content-type") (lg-code "nd:replace-again")))
+
+(test-equal "nodes: the GET after the 412 still shows revision 2, with the second write's content"
+  (list 200 "\"2\"" 2 "quokkabody second")
+  (list (lg-st "nd:get-after") (nd-h "nd:get-after" "etag")
+        (jget (nd-j "nd:get-after") "revision") (jget (nd-j "nd:get-after") "body")))
+
+(test-equal "nodes: a write with neither header is 428 precondition_required"
+  (list 428 nd-problem "precondition_required")
+  (list (lg-st "nd:no-header") (nd-h "nd:no-header" "content-type") (lg-code "nd:no-header")))
+
+(test-equal "nodes: a create on an id that exists is 412 precondition_failed"
+  (list 412 nd-problem "precondition_failed")
+  (list (lg-st "nd:create-again") (nd-h "nd:create-again" "content-type") (lg-code "nd:create-again")))
+
+(test-equal "nodes: the revisions list shows 2 then 1, an item has no body member"
+  (list 200 '(2 1) '(("revision" "title" "content_type" "props" "created")
+                     ("revision" "title" "content_type" "props" "created")))
+  (let ((is (jitems (nd-j "nd:revisions"))))
+    (list (lg-st "nd:revisions")
+          (if (list? is) (map (lambda (i) (jget i "revision")) is) is)
+          (if (list? is) (map members is) is))))
+
+(test-equal "nodes: GET .../revisions/1 is the first body"
+  (list 200 1 "zebratitle one" "quokkabody first")
+  (let ((j (nd-j "nd:revision-1")))
+    (list (lg-st "nd:revision-1") (jget j "revision") (jget j "title") (jget j "body"))))
+
+(test-equal "nodes: restore of revision 1 with If-Match \"2\" is 200, ETag \"3\", the first body"
+  (list 200 "\"3\"" 3 "quokkabody first" "zebratitle one")
+  (let ((j (nd-j "nd:restore")))
+    (list (lg-st "nd:restore") (nd-h "nd:restore" "etag") (jget j "revision") (jget j "body") (jget j "title"))))
+
+(test-equal "nodes: the second account sees the first's node as missing: GET, replace, restore and the revisions list are 404 not_found"
+  '((404 "not_found") (404 "not_found") (404 "not_found") (404 "not_found"))
+  (map (lambda (k) (list (lg-st k) (lg-code k)))
+       '("nd:b-get" "nd:b-replace" "nd:b-restore" "nd:b-revisions")))
+
+(test-equal "nodes: the second account's list is empty, and a create on the first's id is 412 (D8's one leak)"
+  (list 200 '() 412 "precondition_failed")
+  (list (lg-st "nd:b-list") (jitems (nd-j "nd:b-list")) (lg-st "nd:b-create") (lg-code "nd:b-create")))
+
+(test-equal "nodes: the first account's list holds the node at revision 3, with no body member"
+  (list 200 (list nd-n1) '("id" "kind" "title" "content_type" "props" "revision" "created" "updated") '(3))
+  (let ((is (jitems (nd-j "nd:a-list"))))
+    (list (lg-st "nd:a-list")
+          (if (list? is) (map (lambda (i) (jget i "id")) is) is)
+          (if (and (list? is) (pair? is)) (members (car is)) is)
+          (if (list? is) (map (lambda (i) (jget i "revision")) is) is))))
+
+(test-equal "nodes: Japanese, an emoji and an accent sent as UTF-8 come back byte for byte, in the create's answer and the GET's"
+  (list '(201 200) #t #t #t)
+  (let ((sent (string->utf8 (obs "nd:uni-sent")))
+        (title (string->utf8 (string-append nd-title-word " \x65E5;\x672C;"))))
+    (list (list (lg-st "nd:uni-create") (lg-st "nd:uni-get"))
+          (and (string? (jget (nd-j "nd:uni-create") "body")) (equal? sent (string->utf8 (jget (nd-j "nd:uni-create") "body"))))
+          (and (string? (jget (nd-j "nd:uni-get") "body")) (equal? sent (string->utf8 (jget (nd-j "nd:uni-get") "body"))))
+          (and (string? (jget (nd-j "nd:uni-get") "title")) (equal? title (string->utf8 (jget (nd-j "nd:uni-get") "title")))))))
+
+(test-equal "nodes: a body of exactly 1,048,576 characters is stored and read back whole"
+  (list '(201 200) nd-body-cap #t #t)
+  (let ((sent (obs "nd:big-sent")) (got (jget (nd-j "nd:big-get") "body")))
+    (list (list (lg-st "nd:big-create") (lg-st "nd:big-get"))
+          (if (string? got) (string-length got) got)
+          (and (string? got) (string=? sent got))
+          (let ((c (jget (nd-j "nd:big-create") "body")))
+            (and (string? c) (string=? sent c))))))
+
+(test-equal "nodes: a body of one character more is 413 payload_too_large"
+  (list 413 nd-problem "payload_too_large")
+  (list (lg-st "nd:over") (nd-h "nd:over" "content-type") (lg-code "nd:over")))
+
+(test-equal "nodes: an id of version 4 is 400 invalid_request"
+  (list 400 nd-problem "invalid_request")
+  (list (lg-st "nd:v4") (nd-h "nd:v4" "content-type") (lg-code "nd:v4")))
+
+;; The request log: one line a request, naming the path and the account. A
+;; refusal before the key is looked at (a bad id's 400, a 428) names no
+;; account, and nor does a key no row holds. A PUT's body is read only once
+;; its key has passed, so a 413 names the account.
+(define (nd-log-lines)
+  (let ((o (obs "ndsrv:out")))
+    (if (string? o)
+        (filter (lambda (l) (starts-with? (or (field-of l "path") "") "/v1/nodes")) (request-lines o))
+        '())))
+
+(test-equal "nodes log: one line a request, in order, each with its method, path, status and account (`-` when the key was not yet looked at, or no row holds it)"
+  (map (lambda (e)
+         (list (car e) (cadr e) (caddr e)
+               (cond ((member (caddr e) '("400" "428")) "-")
+                     ((eq? (cadddr e) 'a) (obs "nd:a-id"))
+                     ((eq? (cadddr e) 'b) (obs "nd:b-id"))
+                     (else "-"))))
+       (obs "nd:expect"))
+  (map line-key (nd-log-lines)))
+
+(test-equal "nodes log: the run made 24 requests, and the log has 24 lines for them"
+  '(24 24) (list (length (obs "nd:expect")) (length (nd-log-lines))))
+
+(test-equal "nodes log: the body's 413 is answered after the key's read job, so its line names the account"
+  (list "413" (obs "nd:a-id"))
+  (let ((line (find (lambda (l) (equal? (field-of l "path") (string-append "/v1/nodes/" nd-n5)))
+                    (nd-log-lines))))
+    (if line (list (field-of line "status") (field-of line "account")) 'no-line)))
+
+(test-equal "nodes: a 2 MB body of 1000-digit integers with a well-shaped key no row holds is 401, answered before the body is parsed: its line's ms is under 150 (about 260 when parsed), account -"
+  (list #t 401 nd-problem "unauthorized" (list "PUT" (string-append "/v1/nodes/" nd-n6) "401" "-")
+        'under-150)
+  (let ((line (find (lambda (l) (equal? (field-of l "path") (string-append "/v1/nodes/" nd-n6)))
+                    (nd-log-lines))))
+    (list (< (bytevector-length (string->utf8 nd-hostile)) 2097152)
+          (lg-st "nd:hostile") (nd-h "nd:hostile" "content-type") (lg-code "nd:hostile")
+          (and line (line-key line))
+          (let ((ms (and line (string->number (or (field-of line "ms") "x")))))
+            (if (and ms (< ms 150)) 'under-150 (list 'ms ms))))))
+
+(test-equal "nodes log: no title word and no body word anywhere in the server's output or error stream, both read, the output holding the node requests' lines"
+  '(#t #t #f #f #f #f)
+  (let ((o (obs "ndsrv:out")) (e (obs "ndsrv:err")))
+    (list (and (string? o) (contains? o "path=/v1/nodes/")) (string? e)
+          (and (string? o) (contains? o nd-title-word)) (and (string? o) (contains? o nd-body-word))
+          (and (string? e) (contains? e nd-title-word)) (and (string? e) (contains? e nd-body-word)))))
+
+(test-equal "nodes: the file after the server stops: 3 nodes, 5 revisions, 5 changes; account one's seq is 1..5 and account two has none; the ops and the nodes' revisions"
+  (list 3 5 5 '(1 2 3 4 5) '() '("create" "update" "restore" "create" "create") '(1 1 3))
+  (obs "nd:db"))
 
 (test-end "integration")
 
