@@ -7,7 +7,8 @@
 ;;; coroutine, so every request here goes through a test host: bytes in,
 ;;; the responses the client read out. The host has no peer address.
 ;;;
-;;;   the wire       request-bytes, exchange, exchange-bytes, answers
+;;;   the wire       request-bytes, exchange, exchange-bytes, exchange-closed,
+;;;                  answers
 ;;;   inputs         bearer, step-clock, byte-sequence, counting
 ;;;   the database   fresh-dir, open-test-store, store-reader, store-writer,
 ;;;                  run-write, run-read, close-test-store!, in-host
@@ -16,7 +17,7 @@
 ;;; Everything here raises as it is: a suite computes what it calls under a
 ;;; guard of its own.
 (library (http-support)
-  (export request-bytes exchange exchange-bytes
+  (export request-bytes exchange exchange-bytes exchange-closed
           answer? answer-status answer-headers answer-header answer-body answer-json
           answer-complete?
           bearer step-clock byte-sequence counting
@@ -107,6 +108,18 @@
          (test-client-send! c bytes)
          (test-host-advance! host advance-ms)
          (map ->answer (test-client-responses c))))))
+
+  ;; exchange-closed : Handler Bytevector Natural -> (Listof Answer)
+  ;; As exchange-bytes, but the client closes its end once the host is
+  ;; quiet after the send, before the clock moves ADVANCE-MS: a client
+  ;; that hangs up while its handler waits.
+  (define (exchange-closed handler bytes advance-ms)
+    (let* ((host (make-test-host (circuit->handler handler unset) unset))
+           (c (test-host-connect! host)))
+      (test-client-send! c bytes)
+      (test-client-close! c)
+      (test-host-advance! host advance-ms)
+      (map ->answer (test-client-responses c))))
 
   ;; exchange : Handler Symbol String (Listof Header) [(U String #f)] -> Answer
   ;; One request, its one response. Any other count of responses is an

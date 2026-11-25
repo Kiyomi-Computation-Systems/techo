@@ -117,7 +117,8 @@
 ;;;                          failed-kept (left open) failed-closed (no box)
 ;;; model-apply replays a step from its who and choice.
 ;;;
-;;; The serve machine (machine 3) is explored by itself: serve-explore.
+;;; The serve machine (machine 3) is explored by itself: serve-explore. Its
+;;; world has the write worker, the hasher (slice 3b) and the read worker.
 (library (transaction-model)
   (export
    ;; configurations
@@ -1239,9 +1240,11 @@
     (case (car s)
       ((checking) (list 'check))
       ((opening-writer) (list 'open-writer))
+      ((opening-hasher) (list 'open-hasher))
       ((opening-readers) (list 'open-readers))
       ((serving) (list 'serve))
       ((stopping-readers) (list 'stop-readers))
+      ((stopping-hasher) (list 'stop-hasher))
       ((stopping-writer) (list 'stop-writer))
       ((ended) (cons 'end (car (cdr s))))
       (else (assertion-violation 'model-serve-command "not a state" s))))
@@ -1265,8 +1268,8 @@
                 (car state) (car event) (car row-command) (car cmd)))
             (values next cmd))))))
 
-  ;; ServeWorld is (List State Command Writer Readers First Expected Bad)
-  ;;   Writer, Readers   none, running or stopped: each worker
+  ;; ServeWorld is (List State Command Writer Hasher Readers First Expected Bad)
+  ;;   Writer, Hasher, Readers   none, running or stopped: each worker
   ;;   First             #f, or the exit status of the first thing that
   ;;                     raised or was refused
   ;;   Expected          what the shell must print at the end, in order
@@ -1274,14 +1277,17 @@
   ;; Of circuit's worker, as the plan lists it: a set-up's raise leaves
   ;; make-worker after every thread is joined (a raised open made nothing
   ;; that runs); a tear-down's raise leaves worker-stop! after every thread
-  ;; is joined (a raised stop stopped it).
+  ;; is joined (a raised stop stopped it). The hasher's open stops its own
+  ;; worker when the stand-in's hash raises, so a raised open of the hasher
+  ;; made nothing that runs either (slice 3b, L5).
   (define (sw-state w) (list-ref w 0))
   (define (sw-command w) (list-ref w 1))
   (define (sw-writer w) (list-ref w 2))
-  (define (sw-readers w) (list-ref w 3))
-  (define (sw-first w) (list-ref w 4))
-  (define (sw-expected w) (list-ref w 5))
-  (define (sw-bad w) (list-ref w 6))
+  (define (sw-hasher w) (list-ref w 3))
+  (define (sw-readers w) (list-ref w 4))
+  (define (sw-first w) (list-ref w 5))
+  (define (sw-expected w) (list-ref w 6))
+  (define (sw-bad w) (list-ref w 7))
 
   ;; serve-outcomes : Command -> (Listof (List Choice RawOutcome (U #f Integer)
   ;;                                           (U #f (Pairof Symbol Any))))
@@ -1293,7 +1299,7 @@
     (case (car cmd)
       ((check) (list (list 'serve '(ok serve #f) #f #f)
                      (list 'refused (list 'ok refusal #f) 1 (cons 'line (caddr refusal)))))
-      ((open-writer open-readers stop-readers stop-writer)
+      ((open-writer open-hasher open-readers stop-readers stop-hasher stop-writer)
        (let ((obj (raised (symbol->string (car cmd)))))
          (list (list 'ok '(ok #t #f) #f #f)
                (list 'raised (list 'raised obj #f) 1 (cons 'raised obj)))))
@@ -1309,17 +1315,23 @@
     (let* ((state (sw-state w)) (cmd (sw-command w))
            (choice (car outcome)) (raw (cadr outcome)) (status (caddr outcome))
            (print (cadddr outcome)) (ok? (not status))
-           (wr (sw-writer w)) (rd (sw-readers w)) (bad '()))
+           (wr (sw-writer w)) (hs (sw-hasher w)) (rd (sw-readers w)) (bad '()))
       (define (bad! msg) (set! bad (cons (cons 'T8 msg) bad)))
       (case (car cmd)
         ((open-writer) (when ok? (set! wr 'running)))
+        ((open-hasher) (when ok? (set! hs 'running)))
         ((open-readers) (when ok? (set! rd 'running)))
         ((stop-readers)
          (unless (eq? rd 'running) (bad! "T8: stops the readers, which are not running"))
          (set! rd 'stopped))
+        ((stop-hasher)
+         (unless (eq? hs 'running) (bad! "T8: stops the hasher, which is not running"))
+         (when (eq? rd 'running) (bad! "T8: stops the hasher while the readers run"))
+         (set! hs 'stopped))
         ((stop-writer)
          (unless (eq? wr 'running) (bad! "T8: stops the writer, which is not running"))
          (when (eq? rd 'running) (bad! "T8: stops the writer while the readers run"))
+         (when (eq? hs 'running) (bad! "T8: stops the writer while the hasher runs"))
          (set! wr 'stopped))
         (else #f))
       (let ((kind ((smachine-kind m) cmd raw)))
@@ -1327,20 +1339,21 @@
           (let ((name (smachine-name m (car state) kind)))
             (when observe (observe (list name (car state) kind)))
             (cons (make-step 'serve #f choice cmd raw name s2 #f #f #f)
-                  (list s2 cmd2 wr rd (or (sw-first w) status)
+                  (list s2 cmd2 wr hs rd (or (sw-first w) status)
                         (if print (append (sw-expected w) (list print)) (sw-expected w))
                         bad)))))))
 
   ;; serve-invariant : ServeWorld -> (U #f String)
-  ;; T8: never ends with a worker it made still running; readers stopped
-  ;; before the writer (read at the stop); exit 0 only if nothing raised or
-  ;; was refused; the first status carried wins; and every failure's line
-  ;; printed, in order.
+  ;; T8: never ends with a worker it made still running, the hasher too;
+  ;; the readers stopped before the hasher, and both before the writer
+  ;; (read at each stop); exit 0 only if nothing raised or was refused; the
+  ;; first status carried wins; and every failure's line printed, in order.
   (define (serve-invariant w)
     (let ((out (map cdr (sw-bad w))) (s (sw-state w)))
       (define (bad! msg) (set! out (cons msg out)))
       (when (eq? (car s) 'ended)
         (when (eq? (sw-writer w) 'running) (bad! "T8: ends with the writer still running"))
+        (when (eq? (sw-hasher w) 'running) (bad! "T8: ends with the hasher still running"))
         (when (eq? (sw-readers w) 'running) (bad! "T8: ends with the readers still running"))
         (let ((status (serve-carried s)) (first (sw-first w)))
           (when (and (eqv? status 0) first)
@@ -1360,7 +1373,7 @@
   ;; world; at a world with nothing left, the table must have ended.
   (define (serve-explore m observe)
     (let-values (((s cmd) ((smachine-start m))))
-      (explore (list s cmd 'none 'none #f '() '())
+      (explore (list s cmd 'none 'none 'none #f '() '())
                (lambda (w)
                  (map (lambda (o) (serve-move m observe w o))
                       (serve-outcomes (sw-command w))))

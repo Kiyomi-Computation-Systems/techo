@@ -89,12 +89,12 @@
   (run-problems (env '(("TECHO_DB_PATH" . "./techo.db")))))
 
 (test-equal "lookup: asked for each variable by its name, once"
-  '("TECHO_DB_READERS" "TECHO_DB_PATH")
+  '("TECHO_BEHIND_PROXY" "TECHO_DB_PATH" "TECHO_DB_READERS")
   (let ((asked '()))
     (attempt
      (lambda ()
        (read-config (lambda (name) (set! asked (cons name asked)) "/x"))
-       asked))))
+       (list-sort string<? asked)))))
 
 (test-equal "problem->string: missing names the variable"
   "TECHO_DB_PATH is not set"
@@ -182,6 +182,44 @@
    (lambda ()
      (map (lambda (p) (contains? (problem->string p) "hunter2"))
           (cadr (run (env (list db-path-row '("TECHO_DB_READERS" . "hunter2")))))))))
+
+;; TECHO_BEHIND_PROXY: unset is 0; a whole number 0 to 8 in decimal digits.
+;; behind-proxy : (U String #f) -> (U Natural (List 'raised String))
+(define (behind-proxy value)
+  (attempt (lambda ()
+    (config-behind-proxy
+     (car (run (env (if value
+                        (list db-path-row (cons "TECHO_BEHIND_PROXY" value))
+                        (list db-path-row)))))))))
+
+(test-equal "proxy: unset gives 0" 0 (behind-proxy #f))
+(test-equal "proxy: 0" 0 (behind-proxy "0"))
+(test-equal "proxy: 1" 1 (behind-proxy "1"))
+(test-equal "proxy: 8 is the highest" 8 (behind-proxy "8"))
+(test-equal "proxy: leading zeros are a whole number, as for readers" 3 (behind-proxy "03"))
+
+(let loop ((bad '("9" "-1" "x" "" "1.5" " 1" "1 " "+1" "１" "99999999999999999999")))
+  (unless (null? bad)
+    (test-equal (string-append "proxy: " (call-with-string-output-port (lambda (p) (write (car bad) p))) " is refused")
+      '(("TECHO_BEHIND_PROXY" . not-0-to-8))
+      (run-problems (env (list db-path-row (cons "TECHO_BEHIND_PROXY" (car bad))))))
+    (loop (cdr bad))))
+
+(test-equal "proxy: reported after the others, in table order"
+  '(("TECHO_DB_PATH" . missing) ("TECHO_DB_READERS" . not-1-to-16)
+    ("TECHO_BEHIND_PROXY" . not-0-to-8))
+  (run-problems (env '(("TECHO_DB_READERS" . "x") ("TECHO_BEHIND_PROXY" . "x")))))
+
+(test-equal "problem->string: proxy names the variable"
+  "TECHO_BEHIND_PROXY must be a whole number from 0 to 8"
+  (attempt (lambda () (problem->string '("TECHO_BEHIND_PROXY" . not-0-to-8)))))
+
+(test-equal "problem->string: proxy never includes the value"
+  '(#f)
+  (attempt
+   (lambda ()
+     (map (lambda (p) (contains? (problem->string p) "hunter2"))
+          (cadr (run (env (list db-path-row '("TECHO_BEHIND_PROXY" . "hunter2")))))))))
 
 (test-end "config")
 

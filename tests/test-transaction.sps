@@ -89,8 +89,8 @@
 (test-equal "layer 1: the write table has the plan's rows" 25 (length write-rows))
 ;; R1 to R16 are 16; R4, R8, R14, R15, R16 each take a second (+5).
 (test-equal "layer 1: the read table has the plan's rows" 21 (length read-rows))
-;; S2 to S14.
-(test-equal "layer 1: the serve table has the plan's rows" 13 (length serve-rows))
+;; S2 to S18: slice 2b's S2 to S14, and slice 3b's hasher rows S15 to S18.
+(test-equal "layer 1: the serve table has the plan's rows" 17 (length serve-rows))
 
 ;; The names, written out: a row dropped from the table and its name with it
 ;; is seen here.
@@ -102,7 +102,7 @@
 (test-equal "layer 1: the rows' names are the plan's, in order"
   '((W1 W2 W3 W4 W5 W6 W7 W8 W9 W10 W11 W12 W13 W14 W15 W16 W17 W18 W19 W20)
     (R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 R16)
-    (S2 S3 S4 S5 S6 S7 S8 S9 S10 S11 S12 S13 S14))
+    (S2 S3 S4 S5 S15 S16 S6 S7 S8 S9 S10 S11 S12 S17 S18 S13 S14))
   (list (names-once (map car write-row-names))
         (names-once (map car read-row-names))
         (names-once (map car serve-row-names))))
@@ -289,14 +289,19 @@
    (c 'S3 "refused" (st 'checking S0) '(check) (list 'ok verdict-refused #f)
       'refused '(ended 1 ((line . "the database file is missing"))) '(end . 1))
    (c 'S4 "ok" (st 'opening-writer S0) '(open-writer) '(ok #t #f) 'ok
-      (st 'opening-readers S0) '(open-readers))
+      (st 'opening-hasher S0) '(open-hasher))
    (c 'S5 "raised" (st 'opening-writer S0) '(open-writer) (list 'raised boom #f)
       'raised (list 'ended 1 (list (cons 'raised boom))) '(end . 1))
+   (c 'S15 "ok" (st 'opening-hasher S0) '(open-hasher) '(ok #t #f) 'ok
+      (st 'opening-readers S0) '(open-readers))
+   (c 'S16 "raised" (st 'opening-hasher S0) '(open-hasher) (list 'raised boom #f)
+      'raised (st 'stopping-writer (sd 1 (list (cons 'raised boom))))
+      '(stop-writer))
    (c 'S6 "ok" (st 'opening-readers S0) '(open-readers) '(ok #t #f) 'ok
       (st 'serving S0) '(serve))
    (c 'S7 "raised" (st 'opening-readers S0) '(open-readers) (list 'raised boom #f)
-      'raised (st 'stopping-writer (sd 1 (list (cons 'raised boom))))
-      '(stop-writer))
+      'raised (st 'stopping-hasher (sd 1 (list (cons 'raised boom))))
+      '(stop-hasher))
    (c 'S8 "returned" (st 'serving S0) '(serve) '(returned #t #f) 'returned
       (st 'stopping-readers S0) '(stop-readers))
    (c 'S9 "refused-settings" (st 'serving S0) '(serve) (list 'refused boom #f)
@@ -305,10 +310,26 @@
    (c 'S10 "raised" (st 'serving S0) '(serve) (list 'raised boom #f) 'raised
       (st 'stopping-readers (sd 1 (list (cons 'raised boom)))) '(stop-readers))
    (c 'S11 "ok" (st 'stopping-readers S0) '(stop-readers) '(ok #t #f) 'ok
-      (st 'stopping-writer S0) '(stop-writer))
+      (st 'stopping-hasher S0) '(stop-hasher))
    (c 'S12 "raised" (st 'stopping-readers S0) '(stop-readers)
       (list 'raised boom #f) 'raised
+      (st 'stopping-hasher (sd 1 (list (cons 'raised boom)))) '(stop-hasher))
+   (c 'S12 "raised, 2 carried" (st 'stopping-readers (sd 2 '((refused . x))))
+      '(stop-readers) (list 'raised boom #f) 'raised
+      (st 'stopping-hasher (sd 2 (list '(refused . x) (cons 'raised boom))))
+      '(stop-hasher))
+   (c 'S17 "ok, nothing carried" (st 'stopping-hasher S0) '(stop-hasher)
+      '(ok #t #f) 'ok (st 'stopping-writer S0) '(stop-writer))
+   (c 'S17 "ok, 2 carried" (st 'stopping-hasher (sd 2 '((refused . x))))
+      '(stop-hasher) '(ok #t #f) 'ok
+      (st 'stopping-writer (sd 2 '((refused . x)))) '(stop-writer))
+   (c 'S18 "raised, nothing carried" (st 'stopping-hasher S0) '(stop-hasher)
+      (list 'raised boom #f) 'raised
       (st 'stopping-writer (sd 1 (list (cons 'raised boom)))) '(stop-writer))
+   (c 'S18 "raised, 2 carried" (st 'stopping-hasher (sd 2 '((refused . x))))
+      '(stop-hasher) (list 'raised boom #f) 'raised
+      (st 'stopping-writer (sd 2 (list '(refused . x) (cons 'raised boom))))
+      '(stop-writer))
    (c 'S13 "ok, nothing carried" (st 'stopping-writer S0) '(stop-writer)
       '(ok #t #f) 'ok '(ended 0 ()) '(end . 0))
    (c 'S13 "ok, 2 carried" (st 'stopping-writer (sd 2 '((refused . x))))
@@ -371,7 +392,7 @@
 (test-equal "layer 2: the plan's row names, in order"
   (list '(W1 W2 W3 W4 W5 W6 W7 W8 W9 W10 W11 W12 W13 W14 W15 W16 W17 W18 W19 W20)
         '(R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 R16)
-        '(S2 S3 S4 S5 S6 S7 S8 S9 S10 S11 S12 S13 S14))
+        '(S2 S3 S4 S5 S15 S16 S6 S7 S8 S9 S10 S11 S12 S17 S18 S13 S14))
   (list (names-of-rows write-row-names) (names-of-rows read-row-names)
         (names-of-rows serve-row-names)))
 
@@ -392,6 +413,9 @@
 (test-assert "layer 2: the can't-happen lists are not empty"
   (and (> (length write-cant-happen) 50) (> (length read-cant-happen) 40)
        (> (length serve-cant-happen) 15)))
+;; Eight states that are not ended, six event kinds, 17 rows.
+(test-equal "layer 2: the serve can't-happen list is every pair with no row"
+  (- (* 8 6) 17) (length serve-cant-happen))
 
 ;; ended takes no event.
 (test-equal "layer 2: ended takes no event"
@@ -489,8 +513,8 @@
 
 ;; The states of the serve table, which has its own kind function.
 (define serve-states
-  '(checking opening-writer opening-readers serving stopping-readers
-    stopping-writer))
+  '(checking opening-writer opening-hasher opening-readers serving
+    stopping-readers stopping-hasher stopping-writer))
 (define (serve-kinds cmd raws)
   (map (lambda (raw) (attempt (lambda () (serve-event-kind cmd raw)))) raws))
 
@@ -545,7 +569,7 @@
    (test-equal (string-append "serve-event-kind " (symbol->string cmd))
      '(ok raised)
      (serve-kinds (list cmd) (list '(ok #t #f) (list 'raised boom #f)))))
- '(open-writer open-readers stop-readers stop-writer))
+ '(open-writer open-hasher open-readers stop-readers stop-hasher stop-writer))
 (test-equal "serve-event-kind (serve)"
   '(returned refused-settings raised)
   (serve-kinds '(serve) (list '(returned #t #f) (list 'refused boom #f)
@@ -558,6 +582,9 @@
              (list '(check) '(ok (refuse x) #f))
              (list '(open-writer) '(returned #t #f))
              (list '(open-readers) (list 'refused boom #f))
+             (list '(open-hasher) '(returned #t #f))
+             (list '(stop-hasher) (list 'refused boom #f))
+             (list '(stop-hasher) '(returned #t #f))
              (list '(serve) '(ok #t #f))
              (list '(end . 0) '(ok #t #f))
              (list '(look) '(ok #t #f))
@@ -567,12 +594,14 @@
   (serve-violations))
 
 (test-equal "the serve can't-happen list is what serve-event-kind leaves out"
-  '(#t #t #t #t #t #t)
+  '(#t #t #t #t #t #t #t #t)
   (let ((ok-raised (list '(ok #t #f) (list 'raised boom #f))))
     (list (possible-matches serve-rows serve-cant-happen 'checking '(check)
                             (list '(ok serve #f) (list 'ok verdict-refused #f)))
           (possible-matches serve-rows serve-cant-happen 'opening-writer
                             '(open-writer) ok-raised)
+          (possible-matches serve-rows serve-cant-happen 'opening-hasher
+                            '(open-hasher) ok-raised)
           (possible-matches serve-rows serve-cant-happen 'opening-readers
                             '(open-readers) ok-raised)
           (possible-matches serve-rows serve-cant-happen 'serving '(serve)
@@ -580,6 +609,8 @@
                                   (list 'raised boom #f)))
           (possible-matches serve-rows serve-cant-happen 'stopping-readers
                             '(stop-readers) ok-raised)
+          (possible-matches serve-rows serve-cant-happen 'stopping-hasher
+                            '(stop-hasher) ok-raised)
           (possible-matches serve-rows serve-cant-happen 'stopping-writer
                             '(stop-writer) ok-raised))))
 
@@ -653,37 +684,60 @@
 (define o1 (list 'first))
 (define o2 (list 'second))
 
-(test-equal "serve: a clean run exits 0, stopping readers before the writer"
-  '(((check) (open-writer) (open-readers) (serve) (stop-readers) (stop-writer)
-     (end . 0))
+(define o3 (list 'third))
+
+(test-equal "serve: a clean run exits 0, stopping readers, then the hasher, then the writer"
+  '(((check) (open-writer) (open-hasher) (open-readers) (serve) (stop-readers)
+     (stop-hasher) (stop-writer) (end . 0))
     0 ())
-  (run-serve (list '(ok serve #f) (ok) (ok) '(returned #t #f) (ok) (ok))))
+  (run-serve (list '(ok serve #f) (ok) (ok) (ok) '(returned #t #f) (ok) (ok) (ok))))
 (test-equal "serve: a refused check exits 1 with its line, no worker made"
   '(((check) (end . 1)) 1 ((line . "the database file is missing")))
   (run-serve (list (list 'ok verdict-refused #f))))
 (test-equal "serve: the writer will not open, exit 1"
   (list '((check) (open-writer) (end . 1)) 1 (list (cons 'raised o1)))
   (run-serve (list '(ok serve #f) (raised o1))))
-(test-equal "serve: the readers will not open, the writer is still stopped"
-  (list '((check) (open-writer) (open-readers) (stop-writer) (end . 1))
+(test-equal "serve: the hasher will not open, the writer is still stopped, exit 1"
+  (list '((check) (open-writer) (open-hasher) (stop-writer) (end . 1))
         1 (list (cons 'raised o1)))
   (run-serve (list '(ok serve #f) (ok) (raised o1) (ok))))
-(test-equal "serve: a bad setting exits 2, and a later raise does not change it"
-  (list '((check) (open-writer) (open-readers) (serve) (stop-readers)
-          (stop-writer) (end . 2))
-        2 (list (cons 'refused o1) (cons 'raised o2)))
-  (run-serve (list '(ok serve #f) (ok) (ok) (list 'refused o1 #f)
-                   (raised o2) (ok))))
-(test-equal "serve: the first raise wins over a later one"
-  (list '((check) (open-writer) (open-readers) (serve) (stop-readers)
-          (stop-writer) (end . 1))
+(test-equal "serve: the hasher will not open and the writer's stop raises: the first wins"
+  (list '((check) (open-writer) (open-hasher) (stop-writer) (end . 1))
         1 (list (cons 'raised o1) (cons 'raised o2)))
-  (run-serve (list '(ok serve #f) (ok) (ok) (raised o1) (ok) (raised o2))))
-(test-equal "serve: a writer's tear-down that raises after a clean run exits 1"
-  (list '((check) (open-writer) (open-readers) (serve) (stop-readers)
+  (run-serve (list '(ok serve #f) (ok) (raised o1) (raised o2))))
+(test-equal "serve: the readers will not open, the hasher and the writer are still stopped"
+  (list '((check) (open-writer) (open-hasher) (open-readers) (stop-hasher)
           (stop-writer) (end . 1))
         1 (list (cons 'raised o1)))
-  (run-serve (list '(ok serve #f) (ok) (ok) '(returned #t #f) (ok) (raised o1))))
+  (run-serve (list '(ok serve #f) (ok) (ok) (raised o1) (ok) (ok))))
+(test-equal "serve: a bad setting exits 2, and a later raise does not change it"
+  (list '((check) (open-writer) (open-hasher) (open-readers) (serve) (stop-readers)
+          (stop-hasher) (stop-writer) (end . 2))
+        2 (list (cons 'refused o1) (cons 'raised o2)))
+  (run-serve (list '(ok serve #f) (ok) (ok) (ok) (list 'refused o1 #f)
+                   (raised o2) (ok) (ok))))
+(test-equal "serve: the first raise wins over a later one"
+  (list '((check) (open-writer) (open-hasher) (open-readers) (serve) (stop-readers)
+          (stop-hasher) (stop-writer) (end . 1))
+        1 (list (cons 'raised o1) (cons 'raised o2)))
+  (run-serve (list '(ok serve #f) (ok) (ok) (ok) (raised o1) (ok) (ok) (raised o2))))
+(test-equal "serve: every stop raises after a refused setting: each is printed in order, and the 2 stays"
+  (list '((check) (open-writer) (open-hasher) (open-readers) (serve) (stop-readers)
+          (stop-hasher) (stop-writer) (end . 2))
+        2 (list (cons 'refused o1) (cons 'raised o2) (cons 'raised o3)
+                (cons 'raised boom)))
+  (run-serve (list '(ok serve #f) (ok) (ok) (ok) (list 'refused o1 #f)
+                   (raised o2) (raised o3) (raised boom))))
+(test-equal "serve: a hasher's stop that raises after a clean run exits 1, and the writer still stops"
+  (list '((check) (open-writer) (open-hasher) (open-readers) (serve) (stop-readers)
+          (stop-hasher) (stop-writer) (end . 1))
+        1 (list (cons 'raised o1)))
+  (run-serve (list '(ok serve #f) (ok) (ok) (ok) '(returned #t #f) (ok) (raised o1) (ok))))
+(test-equal "serve: a writer's tear-down that raises after a clean run exits 1"
+  (list '((check) (open-writer) (open-hasher) (open-readers) (serve) (stop-readers)
+          (stop-hasher) (stop-writer) (end . 1))
+        1 (list (cons 'raised o1)))
+  (run-serve (list '(ok serve #f) (ok) (ok) (ok) '(returned #t #f) (ok) (ok) (raised o1))))
 
 ;;; job-carry
 
@@ -818,6 +872,19 @@
          (string-index-of doc "ending --> closing: busy, failed-open")
          (string-index-of doc "checking --> opening-writer: serve")
          (string-index-of doc "stopping-writer --> ended: ok, raised"))))
+
+(test-assert "the serve diagram has the hasher's states and the rows that changed"
+  (let ((doc (attempt (lambda () (doorway-document)))))
+    (and (string? doc)
+         (string-index-of doc "opening-writer --> opening-hasher: ok")
+         (string-index-of doc "opening-hasher --> opening-readers: ok")
+         (string-index-of doc "opening-hasher --> stopping-writer: raised")
+         (string-index-of doc "opening-readers --> stopping-hasher: raised")
+         (string-index-of doc "stopping-readers --> stopping-hasher: ok, raised")
+         (string-index-of doc "stopping-hasher --> stopping-writer: ok, raised")
+         (not (string-index-of doc "opening-writer --> opening-readers"))
+         (not (string-index-of doc "opening-readers --> stopping-writer"))
+         (not (string-index-of doc "stopping-readers --> stopping-writer")))))
 
 (test-equal "the document has three diagrams"
   3

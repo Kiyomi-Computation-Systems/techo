@@ -152,6 +152,96 @@
              (let ((l (line-for "migrate")))
                (and l (< (string-length l) 80))))))
 
+;;; techo user
+
+(test-equal "user add: the options in one order"
+  '(user-add "ann" "a@example.com")
+  (parse '("user" "add" "--username" "ann" "--email" "a@example.com")))
+(test-equal "user add: the options in the other order"
+  '(user-add "ann" "a@example.com")
+  (parse '("user" "add" "--email" "a@example.com" "--username" "ann")))
+(test-equal "user password: parses"
+  '(user-password "a@example.com")
+  (parse '("user" "password" "--email" "a@example.com")))
+
+(test-equal "user add: any string is passed through, even an odd one"
+  '(user-add "" "not an email")
+  (parse '("user" "add" "--username" "" "--email" "not an email")))
+(test-equal "user add: a value that starts with - follows its option"
+  '(user-add "-x" "--username")
+  (parse '("user" "add" "--username" "-x" "--email" "--username")))
+(test-equal "user password: a value that starts with - follows its option"
+  '(user-password "--email")
+  (parse '("user" "password" "--email" "--email")))
+
+(test-equal "user add: no username"
+  '(usage "user add needs --username")
+  (parse '("user" "add" "--email" "a@b")))
+(test-equal "user add: no email"
+  '(usage "user add needs --email")
+  (parse '("user" "add" "--username" "ann")))
+(test-equal "user add: no options at all names the first one missing"
+  '(usage "user add needs --username")
+  (parse '("user" "add")))
+(test-equal "user password: no email"
+  '(usage "user password needs --email")
+  (parse '("user" "password")))
+(test-equal "user add: a repeated option"
+  '(usage "user add: --username given twice")
+  (parse '("user" "add" "--username" "a" "--email" "b" "--username" "c")))
+(test-equal "user password: a repeated option"
+  '(usage "user password: --email given twice")
+  (parse '("user" "password" "--email" "a" "--email" "a")))
+(test-equal "user add: an unknown option"
+  '(usage "unknown option for user add: --foo")
+  (parse '("user" "add" "--username" "a" "--email" "b" "--foo" "c")))
+(test-equal "user password: --username is unknown there"
+  '(usage "unknown option for user password: --username")
+  (parse '("user" "password" "--username" "a" "--email" "b")))
+(test-equal "user add: --password is an unknown option"
+  '(usage "unknown option for user add: --password")
+  (parse '("user" "add" "--username" "a" "--email" "b" "--password" "hunter2")))
+(test-equal "user password: --password is an unknown option"
+  '(usage "unknown option for user password: --password")
+  (parse '("user" "password" "--password" "hunter2" "--email" "b")))
+(test-equal "user add: an option with no value at the end"
+  '(usage "user add: --email needs a value")
+  (parse '("user" "add" "--username" "a" "--email")))
+(test-equal "user password: an option with no value"
+  '(usage "user password: --email needs a value")
+  (parse '("user" "password" "--email")))
+(test-equal "user add: a stray argument"
+  '(usage "unexpected argument for user add: stray")
+  (parse '("user" "add" "stray" "--username" "a" "--email" "b")))
+(test-equal "user add: a stray argument at the end"
+  '(usage "unexpected argument for user add: stray")
+  (parse '("user" "add" "--username" "a" "--email" "b" "stray")))
+(test-equal "user: alone"
+  '(usage "no user command given")
+  (parse '("user")))
+(test-equal "user: an unknown word"
+  '(usage "unknown user command: foo")
+  (parse '("user" "foo")))
+(test-equal "user: a command is case-sensitive"
+  '(usage "unknown user command: Add")
+  (parse '("user" "Add" "--username" "a" "--email" "b")))
+
+(test-equal "usage-text: the user add line names its options and is short"
+  #t
+  (attempt (lambda ()
+             (let ((l (line-for "user add")))
+               (and l (contains? l "--username") (contains? l "--email")
+                    (< (string-length l) 80))))))
+(test-equal "usage-text: the user password line names its option and is short"
+  #t
+  (attempt (lambda ()
+             (let ((l (line-for "user password")))
+               (and l (contains? l "--email") (not (contains? l "--password"))
+                    (< (string-length l) 80))))))
+(test-equal "usage-text: says the password is read from standard input"
+  #t
+  (attempt (lambda () (contains? usage-text "standard input"))))
+
 (test-end "cli")
 
 (exit (suite-exit-status runner))

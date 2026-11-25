@@ -226,6 +226,33 @@
                 (make-res 200 '() #f))
               (make-test-req 'GET "/x") 'written))
 
+;;; The note, a piece at a time (slice 3b: login's two jobs)
+
+(test-equal "note-account!: writes the account alone, and keeps db_ms"
+  '(200 ()
+    ("request method=POST path=/v1/login status=200 ending=written ms=10 db_ms=3 account=01930000-0000-7000-8000-00000000002a address=-"))
+  (run-logged (lambda (req) (note-request! req #f 3) (note-account! req acct) (make-res 200 '() #f))
+              (make-test-req 'POST "/v1/login") 'written))
+
+(test-equal "note-add-db-ms!: adds to db_ms, nothing yet counting as 0, and keeps the account"
+  '(200 ()
+    ("request method=POST path=/v1/login status=200 ending=written ms=10 db_ms=7 account=01930000-0000-7000-8000-00000000002a address=-"))
+  (run-logged (lambda (req)
+                (note-add-db-ms! req 2)
+                (note-account! req acct)
+                (note-add-db-ms! req 5)
+                (make-res 200 '() #f))
+              (make-test-req 'POST "/v1/login") 'written))
+
+(test-equal "note-account! and note-add-db-ms!: a request with no note is left as it is"
+  '(#f ok)
+  (attempt
+   (lambda ()
+     (let ((req (make-test-req 'GET "/x")))
+       (note-account! req acct)
+       (note-add-db-ms! req 4)
+       (list (req-note req) 'ok)))))
+
 (test-end "log")
 
 (exit (suite-exit-status runner))

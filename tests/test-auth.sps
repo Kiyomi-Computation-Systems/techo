@@ -475,8 +475,9 @@
                                         (lambda (v) (make-res 200 '() #f)))))))
            (list (bearer good))))
 
-(test-equal "note: a job's raise that is no refusal still has db_ms, and no account"
-  "request method=GET path=/x status=500 ending=written ms=30 db_ms=10 account=- address=-"
+(test-equal "note: a work's raise after the key check, a 500, has db_ms and the account (L8)"
+  (string-append "request method=GET path=/x status=500 ending=written ms=30 db_ms=10 account="
+                 acct-a-text " address=-")
   (quietly line-of (lambda (clock)
              (wrap-app
               (lambda (req)
@@ -486,6 +487,56 @@
                                          (lambda (v) (make-res 200 '() #f))))))
               (lambda (l) #f)))
            (list (bearer good))))
+
+;;; A raise while the answer is awaited (L8): the account once the key passed
+
+;; line-of-raise : Runner (Listof Header) Boolean -> (U String Any)
+;; GET /x with HEADERS through read-app with RUN, inside wrap-app with a
+;; 50 ms deadline and wrap-request-log, the clock then moved 1000 ms (the
+;; client hung up first with CLOSE?); the one line. The test doorway runs a
+;; job while its caller waits, so a runner that sleeps after it has the
+;; job done before the deadline, and one that sleeps first has not.
+(define (line-of-raise run headers close?)
+  (attempt
+   (lambda ()
+     (let* ((lines '())
+            (clock (step-clock 0 10))
+            (app (let-values (((app plans) (read-app run clock))) app))
+            (h (wrap (wrap-app app (lambda (l) #f) 50)
+                     (wrap-request-log (lambda (l) (set! lines (cons l lines))) clock))))
+       (if close?
+           (exchange-closed h (request-bytes 'GET "/x" headers) 1000)
+           (exchange-bytes h (request-bytes 'GET "/x" headers) 1000))
+       (if (= (length lines) 1) (car lines) (list 'lines lines))))))
+
+;; job-then-sleep : Runner     the job done, then a wait past the deadline
+(define (job-then-sleep job)
+  (let ((r ((store-reader store) job)))
+    (sleep-ms 500)
+    r))
+
+(test-equal "L8: a deadline after the key check, the job done, logs the 504 with the account"
+  (string-append "request method=GET path=/x status=504 ending=written ms=30 db_ms=10 account="
+                 acct-a-text " address=-")
+  (line-of-raise job-then-sleep (list (bearer good)) #f))
+
+(test-equal "L8: a deadline while the job is still queued logs - for the account"
+  "request method=GET path=/x status=504 ending=written ms=30 db_ms=10 account=- address=-"
+  (line-of-raise (lambda (job) (sleep-ms 500) ((store-reader store) job)) (list (bearer good)) #f))
+
+(test-equal "L8: a client that hangs up after the key check logs the account"
+  (string-append "request method=GET path=/x status=- ending=client-closed ms=30 db_ms=10 account="
+                 acct-a-text " address=-")
+  (line-of-raise job-then-sleep (list (bearer good)) #t))
+
+(test-equal "L8: a key the job refused, then a deadline, logs the 504 with -"
+  "request method=GET path=/x status=504 ending=written ms=30 db_ms=10 account=- address=-"
+  (line-of-raise (lambda (job)
+                   ;; the job's refusal held back past the deadline
+                   (let ((r (guard (e (#t (list 'raised e))) ((store-reader store) job))))
+                     (sleep-ms 500)
+                     (if (and (pair? r) (eq? (car r) 'raised)) (raise (cadr r)) r)))
+                 (list (bearer (secret-of 9))) #f))
 
 ;;; The job: plain data only
 
@@ -532,6 +583,240 @@
          (exchange app 'GET "/x" (list (bearer (secret-of 1))))
          (list (procedure? job) (reaches? job req?)
                (reaches? job (secret-string? (secret-of 1)))))))))
+
+;;; Login's two jobs (L7): login-read and login-write
+
+;; with-login-store : (Store -> A) -> A
+;; A fresh file with the seed, closed after.
+(define (with-login-store name body)
+  (let ((s (open-test-store dir name)))
+    (dynamic-wind
+      (lambda () #f)
+      (lambda () (run-write s seed!) (body s))
+      (lambda () (close-test-store! s)))))
+
+(define login-req (make-test-req 'POST "/v1/login"))
+
+;; new-key : Natural -> Key-fields     key N's id, a name, its hash, now0
+(define (new-key n) (list (kid n) "from login" (key-hash (secret-of n)) now0))
+
+;; active-keys : Store Bytevector -> Natural
+(define (active-keys s account) (run-read s (lambda (tx) (count-active-keys tx account))))
+
+;; password-of : Store Bytevector -> String
+(define (password-of s account)
+  (run-read s (lambda (tx) (account-password-hash (account-by-id tx account)))))
+
+;; key-shape : Any -> Any     a Key's fields but its hash, or the value itself
+(define (key-shape k)
+  (if (key? k)
+      (list (key-id k) (key-account k) (key-name k) (key-created k) (key-last-used k)
+            (key-revoked k))
+      k))
+
+(test-equal "login-read: a known email is its account's id and password hash; one read job"
+  (list (cons acct-a "hash-a") 1)
+  (attempt
+   (lambda ()
+     (let-values (((run jobs) (counting (store-reader store))))
+       (let ((r (in-host (lambda () (login-read run (step-clock 0 1) login-req "alice@example.com")))))
+         (list r (jobs)))))))
+
+(test-equal "login-read: an unknown email is #f"
+  #f
+  (attempt (lambda ()
+             (in-host (lambda () (login-read (store-reader store) (step-clock 0 1) login-req
+                                             "carol@example.com"))))))
+
+(test-equal "login-read: the job reaches no request; it closes over the email"
+  '(#t #f #t)
+  (attempt
+   (lambda ()
+     (let* ((job #f)
+            (run (lambda (j) (set! job j) ((store-reader store) j))))
+       (in-host (lambda () (login-read run (step-clock 0 1) login-req "alice@example.com")))
+       (list (procedure? job) (reaches? job req?)
+             (reaches? job (lambda (x) (and (string? x) (string=? x "alice@example.com")))))))))
+
+(test-equal "login-write: made: the key's row, active, and one more active key; the hash kept"
+  (list (list (kid 40) acct-a "from login" now0 #f #f) 4 5 "hash-a" #t)
+  (attempt
+   (lambda ()
+     (with-login-store "login-write.db"
+       (lambda (s)
+         (let* ((before (active-keys s acct-a))
+                (k (in-host (lambda () (login-write (store-writer s) (step-clock 0 1) login-req
+                                                    acct-a "hash-a" #f (new-key 40))))))
+           (list (key-shape k) before (active-keys s acct-a) (password-of s acct-a)
+                 ;; found by the hash it was given
+                 (bytevector=? (run-read s (lambda (tx) (key-id (key-by-hash tx (key-hash (secret-of 40))))))
+                               (kid 40)))))))))
+
+(test-equal "login-write: a new hash is stored with the key, in the same write"
+  (list (list (kid 41) acct-a "from login" now0 #f #f) "hash-a-new")
+  (attempt
+   (lambda ()
+     (with-login-store "login-rehash.db"
+       (lambda (s)
+         (let ((k (in-host (lambda () (login-write (store-writer s) (step-clock 0 1) login-req
+                                                   acct-a "hash-a" "hash-a-new" (new-key 41))))))
+           (list (key-shape k) (password-of s acct-a))))))))
+
+(test-equal "Q4: the hash changed after the verify: stale, no key, the hash left as it is"
+  '(stale 4 4 "reset-by-admin" #f)
+  (attempt
+   (lambda ()
+     (with-login-store "login-stale.db"
+       (lambda (s)
+         (run-write s (lambda (tx) (set-password-hash! tx acct-a "hash-a" "reset-by-admin")))
+         (let* ((before (active-keys s acct-a))
+                (r (in-host (lambda () (login-write (store-writer s) (step-clock 0 1) login-req
+                                                    acct-a "hash-a" "hash-a-new" (new-key 42))))))
+           (list r before (active-keys s acct-a) (password-of s acct-a)
+                 (run-read s (lambda (tx) (and (key-of-account tx acct-a (kid 42)) #t))))))))))
+
+(test-equal "login-write: an account that is gone is stale"
+  'stale
+  (attempt
+   (lambda ()
+     (with-login-store "login-gone.db"
+       (lambda (s)
+         (in-host (lambda () (login-write (store-writer s) (step-clock 0 1) login-req
+                                          acct-c "hash-c" #f (new-key 43)))))))))
+
+;; keys-up-to! : Store Natural -> Void     A's active keys made N in all
+(define (keys-up-to! s n)
+  (let ((have (active-keys s acct-a)))
+    (run-write s (lambda (tx)
+                   (let loop ((i 0))
+                     (when (< i (- n have))
+                       (insert-key! tx (kid (+ 100 i)) acct-a "filler" (key-hash (secret-of (+ 100 i)))
+                                    (+ 3000 i))
+                       (loop (+ i 1))))))))
+
+(test-equal "Q10: 99 active keys: made, and 100"
+  '(99 #t 100)
+  (attempt
+   (lambda ()
+     (with-login-store "login-99.db"
+       (lambda (s)
+         (keys-up-to! s 99)
+         (let* ((before (active-keys s acct-a))
+                (k (in-host (lambda () (login-write (store-writer s) (step-clock 0 1) login-req
+                                                    acct-a "hash-a" #f (new-key 44))))))
+           (list before (key? k) (active-keys s acct-a))))))))
+
+(test-equal "Q10: 100 active keys: full, still 100, the new hash not stored"
+  '(100 full 100 "hash-a")
+  (attempt
+   (lambda ()
+     (with-login-store "login-100.db"
+       (lambda (s)
+         (keys-up-to! s 100)
+         (let* ((before (active-keys s acct-a))
+                (r (in-host (lambda () (login-write (store-writer s) (step-clock 0 1) login-req
+                                                    acct-a "hash-a" "hash-a-new" (new-key 45))))))
+           (list before r (active-keys s acct-a) (password-of s acct-a))))))))
+
+(test-equal "Q10: a revoked key does not count: 100 keys, one revoked, is made"
+  '(99 #t)
+  (attempt
+   (lambda ()
+     (with-login-store "login-revoked.db"
+       (lambda (s)
+         (keys-up-to! s 100)
+         (run-write s (lambda (tx) (revoke-key! tx acct-a (kid 100) 9000)))
+         (let* ((before (active-keys s acct-a))
+                (k (in-host (lambda () (login-write (store-writer s) (step-clock 0 1) login-req
+                                                    acct-a "hash-a" #f (new-key 46))))))
+           (list before (key? k))))))))
+
+(test-equal "login-write: the job reaches no request and no secret, only the key's hash"
+  '(#t #f #f #t)
+  (attempt
+   (lambda ()
+     (with-login-store "login-job.db"
+       (lambda (s)
+         (let* ((job #f)
+                (run (lambda (j) (set! job j) ((store-writer s) j))))
+           (in-host (lambda () (login-write run (step-clock 0 1) login-req acct-a "hash-a" #f (new-key 47))))
+           (list (procedure? job) (reaches? job req?)
+                 (reaches? job (secret-string? (secret-of 47)))
+                 (reaches? job (lambda (x) (and (bytevector? x)
+                                                (bytevector=? x (key-hash (secret-of 47)))))))))))))
+
+(test-equal "login-write: Key-fields of the wrong shape are refused before any job"
+  '(assertion assertion assertion 0)
+  (attempt
+   (lambda ()
+     (let-values (((run jobs) (counting (store-writer store))))
+       (let ((try (lambda (f)
+                    (raised-kind (lambda ()
+                                   (in-host (lambda () (login-write run (step-clock 0 1) login-req
+                                                                    acct-a "hash-a" #f f))))))))
+         (list (try (list (make-bytevector 15 1) "n" (key-hash (secret-of 1)) now0))
+               (try (list (kid 48) "n" (make-bytevector 31 1) now0))
+               (try (list (kid 48) "n" (key-hash (secret-of 1))))
+               (jobs)))))))
+
+;;; Login's note: the account the handler wrote stays; db_ms is the sum
+
+;; login-line : Store (Req -> Void) -> String
+;; One POST /v1/login inside wrap-app and wrap-request-log, a clock of 0,
+;; 10, 20 ...: the handler is DO, then a 200.
+(define (login-line do)
+  (attempt
+   (lambda ()
+     (let* ((lines '())
+            (clock (step-clock 0 10))
+            (h (wrap (wrap-app (lambda (req) (do req clock) (make-res 200 '() #f)) (lambda (l) #f) 50)
+                     (wrap-request-log (lambda (l) (set! lines (cons l lines))) clock))))
+       (exchange-bytes h (request-bytes 'POST "/v1/login" '()) 1000)
+       (if (= (length lines) 1) (car lines) (list 'lines lines))))))
+
+(test-equal "note: a read, the account noted, a write: db_ms the two jobs' sum, the account kept"
+  (string-append "request method=POST path=/v1/login status=200 ending=written ms=50 db_ms=20 account="
+                 acct-a-text " address=-")
+  (with-login-store "login-note.db"
+    (lambda (s)
+      (login-line (lambda (req clock)
+                    (login-read (store-reader s) clock req "alice@example.com")
+                    (note-account! req acct-a)
+                    (login-write (store-writer s) clock req acct-a "hash-a" #f (new-key 50)))))))
+
+(test-equal "note: a read alone shows its db_ms and no account"
+  "request method=POST path=/v1/login status=200 ending=written ms=30 db_ms=10 account=- address=-"
+  (login-line (lambda (req clock)
+                (login-read (store-reader store) clock req "alice@example.com"))))
+
+(test-equal "note: stale and full keep the account the handler wrote"
+  (list (string-append "request method=POST path=/v1/login status=200 ending=written ms=30 db_ms=10 account="
+                       acct-a-text " address=-")
+        (string-append "request method=POST path=/v1/login status=200 ending=written ms=30 db_ms=10 account="
+                       acct-a-text " address=-"))
+  (list (login-line (lambda (req clock)
+                      (note-account! req acct-a)
+                      (login-write (store-writer store) clock req acct-a "not-the-hash" #f (new-key 51))))
+        (with-login-store "login-note-full.db"
+          (lambda (s)
+            (keys-up-to! s 100)
+            (login-line (lambda (req clock)
+                          (note-account! req acct-a)
+                          (login-write (store-writer s) clock req acct-a "hash-a" #f (new-key 52))))))))
+
+(test-equal "note: a raise in the write, and a deadline in it, keep the account and add db_ms"
+  (list (string-append "request method=POST path=/v1/login status=500 ending=written ms=30 db_ms=10 account="
+                       acct-a-text " address=-")
+        (string-append "request method=POST path=/v1/login status=504 ending=written ms=30 db_ms=10 account="
+                       acct-a-text " address=-"))
+  (list (quietly login-line (lambda (req clock)
+                              (note-account! req acct-a)
+                              (login-write (lambda (job) (error 'runner "the write fails"))
+                                           clock req acct-a "hash-a" #f (new-key 53))))
+        (login-line (lambda (req clock)
+                      (note-account! req acct-a)
+                      (login-write (lambda (job) (sleep-ms 500) ((store-writer store) job))
+                                   clock req acct-a "hash-a" #f (new-key 54))))))
 
 (when (and store (not (pair? store))) (close-test-store! store))
 

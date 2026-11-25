@@ -9,14 +9,17 @@
 ;;; from the loop's thread (req-on-done!). (techo auth) writes the account and
 ;;; the database's time into the note with note-request!, on the loop's
 ;;; thread, from what a job returned: never from inside a job, which after a
-;;; deadline can end later than the line is written.
+;;; deadline can end later than the line is written. A login writes them a
+;;; piece at a time, note-account! and note-add-db-ms!: its db_ms is the
+;;; sum of its two jobs.
 ;;;
 ;;; Never on the line: a query string, a header, a body. The method, the path
 ;;; and the address have each control character made a space. A field with
 ;;; nothing to show is `-`.
 (library (techo log)
   (export wrap-request-log request-line
-          note-request! req-note note? note-account note-db-ms)
+          note-request! note-account! note-add-db-ms!
+          req-note note? note-account note-db-ms)
   (import (rnrs)
           (only (chezscheme) real-time)
           (only (circuit) make-req-key req-ref req-set req-method req-path
@@ -48,6 +51,22 @@
       (when n
         (note-account-set! n account)
         (note-db-ms-set! n db-ms))))
+
+  ;; note-account! : Req (U Bytevector #f) -> Void
+  ;; Writes ACCOUNT into REQ's note and leaves its db_ms. For login, whose
+  ;; account is known once the password matched, between its two jobs. A
+  ;; request with no note is left as it is. On the loop's thread only.
+  (define (note-account! req account)
+    (let ((n (req-note req)))
+      (when n (note-account-set! n account))))
+
+  ;; note-add-db-ms! : Req Integer -> Void
+  ;; Adds MS to REQ's note's db_ms (none yet counts as 0) and leaves its
+  ;; account: a login's db_ms is the sum of its jobs. A request with no
+  ;; note is left as it is. On the loop's thread only.
+  (define (note-add-db-ms! req ms)
+    (let ((n (req-note req)))
+      (when n (note-db-ms-set! n (+ (or (note-db-ms n) 0) ms)))))
 
   ;; line-char : Char -> Char
   ;; A space for a control character (below U+0020, and U+007F), else C.

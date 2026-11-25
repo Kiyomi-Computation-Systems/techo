@@ -93,3 +93,27 @@ Plan: [the slice 2b plan](../2026-11-23-slice-2b-doorway.md)
   a condition (ADR-0006), and is handed plain data, never a parameter: circuit's
   double shows a handler's `parameterize` to a job every time, and the real worker
   almost never does (circuit's `docs/workers.md`).
+
+## Amendment, 2026-11-25: the hashing worker, and the one thing a job shares
+
+Status: accepted (owner, 2026-11-24, as slice 3's D11 and "a request that times out
+is to log its account")
+Plan: [slice 3b](../2026-11-24-slice-3b-login.md)
+
+- **Machine 3 opens and stops a third worker,** the hasher (ADR-0006, amended):
+
+  ```
+  checking → opening-writer → opening-hasher → opening-readers → serving
+           → stopping-readers → stopping-hasher → stopping-writer → ended
+  ```
+
+  Opening it makes one hash. If that fails the server does not start.
+- **A hashing job closes over the password.** It has to. No chez-sodium condition
+  shows a secret, and no log line prints a job's closure.
+- **A key route's job writes the account's id into a one-slot cell** once the key
+  check has passed, under a mutex. The loop's thread reads it when the job's answer
+  never comes. It is the one value a job shares with the loop's thread.
+- So a 504, a hung-up client and a 500 log the account when the key had been checked.
+- **It does not cover a job that has not checked its key yet:** one still queued at
+  the deadline, or waiting for the write lock. That line shows `-`, and the write can
+  still commit afterwards.

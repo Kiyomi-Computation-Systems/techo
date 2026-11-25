@@ -164,13 +164,14 @@
 
   ;; key-name-problem : Any -> (U #f Symbol)
   ;; #f for a string of 1 to 64 characters with no control character (below
-  ;; U+0020, or U+007F). Otherwise not-a-string, empty, too-long or
+  ;; U+0020, or U+007F to U+009F: DEL and C1, which a terminal can read as
+  ;; an escape). Otherwise not-a-string, empty, too-long or
   ;; control-character.
   (define (key-name-problem x)
     (cond ((not (string? x)) 'not-a-string)
           ((= (string-length x) 0) 'empty)
           ((> (string-length x) 64) 'too-long)
-          ((exists (lambda (c) (let ((n (char->integer c))) (or (< n 32) (= n 127))))
+          ((exists (lambda (c) (let ((n (char->integer c))) (or (< n 32) (<= 127 n 159))))
                    (string->list x))
            'control-character)
           (else #f)))

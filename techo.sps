@@ -6,8 +6,8 @@
 ;;; on what they answer. Nothing here decides anything.
 ;;;
 ;;; Exit status: 0 when a command ends well, 2 for a command line or an
-;;; environment that is refused, 1 for a database that `migrate` or `serve`
-;;; refuses or cannot use (ADR-0012). Refusals go to standard error, and
+;;; environment that is refused, 1 for a database that a command refuses or
+;;; cannot use (ADR-0012), and for a `user` command that is refused. Refusals go to standard error, and
 ;;; nothing listens before the environment and the database are accepted.
 ;;; Without libsodium every command, `help` and `version` too, ends before
 ;;; its first line with chez-sodium's own message and status 255: this
@@ -23,6 +23,10 @@
         (techo doorway)
         (techo migrations)
         (techo serve)
+        (only (techo hasher) hasher-open! hasher-stop!)
+        (only (techo users) user-add-command! user-password-command!)
+        (only (techo wiring) id-source sodium-hasher program-login-kit program-app
+              program-user-kit)
         (techo version))
 
 ;; say : TextualOutputPort String ... -> Void
@@ -76,7 +80,7 @@
 
 ;; wall-clock : -> Natural
 ;; The time of day in whole milliseconds since 1970, UTC: a row's times
-;; (D15). Durations use real-time instead, the app's default.
+;; (D15). Durations use (techo wiring)'s duration-clock instead.
 (define (wall-clock)
   (let ((t (current-time 'time-utc)))
     (+ (* (time-second t) 1000) (div (time-nanosecond t) 1000000))))
@@ -92,7 +96,10 @@
 ;;
 ;; The app gets its two job runners, made here from db-read and db-write
 ;; and the doorway, so no route reaches the doorway by another way; the
-;; wall clock; and chez-sodium's random-bytes. wrap-server puts the request
+;; wall clock; chez-sodium's random-bytes; and login's kit, which (techo
+;; wiring) builds: the hasher's three calls (one thread, which machine 3
+;; opens after the writer and stops before it), the rate limiter, the
+;; count of proxies in front and the ids. wrap-server puts the request
 ;; log and the error format around it; stdout-log! writes both kinds of
 ;; line, each in one write, from the loop's thread.
 (define (serve!)
@@ -100,18 +107,34 @@
          (doorway (make-doorway (config-db-path config) (config-db-readers config)
                                 migrations))
          (reader (lambda (job) (db-read doorway job)))
-         (writer (lambda (job) (db-write doorway job))))
+         (writer (lambda (job) (db-write doorway job)))
+         (hasher (sodium-hasher random-bytes))
+         (kit (program-login-kit hasher (config-behind-proxy config)
+                                 (id-source wall-clock random-bytes) stdout-log!)))
     (let-values (((status prints)
                   (serve-loop (config-db-path config) migrations doorway
                               (lambda ()
                                 (run-server
-                                 (wrap-server (make-app reader writer wall-clock random-bytes)
-                                              stdout-log!))))))
+                                 (wrap-server (program-app reader writer wall-clock random-bytes
+                                                           kit)
+                                              stdout-log!)))
+                              (lambda () (hasher-open! hasher))
+                              (lambda () (hasher-stop! hasher)))))
       (print-serve-ends! (current-error-port) prints)
       (exit status))))
+
+;; user-kit! : -> UserKit
+;; What the `user` commands need, from (techo wiring): the settings'
+;; database, the migrations, chez-sodium's hash, the wall clock and the ids.
+(define (user-kit!)
+  (program-user-kit (config-db-path (config!)) migrations wall-clock random-bytes))
 
 (let ((command (parse-command (cdr (command-line)))))
   (cond ((eq? command 'serve) (serve!))
         ((eq? command 'migrate) (migrate-command!))
         ((eq? command 'version) (say (current-output-port) "techo " techo-version))
+        ((eq? (car command) 'user-add)
+         (exit (user-add-command! (user-kit!) (cadr command) (caddr command))))
+        ((eq? (car command) 'user-password)
+         (exit (user-password-command! (user-kit!) (cadr command))))
         (else (usage! (cadr command)))))

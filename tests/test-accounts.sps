@@ -55,6 +55,24 @@
 (test-equal "email: NUL inside" #f (email "a\x0;@b.c"))
 (test-equal "email: DEL inside" #f (email "a\x7f;@b.c"))
 (test-equal "email: not a string" #f (email 5))
+
+;; DEL and C1 controls: a terminal can read U+009B as the start of an
+;; escape, and `user add` prints the email back
+(define c1-cases
+  (list (cons "U+007F" (integer->char #x7f)) (cons "U+0080" (integer->char #x80))
+        (cons "U+009B" (integer->char #x9b)) (cons "U+009F" (integer->char #x9f))))
+
+(for-each
+ (lambda (c)
+   (test-equal (string-append "email: " (car c) " inside is refused")
+     '(#f #f)
+     (list (email (string-append "a" (string (cdr c)) "@b.c"))
+           (email (string-append "a@b.c" (string (cdr c)))))))
+ c1-cases)
+
+(test-equal "email: ordinary non-ASCII still passes: e acute, U+00A1 (just past C1), CJK"
+  '("\xe9;t\xe9;@b.c" "\xa1;hola@b.c" "\x65e5;\x672c;@\x65e5;\x672c;.jp")
+  (list (email "\xe9;t\xe9;@b.c") (email "\xa1;hola@b.c") (email "\x65e5;\x672c;@\x65e5;\x672c;.jp")))
 (test-equal "email: #f" #f (email #f))
 
 ;;; username-problem
@@ -74,6 +92,14 @@
 (test-equal "user: space" 'bad-character (user "a b"))
 (test-equal "user: non-ASCII" 'bad-character (user "a\xe9;"))
 (test-equal "user: not a string" 'not-a-string (user 'a))
+
+(for-each
+ (lambda (c)
+   (test-equal (string-append "user: " (car c) " inside is a bad character, first a bad first character")
+     '(bad-character bad-first-character)
+     (list (user (string-append "a" (string (cdr c)) "b"))
+           (user (string-append (string (cdr c)) "ab")))))
+ c1-cases)
 
 ;;; password-problem
 

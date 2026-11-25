@@ -11,7 +11,8 @@
 ;;;   - the plan's layer 3 mutants, each on a small configuration with the
 ;;;     property it names, and mutants of the model, so that the model is
 ;;;     seen to matter;
-;;;   - machine 3, serve, explored by itself, T8;
+;;;   - machine 3, serve, explored by itself with its three workers (the
+;;;     writer, the hasher, the readers), T8;
 ;;;   - the traces the replay (layer 4) takes.
 ;;;
 ;;; T3 and T7 are not here, and no check stands in for them. T3 (a read
@@ -625,9 +626,10 @@
 
 (test-equal "serve: explores ok" 'ok (if (eq? (outcome serve-result) 'ok) 'ok (brief serve-result)))
 
-;; Measured at 30: every outcome at every command of a table of six commands.
-(test-assert "serve: at least 30 worlds"
-  (and (pair? serve-result) (eq? (car serve-result) 'ok) (>= (cadr serve-result) 30)))
+;; Measured at 62 (30 before the hasher): every outcome at every command of a
+;; table of eight commands.
+(test-assert "serve: at least 62 worlds"
+  (and (pair? serve-result) (eq? (car serve-result) 'ok) (>= (cadr serve-result) 62)))
 
 (test-equal "serve: every row fires"
   '()
@@ -664,7 +666,7 @@
 
 (define serve-mutants
   (list
-   (list "S7 ends without stopping the writer" "T8"
+   (list "S7 ends without stopping the hasher or the writer" "T8"
          (lambda ()
            (serve-mutant
             (replace stable 'opening-readers 'raised 'ended 'end
@@ -682,7 +684,8 @@
                 ((stopping-writer) '(stop-readers))
                 (else (model-serve-command s)))))))
    ;; Stopped the other way round only after serving, so that no other
-   ;; part of T8 sees it: the order is read at the writer's stop.
+   ;; part of T8 sees it: the order is read at the writer's stop. The
+   ;; hasher is still stopped, after the readers.
    (list "the writer stopped before the readers, after serving" "T8"
          (lambda ()
            (serve-mutant
@@ -695,15 +698,100 @@
              (list (list 'S11x 'writer-first 'ok 'readers-last 'stop-readers same)
                    (list 'S12x 'writer-first 'raised 'readers-last 'stop-readers
                          (update-of stable 'stopping-readers 'raised))
-                   (list 'S13x 'readers-last 'ok 'ended 'end
+                   (list 'S17x 'readers-last 'ok 'hasher-last 'stop-hasher same)
+                   (list 'S18x 'readers-last 'raised 'hasher-last 'stop-hasher
+                         (update-of stable 'stopping-readers 'raised))
+                   (list 'S13x 'hasher-last 'ok 'ended 'end
                          (update-of stable 'stopping-writer 'ok))
-                   (list 'S14x 'readers-last 'raised 'ended 'end
+                   (list 'S14x 'hasher-last 'raised 'ended 'end
                          (update-of stable 'stopping-writer 'raised))))
             (lambda (s)
               (case (car s)
                 ((writer-first) '(stop-writer))
                 ((readers-last) '(stop-readers))
+                ((hasher-last) '(stop-hasher))
                 (else (model-serve-command s)))))))
+   ;; The hasher's mutants (slice 3b).
+   (list "S7 stops the writer and leaves the hasher running" "T8"
+         (lambda ()
+           (serve-mutant (replace stable 'opening-readers 'raised 'stopping-writer
+                                  'stop-writer #f)
+                         model-serve-command)))
+   (list "S11 skips the hasher's stop" "T8"
+         (lambda ()
+           (serve-mutant (replace stable 'stopping-readers 'ok 'stopping-writer
+                                  'stop-writer #f)
+                         model-serve-command)))
+   (list "S4 skips the hasher's open, which is stopped all the same" "T8"
+         (lambda ()
+           (serve-mutant (replace stable 'opening-writer 'ok 'opening-readers
+                                  'open-readers #f)
+                         model-serve-command)))
+   (list "S16 stops the hasher its open did not start" "T8"
+         (lambda ()
+           (serve-mutant (replace stable 'opening-hasher 'raised 'stopping-hasher
+                                  'stop-hasher #f)
+                         model-serve-command)))
+   ;; Each order alone: every worker is still stopped, once.
+   (list "the hasher stopped before the readers, after serving" "T8"
+         (lambda ()
+           (serve-mutant
+            (append
+             (map (lambda (r) (if (eq? (list-ref r 3) 'stopping-readers)
+                                  (list (car r) (cadr r) (caddr r) 'hasher-first 'stop-hasher
+                                        (list-ref r 5))
+                                  r))
+                  stable)
+             (list (list 'S17x 'hasher-first 'ok 'readers-then 'stop-readers same)
+                   (list 'S18x 'hasher-first 'raised 'readers-then 'stop-readers
+                         (update-of stable 'stopping-hasher 'raised))
+                   (list 'S11x 'readers-then 'ok 'stopping-writer 'stop-writer same)
+                   (list 'S12x 'readers-then 'raised 'stopping-writer 'stop-writer
+                         (update-of stable 'stopping-readers 'raised))))
+            (lambda (s)
+              (case (car s)
+                ((hasher-first) '(stop-hasher))
+                ((readers-then) '(stop-readers))
+                (else (model-serve-command s)))))))
+   (list "the writer stopped before the hasher" "T8"
+         (lambda ()
+           (serve-mutant
+            (append
+             (map (lambda (r) (if (eq? (list-ref r 3) 'stopping-hasher)
+                                  (list (car r) (cadr r) (caddr r) 'writer-then 'stop-writer
+                                        (list-ref r 5))
+                                  r))
+                  stable)
+             (list (list 'S17x 'writer-then 'ok 'hasher-last 'stop-hasher same)
+                   (list 'S18x 'writer-then 'raised 'hasher-last 'stop-hasher
+                         (update-of stable 'stopping-hasher 'raised))
+                   (list 'S13x 'hasher-last 'ok 'ended 'end
+                         (update-of stable 'stopping-writer 'ok))
+                   (list 'S14x 'hasher-last 'raised 'ended 'end
+                         (update-of stable 'stopping-writer 'raised))))
+            (lambda (s)
+              (case (car s)
+                ((writer-then) '(stop-writer))
+                ((hasher-last) '(stop-hasher))
+                (else (model-serve-command s)))))))
+   (list "own: S16 carries no status" "T8"
+         (lambda ()
+           (serve-mutant (replace stable 'opening-hasher 'raised #f #f
+                                  (lambda (d e) (list (car d)
+                                                      (append (cadr d)
+                                                              (list (cons 'raised (cadr e)))))))
+                         model-serve-command)))
+   (list "own: S18 replaces the status carried" "T8"
+         (lambda ()
+           (serve-mutant (replace stable 'stopping-hasher 'raised #f #f
+                                  (lambda (d e) (list 1 (append (cadr d)
+                                                                (list (cons 'raised (cadr e)))))))
+                         model-serve-command)))
+   (list "own: S18 prints nothing" "T8"
+         (lambda ()
+           (serve-mutant (replace stable 'stopping-hasher 'raised #f #f
+                                  (lambda (d e) (list (or (car d) 1) (cadr d))))
+                         model-serve-command)))
    (list "own: S13 exits 0 whatever was carried" "T8"
          (lambda ()
            (serve-mutant (replace stable 'stopping-writer 'ok #f #f

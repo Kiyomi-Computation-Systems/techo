@@ -109,3 +109,58 @@ Plan: [slice 3](../2026-11-24-slice-3-accounts.md)
   chez-sodium was asked whether it could tell them apart
   ([the brief](../briefs/chez-sodium-verify-out-of-memory.md)); its answer was "no
   for now". 3b plans on checking for itself.
+
+## Amendment, 2026-11-25: what slice 3b decided
+
+Status: accepted (owner, 2026-11-24: slice 3's D11 to D14, NFC, and the timed-out
+request's account; "build it on chez-sodium's notice"). Items 6 to 12 are the plan's
+own choices, made under that word.
+Plan: [slice 3b](../2026-11-24-slice-3b-login.md)
+
+1. **Passwords are hashed on a worker of their own:** one thread, a queue of 8. A
+   full queue is a 503 with `Retry-After`. So one hash runs at a time: 64 MiB,
+   whatever the load.
+2. **Login is limited to 5 tries an email and 20 an address in 15 minutes,** counted
+   in memory, refused before any reading or hashing. A good login clears its email's
+   count.
+   - The cost: anyone who knows an email can stop new logins for it for 15 minutes.
+     Keys already given keep working.
+   - The cost: someone with many addresses can fill the table of 10,000 and stop
+     every login for a while.
+3. **A password is normalised to NFC** before it is hashed or verified.
+4. **An unknown email is hashed against too,** a stand-in made when the server
+   starts, so the time taken does not say which emails have accounts. A wrong email
+   and a wrong password get one answer.
+5. **After a false verify, a throwaway hash tells short memory from a wrong
+   password:** chez-sodium answers false for both. Its own failure raised from the
+   throwaway is a 503, and the try is not counted. Any other raise there, a deadline
+   among them, stays counted.
+6. **Login is a table** in `(techo login)`, its diagram in
+   `.plans/machines/login.md`. The table names each ending's answer and what it does
+   to the try's count, so the handler decides neither.
+7. **A try is forgiven only where nothing was checked:** the queue was full before
+   the verify, or memory was short. A full queue after the verify stays counted, or
+   filling the queue would buy guesses.
+8. **Login's write goes ahead only if the account's hash is still the one it
+   verified.** So a login that began before `techo user password` cannot make a key
+   after it.
+9. **An account has at most 100 active keys.** The 101st login is a 409
+   `too_many_keys`.
+10. **Item 9 of the amendment above gains two procedures:** `login-read` and
+    `login-write` in `(techo auth)`. They are the only way to the database without a
+    key, and the login route is their only caller.
+11. **`techo user add` and `techo user password` read the password from standard
+    input,** never the command line. Each is one write transaction and works beside
+    a running server. `user password` revokes every key of the account in the same
+    transaction.
+12. **A password is 8 characters or more to set, and 1,024 bytes or fewer.** A login
+    does not check the lower bound: a short password is simply wrong.
+
+**Consequences**
+
+- The limit's counts die with the process. Two servers on one file each keep their
+  own, so the docs say run one (ADR-0009, amended).
+- Under a container's memory limit the kernel kills the process rather than failing
+  one hash, so item 5 helps only where memory is limited another way.
+- A stored hash that is unreadable, or made at other limits, answers in a different
+  time than a good one. Only a hand-edited row or a later change of limits makes one.

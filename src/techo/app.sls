@@ -14,7 +14,7 @@
           (only (techo doorway) wrap-db db-retry-after)
           (only (techo errors) problem-res status-problem-res)
           (only (techo log) wrap-request-log)
-          (only (techo routes) key-routes))
+          (only (techo routes) key-routes login-routes login-kit?))
 
   ;; Runner = ((Tx -> Any) -> Any)
   ;; Clock = (-> Integer)
@@ -31,28 +31,36 @@
   ;; not-found : Req -> Res
   (define (not-found req) (problem-res 'not_found))
 
-  ;; make-app : Runner Runner (-> Natural) (Natural -> Bytevector) [Clock] -> Handler
+  ;; make-app : Runner Runner (-> Natural) (Natural -> Bytevector) [Clock [(U LoginKit #f)]]
+  ;;            -> Handler
   ;; A handler from a request to a response: /health, free of the database,
   ;; and D9's key routes under /v1. READ and WRITE each run one job: the
   ;; program makes them from db-read and db-write and its doorway, a test
   ;; gives its own. WALL-CLOCK is the time of day in whole milliseconds since
   ;; 1970, UTC; RANDOM-BYTES gives N random bytes; CLOCK reads milliseconds
-  ;; for a job's db_ms, real-time by default. No such route is a 404 in the
-  ;; format. HEAD and 405 (with its allow header) are the router's own; its
-  ;; bare 400 and 405 get the format from wrap-errors.
+  ;; for a job's db_ms and the login limiter's windows, real-time by
+  ;; default. KIT, make-login-kit's, adds POST /v1/login; without one, or
+  ;; with #f, there is no such route. No such route is a 404 in the format.
+  ;; HEAD and 405 (with its allow header) are the router's own; its bare 400
+  ;; and 405 get the format from wrap-errors.
   (define make-app
     (case-lambda
       ((read write wall-clock random-bytes)
-       (make-app read write wall-clock random-bytes real-time))
+       (make-app read write wall-clock random-bytes real-time #f))
       ((read write wall-clock random-bytes clock)
+       (make-app read write wall-clock random-bytes clock #f))
+      ((read write wall-clock random-bytes clock kit)
        (for-each (lambda (p)
                    (unless (procedure? p)
                      (assertion-violation 'make-app "runners, clocks and random-bytes are procedures"
                                           p)))
                  (list read write wall-clock random-bytes clock))
+       (unless (or (not kit) (login-kit? kit))
+         (assertion-violation 'make-app "a login kit is make-login-kit's, or #f" kit))
        (make-router
         (cons (route "/health" (GET health))
-              (key-routes read write wall-clock random-bytes clock))
+              (append (key-routes read write wall-clock random-bytes clock)
+                      (if kit (login-routes read write wall-clock random-bytes clock kit) '())))
         not-found))))
 
   ;; wrap-app : Handler (String -> Void) [Natural] -> Handler

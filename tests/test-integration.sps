@@ -134,6 +134,11 @@
 (define (child-file c ext)
   (string-append (child-dir c) "/" (child-name c) "." ext))
 
+;; spawn-stdin : String
+;; The file a child's standard input is read from: nothing, unless a caller
+;; (run-cli-in) names one for the one call.
+(define spawn-stdin "/dev/null")
+
 ;; spawn-program : String String String (Listof String) (Listof String) (Listof String) -> Child
 ;; Runs the Scheme program PROG with ARGS in the background in DIR, as NAME:
 ;; with the variables in UNSET removed from its environment and those in SET
@@ -155,7 +160,7 @@
                            "--program" (quote-word prog))
                      (map quote-word args))
                     " ")))
-    (sh "( " cmd " >" out " 2>" err " </dev/null & echo $! >" pid
+    (sh "( " cmd " >" out " 2>" err " <" (quote-word spawn-stdin) " & echo $! >" pid
         "; wait $!; echo $? >" st ".tmp; mv " st ".tmp " st
         " ) >/dev/null 2>&1 &")
     c))
@@ -202,6 +207,17 @@
     (list status
           (file-text (child-file c "out"))
           (file-text (child-file c "err")))))
+
+;; run-cli-in : String String String (Listof String) (Listof String) (Listof String)
+;;              -> (List (U Integer 'no-exit) String String)
+;; run-cli with INPUT on the child's standard input, as a pipe would give it.
+(define (run-cli-in dir name input unset set args)
+  (let ((f (string-append dir "/" name ".in")))
+    (call-with-output-file f (lambda (p) (put-string p input)))
+    (set! spawn-stdin f)
+    (let ((r (attempt (lambda () (run-cli dir name unset set args)))))
+      (set! spawn-stdin "/dev/null")
+      r)))
 
 ;; --- the database files the migrate rows need ----------------------------
 
@@ -262,6 +278,14 @@
 (define (count-rows p table)
   (with-db (open-techo-db p 'read-only)
     (lambda (db) (vector-ref (query-row db (string-append "SELECT count(*) FROM " table)) 0))))
+
+;; password-hash-of : String String -> (U String #f)
+;; The password hash the account with EMAIL holds in P, read-only.
+(define (password-hash-of p email)
+  (with-db (open-techo-db p 'read-only)
+    (lambda (db)
+      (let ((row (query-row db "SELECT password_hash FROM accounts WHERE email = ?" email)))
+        (and row (vector-ref row 0))))))
 
 ;; read-bytes : String -> Bytevector
 (define (read-bytes p)
@@ -710,8 +734,10 @@
                   (with-db (open-techo-db db 'read-write)
                     (lambda (c)
                       (execute! c "CREATE TRIGGER force_failure BEFORE UPDATE ON api_keys BEGIN SELECT RAISE(ABORT, 'forced'); END")))
-                  (go! port "api:forced-500" 'post (url-of-key a1 "regenerate") new #f)
-                  (go! port "api:forced-500-revoke" 'post (url-of-key a4 "revoke") new #f)
+                  ;; The key was checked before the write failed, so by the plan's
+                  ;; L8 the log names the account on these 500s (it was `-`).
+                  (go! port "api:forced-500" 'post (url-of-key a1 "regenerate") new account-a)
+                  (go! port "api:forced-500-revoke" 'post (url-of-key a4 "revoke") new account-a)
                   (with-db (open-techo-db db 'read-write)
                     (lambda (c) (execute! c "DROP TRIGGER force_failure")))
                   (go! port "api:after-trigger" 'post (url-of-key a4 "revoke") new account-a)
@@ -747,6 +773,253 @@
                                (reverse api-secrets)))
               (obs-set! "api:secret-count" (length api-secrets)))))
         (lambda () (kill! server))))))
+
+;; --- login, the users commands and the proxy count (slice 3b) ------------
+;;
+;; Accounts are made by the real `techo user add`, with the password piped on
+;; standard input. Then a real server (no proxy count), logins by HTTP, a
+;; `techo user password` while it runs; then a second server with
+;; TECHO_BEHIND_PROXY=1. Every password, every secret and every response
+;; and output is kept, and searched at the end (Q3).
+
+(define pw-ada "correct horse battery")
+(define pw-ada-new "new horse staple")
+(define pw-sam "  spaced out  ")
+(define pw-wrong "not-the-pw-7731")
+(define lg-passwords (list pw-ada pw-ada-new pw-sam pw-wrong))
+
+;; what each command and each response said: (label . bytes), and whether
+;; the response is a login answer that holds a secret on purpose
+(define lg-outputs '())
+(define lg-bodies '())          ; (label . bytes), every response but a 201 login's
+(define lg-bodies-201 '())      ; the 201 logins' bodies
+(define lg-secrets '())
+(define lg-expect '())          ; each login's (status account), newest first
+
+;; cli! : String String String (Listof String) (Listof String) (Listof String) -> Result
+;; run-cli-in, with what the command wrote kept for the search.
+(define (cli! dir name input unset set args)
+  (let ((r (run-cli-in dir name input unset set args)))
+    (when (and (pair? r) (not (eq? (car r) 'raised)))
+      (set! lg-outputs (cons (cons (string-append name " stdout") (string->utf8 (cadr r)))
+                             (cons (cons (string-append name " stderr") (string->utf8 (caddr r)))
+                                   lg-outputs))))
+    r))
+
+;; hcall : Nat Symbol String (U String #f) String (Listof (Pair String String))
+;;         -> (List Status (Listof (Pair String String)) String)
+;; One request: the status, the headers (names in lower case, Date left
+;; out) and the body's text. CTYPE #f sends no Content-Type at all.
+(define (hcall port method path ctype body headers)
+  (call-with-http-session 'timeout-ms 20000
+    (lambda (session)
+      (let* ((hs (append (if ctype
+                             (list (cons "Content-Type" ctype))
+                             (list (cons "Content-Type" "")))
+                         headers))
+             (r (if (eq? method 'get)
+                    (http-request session method
+                                  (string-append "http://127.0.0.1:" (number->string port) path)
+                                  'headers headers)
+                    (http-request session method
+                                  (string-append "http://127.0.0.1:" (number->string port) path)
+                                  'headers hs 'body (string->utf8 body)))))
+        (list (http-response-status r)
+              (filter (lambda (h) (not (string=? (car h) "date")))
+                      (map (lambda (h) (cons (string-downcase (car h)) (cdr h)))
+                           (http-response-headers r)))
+              (http-response-text r))))))
+
+(define (lg-status r) (car r))
+(define (lg-headers r) (cadr r))
+(define (lg-text r) (caddr r))
+(define (lg-json r) (guard (e (#t 'unparsed)) (string->json (lg-text r))))
+(define (lg-header r name) (let ((p (assoc name (lg-headers r)))) (and p (cdr p))))
+
+;; lcall! : String Nat Symbol String (U String #f) String Headers (U String #f) -> Void
+;; One request, filed under NAME and kept for the search. For a login,
+;; the log line it should leave is remembered: ACCT where it answered 201.
+(define (lcall! name port method path ctype body headers acct)
+  (let ((r (attempt (lambda () (hcall port method path ctype body headers)))))
+    (obs-set! name r)
+    (when (and (pair? r) (not (eq? (car r) 'raised)))
+      (let* ((j (lg-json r)) (k (jget j "key")))
+        (if (and (= (lg-status r) 201) (string? k))
+            (begin (set! lg-secrets (cons k lg-secrets))
+                   (set! lg-bodies-201 (cons (cons name (string->utf8 (lg-text r))) lg-bodies-201)))
+            (set! lg-bodies (cons (cons name (string->utf8 (lg-text r))) lg-bodies))))
+      (when (string=? path "/v1/login")
+        (set! lg-expect (cons (list (number->string (lg-status r))
+                                    (if (= (lg-status r) 201) (or acct "?") "-"))
+                              lg-expect))))))
+
+(define (login-json email password name)
+  (string-append "{\"email\":\"" email "\",\"password\":\"" password "\",\"name\":\"" name "\"}"))
+
+(define (login! name port email password key-name acct . headers)
+  (lcall! name port 'post "/v1/login" "application/json"
+          (login-json email password key-name) (if (pair? headers) (car headers) '()) acct))
+
+(define (bearer key) (list (cons "Authorization" (string-append "Bearer " key))))
+(define (secret-of name)
+  (let ((r (obs name))) (if (and (pair? r) (integer? (car r))) (let ((k (jget (lg-json r) "key"))) (if (string? k) k "techo_missing")) "techo_missing")))
+
+;; id-of-added : (List Status String String) -> String    the id on `added NAME EMAIL ID`
+(define (id-of-added r)
+  (if (and (pair? r) (string? (cadr r)))
+      (let ((ws (split-words (car (split-lines (cadr r)))))) (if (= (length ws) 4) (cadddr ws) "no-id"))
+      "no-id"))
+
+(define (leftover-files p) (map (lambda (x) (file-exists? (string-append p x))) '("" "-wal" "-shm")))
+
+;; A server on DB with the proxy count PROXY (#f: the variable unset).
+;; Calls BODY with its port; always stops it with SIGTERM and files the
+;; exit status, the output and the error under TAG.
+(define (with-server dir tag db proxy body)
+  (let ((server (spawn dir tag (if proxy '() '("TECHO_BEHIND_PROXY"))
+                       (append (list "CHEZ_HTTP_PORT=0" (string-append "TECHO_DB_PATH=" db))
+                               (if proxy (list (string-append "TECHO_BEHIND_PROXY=" proxy)) '()))
+                       '("serve"))))
+    (dynamic-wind
+      (lambda () #f)
+      (lambda ()
+        (let ((port (listening-port server)))
+          (obs-set! (string-append tag ":port") port)
+          (when (integer? port) (guard (e (#t (obs-set! (string-append tag ":raised") (describe e)))) (body port)))
+          (signal! server "TERM")
+          (obs-set! (string-append tag ":exit") (await-status server deadline-ms))
+          (obs-set! (string-append tag ":out") (file-text (child-file server "out")))
+          (obs-set! (string-append tag ":err") (file-text (child-file server "err")))
+          (set! lg-outputs
+                (append (list (cons (string-append tag " stdout") (read-bytes (child-file server "out")))
+                              (cons (string-append tag " stderr") (read-bytes (child-file server "err"))))
+                        lg-outputs))))
+      (lambda () (kill! server)))))
+
+;; observe-login! : String -> Void
+(define (observe-login! dir)
+  (define db (string-append dir "/login.db"))
+  (define env (list (string-append "TECHO_DB_PATH=" db)))
+  (define (add! name input args) (cli! dir name input '() env args))
+  (obs-set! "lg:migrate" (car (cli! dir "lgmigrate" "" '() env '("migrate"))))
+  ;; `techo user add`, the password on standard input
+  (let ((ada (add! "lg-add-ada" (string-append pw-ada "\n") '("user" "add" "--username" "ada" "--email" "Ada@Example.com"))))
+    (obs-set! "lg:add-ada" ada)
+    (obs-set! "lg:ada-id" (id-of-added ada)))
+  (let ((sam (add! "lg-add-sam" (string-append pw-sam "\r\n") '("user" "add" "--username" "sam" "--email" "sam@example.com"))))
+    (obs-set! "lg:add-sam" sam)
+    (obs-set! "lg:sam-id" (id-of-added sam)))
+  (obs-set! "lg:add-dup-username"
+            (add! "lg-dupu" (string-append pw-ada "\n") '("user" "add" "--username" "ada" "--email" "other@example.com")))
+  (obs-set! "lg:add-dup-email"
+            (add! "lg-dupe" (string-append pw-ada "\n") '("user" "add" "--username" "ada2" "--email" "ADA@example.com")))
+  (obs-set! "lg:add-short"
+            (add! "lg-short" "short\n" '("user" "add" "--username" "bo" "--email" "bo@example.com")))
+  (obs-set! "lg:add-bad-username"
+            (add! "lg-badu" (string-append pw-ada "\n") '("user" "add" "--username" "Bad Name" "--email" "bo@example.com")))
+  (obs-set! "lg:add-empty-stdin"
+            (add! "lg-empty" "" '("user" "add" "--username" "bo" "--email" "bo@example.com")))
+  (obs-set! "lg:user-bare" (add! "lg-user" "" '("user")))
+  (obs-set! "lg:user-add-bare" (add! "lg-addbare" "" '("user" "add")))
+  (obs-set! "lg:user-unknown-option"
+            (add! "lg-unkopt" "" '("user" "add" "--username" "bo" "--email" "b@e.c" "--password" "hunter2hunter2")))
+  (obs-set! "lg:accounts-after-refusals" (count-rows db "accounts"))
+  (obs-set! "lg:ada-hash" (attempt (lambda () (password-hash-of db "ada@example.com"))))
+  ;; a missing file and a file that was never migrated: refused, nothing made
+  (let ((missing (string-append dir "/missing.db"))
+        (blank (string-append dir "/blank.db")))
+    (call-with-output-file blank (lambda (p) #t))
+    (obs-set! "lg:add-missing"
+              (cli! dir "lg-missing" (string-append pw-ada "\n") '()
+                    (list (string-append "TECHO_DB_PATH=" missing))
+                    '("user" "add" "--username" "ada" "--email" "ada@example.com")))
+    (obs-set! "lg:add-missing-files" (leftover-files missing))
+    (obs-set! "lg:add-blank"
+              (cli! dir "lg-blank" (string-append pw-ada "\n") '()
+                    (list (string-append "TECHO_DB_PATH=" blank))
+                    '("user" "add" "--username" "ada" "--email" "ada@example.com")))
+    (obs-set! "lg:add-blank-files" (list (file-size blank) (file-exists? (string-append blank "-wal"))
+                                         (file-exists? (string-append blank "-shm")))))
+  ;; the real server, no proxy count
+  (let ((ada-id (obs "lg:ada-id")) (sam-id (obs "lg:sam-id")))
+    (with-server dir "lgsrv" db #f
+      (lambda (port)
+        (login! "lg:good" port "Ada@Example.com" pw-ada "laptop" ada-id)
+        (let ((k (secret-of "lg:good")))
+          (lcall! "lg:account" port 'get "/v1/account" #f "" (bearer k) #f)
+          (lcall! "lg:keys" port 'get "/v1/keys" #f "" (bearer k) #f))
+        (login! "lg:sam" port "sam@example.com" pw-sam "phone" sam-id)
+        ;; Q1
+        (login! "lg:wrong-pw" port "ada@example.com" pw-wrong "x" #f)
+        (login! "lg:wrong-email" port "nobody@example.com" pw-wrong "x" #f)
+        ;; L2's refusals, none of them a try
+        (lcall! "lg:no-ctype" port 'post "/v1/login" #f (login-json "ada@example.com" pw-wrong "x") '() #f)
+        (lcall! "lg:bad-json" port 'post "/v1/login" "application/json" "{\"email\":" '() #f)
+        (lcall! "lg:twice" port 'post "/v1/login" "application/json"
+                (string-append "{\"email\":\"a@b.c\",\"email\":\"a@b.c\",\"password\":\"" pw-wrong "\",\"name\":\"x\"}") '() #f)
+        (lcall! "lg:unknown-field" port 'post "/v1/login" "application/json"
+                (string-append "{\"email\":\"a@b.c\",\"password\":\"" pw-wrong "\",\"name\":\"x\",\"admin\":true}") '() #f)
+        (lcall! "lg:too-big" port 'post "/v1/login" "application/json"
+                (make-string 20000 #\a) '() #f)
+        ;; the rate limit, for one email: five tries, then the sixth
+        (for-each (lambda (i) (login! (string-append "lg:rl-" (number->string i)) port "z@example.com" pw-wrong "x" #f))
+                  '(1 2 3 4 5))
+        (login! "lg:rl-6" port "z@example.com" pw-wrong "x" #f)
+        (login! "lg:rl-other" port "y@example.com" pw-wrong "x" #f)
+        ;; Q5: `techo user password` beside the running server
+        (login! "lg:second" port "ada@example.com" pw-ada "tablet" ada-id)
+        (obs-set! "lg:passwd"
+                  (cli! dir "lg-passwd" (string-append pw-ada-new "\n") '() env
+                        '("user" "password" "--email" "ADA@example.com")))
+        (obs-set! "lg:passwd-unknown"
+                  (cli! dir "lg-passwd-no" (string-append pw-ada-new "\n") '() env
+                        '("user" "password" "--email" "nobody@example.com")))
+        (lcall! "lg:old-key-1" port 'get "/v1/account" #f "" (bearer (secret-of "lg:good")) #f)
+        (lcall! "lg:old-key-2" port 'get "/v1/account" #f "" (bearer (secret-of "lg:second")) #f)
+        (login! "lg:old-password" port "ada@example.com" pw-ada "again" #f)
+        (login! "lg:new-password" port "ada@example.com" pw-ada-new "fresh" ada-id)
+        (lcall! "lg:new-key" port 'get "/v1/account" #f "" (bearer (secret-of "lg:new-password")) #f)
+        ;; with TECHO_BEHIND_PROXY unset the header is ignored: tries with a
+        ;; different last entry each still reach the one address's limit
+        (let loop ((i 1) (seen '()))
+          (if (> i 25)
+              (obs-set! "lg:unset-proxy" (reverse seen))
+              (let ((name (string-append "lg:ign-" (number->string i))))
+                (login! name port (string-append "ign" (number->string i) "@example.com") pw-wrong "x" #f
+                        (list (cons "X-Forwarded-For" (string-append "203.0.113." (number->string i)))))
+                (let ((st (lg-status (obs name))))
+                  (if (= st 429)
+                      (obs-set! "lg:unset-proxy" (reverse (cons st seen)))
+                      (loop (+ i 1) (cons st seen)))))))))
+    (obs-set! "lg:expect" (reverse lg-expect)))
+  ;; the second server: one proxy in front. The address is the LAST entry.
+  (let ((pdb (string-append dir "/proxy.db")))
+    (cli! dir "lgpmigrate" "" '() (list (string-append "TECHO_DB_PATH=" pdb)) '("migrate"))
+    (with-server dir "lgproxy" pdb "1"
+      (lambda (port)
+        (define (xff first last) (list (cons "X-Forwarded-For" (string-append first ", " last))))
+        ;; 20 tries over four emails from one client; its first entry (the
+        ;; part a client writes) changes every time and counts for nothing
+        (let loop ((i 0))
+          (when (< i 20)
+            (login! (string-append "lg:px-" (number->string i)) port
+                    (string-append "px" (number->string (div i 5)) "@example.com") pw-wrong "x" #f
+                    (xff (string-append "203.0.113." (number->string i)) "198.51.100.1"))
+            (loop (+ i 1))))
+        (login! "lg:px-21-same" port "px9@example.com" pw-wrong "x" #f (xff "203.0.113.200" "198.51.100.1"))
+        (login! "lg:px-21-other" port "px9@example.com" pw-wrong "x" #f (xff "203.0.113.200" "198.51.100.2"))))
+    (obs-set! "lg:px-statuses"
+              (map (lambda (i) (lg-status (obs (string-append "lg:px-" (number->string i)))))
+                   (let loop ((i 19) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))))
+  ;; the settings it refuses
+  (for-each
+   (lambda (v)
+     (obs-set! (string-append "lg:proxy-" v)
+               (cli! dir (string-append "lgbad" v) "" '()
+                     (list (string-append "TECHO_DB_PATH=" db) "CHEZ_HTTP_PORT=0"
+                           (string-append "TECHO_BEHIND_PROXY=" v))
+                     '("serve"))))
+   '("x" "9" "zzq7")))
 
 ;; leftovers : String -> (Listof Boolean)
 ;; Whether DB's `-wal` and `-shm` exist.
@@ -788,6 +1061,7 @@
     (observe "migrate-again" (migrate-run dir "migagain" db))
     (observe-migrate! dir)
     (observe "api-run" (observe-api! dir))
+    (observe "login-run" (observe-login! dir))
     ;; The command line.
     (set! cli-version (attempt (lambda () (run-cli dir "version" '() '() '("version")))))
     (set! cli-none (attempt (lambda () (run-cli dir "none" '() '() '()))))
@@ -1367,6 +1641,230 @@
 (test-equal "P1: no secret is in the server's output or error, nor the database file or its -wal, while it ran or after"
   '()
   (obs "api:leaks"))
+
+;; --- login, the users commands and the proxy count (slice 3b) ------------
+
+(define (last-of l) (if (null? (cdr l)) (car l) (last-of (cdr l))))
+(define (butlast l) (if (null? (cdr l)) '() (cons (car l) (butlast (cdr l)))))
+(define (lg-ok? k) (let ((r (obs k))) (and (pair? r) (integer? (car r)))))
+(define (lg-code k) (if (lg-ok? k) (jget (lg-json (obs k)) "code") (obs k)))
+(define (lg-st k) (if (lg-ok? k) (lg-status (obs k)) (obs k)))
+(define ada-id (obs "lg:ada-id"))
+(define sam-id (obs "lg:sam-id"))
+(define (stderr-of k) (let ((r (obs k))) (if (and (pair? r) (string? (caddr r))) (caddr r) r)))
+
+(test-equal "login run: the migrate and the servers' ports"
+  '(0 #t #t) (list (obs "lg:migrate") (port-ok (obs "lgsrv:port")) (port-ok (obs "lgproxy:port"))))
+
+(test-equal "user add: the password on standard input makes the account; the line is `added NAME EMAIL ID`"
+  (list (list 0 (nl (string-append "added ada ada@example.com " ada-id)) "")
+        #t)
+  (list (obs "lg:add-ada")
+        (and (= 36 (string-length ada-id)) (not (equal? ada-id sam-id)))))
+
+(test-equal "user add: a CRLF line ending is dropped and the spaces at either end are kept (sam logs in with them)"
+  (list (list 0 (nl (string-append "added sam sam@example.com " sam-id)) "") 201)
+  (list (obs "lg:add-sam") (lg-st "lg:sam")))
+
+(test-equal "user add: a taken username, a taken email (any case), a short password, a bad username, an empty standard input: status 1, one line"
+  (list (list 1 "" (nl "techo: the username ada is taken"))
+        (list 1 "" (nl "techo: the email ada@example.com is taken"))
+        (list 1 "" (nl "techo: the password is shorter than 8 characters"))
+        (list 1 "" (nl "techo: the username must start with a lowercase letter or a digit"))
+        (list 1 "" (nl "techo: no password was given")))
+  (map obs '("lg:add-dup-username" "lg:add-dup-email" "lg:add-short" "lg:add-bad-username" "lg:add-empty-stdin")))
+
+(test-equal "user add: none of those refusals made an account (two accounts)"
+  2 (obs "lg:accounts-after-refusals"))
+
+;; pinned : String     how a hash at 'interactive starts: 64 MiB, 2 passes, 1 lane
+(define pinned "$argon2id$v=19$m=65536,t=2,p=1$")
+
+(test-equal "user add: the hash it stored is made at the pinned limits"
+  pinned
+  (let ((h (obs "lg:ada-hash")))
+    (if (and (string? h) (>= (string-length h) (string-length pinned)))
+        (substring h 0 (string-length pinned))
+        h)))
+
+;; version-of : Any -> (U Char Any)     a UUID text's 15th character, its version
+(define (version-of id)
+  (if (and (string? id) (= (string-length id) 36)) (string-ref id 14) id))
+
+(test-equal "user: `techo user`, `user add` with no options, an unknown option: status 2, stdout empty, the usage on stderr"
+  (list (list 2 "" #t) (list 2 "" #t) (list 2 "" #t))
+  (map (lambda (k) (let ((r (obs k)))
+                     (if (and (pair? r) (string? (caddr r)))
+                         (list (car r) (cadr r) (contains? (caddr r) usage-text))
+                         r)))
+       '("lg:user-bare" "lg:user-add-bare" "lg:user-unknown-option")))
+
+(test-equal "user: the refusals name the fault"
+  '(#t #t #t)
+  (list (contains? (stderr-of "lg:user-bare") "no user command given")
+        (contains? (stderr-of "lg:user-add-bare") "user add needs --username")
+        (contains? (stderr-of "lg:user-unknown-option") "unknown option for user add: --password")))
+
+(test-equal "user add on a missing file: status 1, the database's line, no file made"
+  (list (list 1 "" (nl "techo: the database file is missing: run `techo migrate`")) '(#f #f #f))
+  (list (obs "lg:add-missing") (obs "lg:add-missing-files")))
+
+(test-equal "user add on a file that was never migrated: status 1, the database's line, the file untouched"
+  (list (list 1 "" (nl "techo: the database is empty: run `techo migrate`")) '(0 #f #f))
+  (list (obs "lg:add-blank") (obs "lg:add-blank-files")))
+
+;; --- login over the wire
+
+(define login-members (append key-members '("key")))
+(test-equal "login: 201, the key's fields and the key, cache-control: no-store, JSON; the email is case-insensitive"
+  (list 201 "no-store" "application/json" (list login-members "laptop" #t))
+  (let ((r (obs "lg:good")))
+    (if (lg-ok? "lg:good")
+        (let ((j (lg-json r)) (k (jget (lg-json r) "key")))
+          (list (lg-status r) (lg-header r "cache-control") (lg-header r "content-type")
+                (list (members j) (jget j "name")
+                      (and (string? k) (= 70 (string-length k)) (starts-with? k "techo_")))))
+        r)))
+
+(test-equal "ids: the accounts `user add` printed and the keys four logins made are UUIDs of version 7"
+  '(#\7 #\7 #\7 #\7 #\7 #\7)
+  (map version-of
+       (append (list ada-id sam-id)
+               (map (lambda (k) (if (lg-ok? k) (jget (lg-json (obs k)) "id") (obs k)))
+                    '("lg:good" "lg:sam" "lg:second" "lg:new-password")))))
+
+(test-equal "login: the returned key works as a Bearer key on GET /v1/account (the account, email as stored)"
+  (list 200 ada-id "ada@example.com")
+  (if (lg-ok? "lg:account")
+      (let ((j (lg-json (obs "lg:account"))))
+        (list (lg-status (obs "lg:account")) (jget j "id") (jget j "email")))
+      (obs "lg:account")))
+
+(test-equal "login: GET /v1/keys lists the new key by its name and id"
+  (list 200 (list "laptop") #t)
+  (if (lg-ok? "lg:keys")
+      (let* ((j (lg-json (obs "lg:keys"))) (is (jitems j)))
+        (list (lg-status (obs "lg:keys")) (map (lambda (i) (jget i "name")) is)
+              (equal? (map (lambda (i) (jget i "id")) is)
+                      (list (jget (lg-json (obs "lg:good")) "id")))))
+      (obs "lg:keys")))
+
+(test-equal "Q1: a wrong password and an unknown email answer 401 invalid_credentials with the same body and headers (Date aside)"
+  (list 401 "invalid_credentials" "Bearer" #t)
+  (if (and (lg-ok? "lg:wrong-pw") (lg-ok? "lg:wrong-email"))
+      (let ((a (obs "lg:wrong-pw")) (b (obs "lg:wrong-email")))
+        (list (lg-status a) (jget (lg-json a) "code") (lg-header a "www-authenticate")
+              (and (= (lg-status a) (lg-status b))
+                   (equal? (lg-text a) (lg-text b))
+                   (equal? (lg-headers a) (lg-headers b)))))
+      (list (obs "lg:wrong-pw") (obs "lg:wrong-email") #f #f)))
+
+(test-equal "login: a missing Content-Type is 415, bad JSON 400 invalid_json, a field twice and an unknown field 400 invalid_request, over 16 KiB 413"
+  '((415 "unsupported_media_type") (400 "invalid_json") (400 "invalid_request")
+    (400 "invalid_request") (413 "payload_too_large"))
+  (map (lambda (k) (list (lg-st k) (lg-code k)))
+       '("lg:no-ctype" "lg:bad-json" "lg:twice" "lg:unknown-field" "lg:too-big")))
+
+(define (retry-after-of k) (and (lg-ok? k) (string->number (or (lg-header (obs k) "retry-after") "x"))))
+(test-equal "rate limit: five wrong tries for one email are 401; the sixth is 429 rate_limited with a Retry-After of 890 to 900 whole seconds (the window is 15 minutes, the tries take seconds)"
+  (list '(401 401 401 401 401) 429 "rate_limited" #t)
+  (list (map (lambda (i) (lg-st (string-append "lg:rl-" (number->string i)))) '(1 2 3 4 5))
+        (lg-st "lg:rl-6") (lg-code "lg:rl-6")
+        (let ((n (retry-after-of "lg:rl-6"))) (and (integer? n) (exact? n) (<= 890 n 900)))))
+
+(test-equal "rate limit: another email from the same address still gets 401"
+  401 (lg-st "lg:rl-other"))
+
+(test-equal "user password beside the running server: status 0, the line says how many keys it revoked"
+  (list 0 (nl "password set for ada@example.com; 2 keys revoked") "")
+  (obs "lg:passwd"))
+
+(test-equal "user password: an unknown email is status 1 and the line says so"
+  (list 1 "" (nl "techo: no account has the email nobody@example.com"))
+  (obs "lg:passwd-unknown"))
+
+(test-equal "Q5: both old keys answer 401, the old password 401, the new password 201, and the new key works"
+  '(401 401 401 201 200)
+  (map lg-st '("lg:old-key-1" "lg:old-key-2" "lg:old-password" "lg:new-password" "lg:new-key")))
+
+(test-equal "TECHO_BEHIND_PROXY unset: X-Forwarded-For is ignored: tries with a different last entry each hit one address limit (401s, then a 429)"
+  #t
+  (let ((r (obs "lg:unset-proxy")))
+    (and (list? r) (pair? r)
+         (equal? (last-of r) 429)
+         (for-all (lambda (s) (= s 401)) (butlast r))
+         (< (length r) 22))))
+
+(test-equal "TECHO_BEHIND_PROXY=1: twenty tries by one client are 401, though each carried another first entry"
+  (vector->list (make-vector 20 401)) (obs "lg:px-statuses"))
+
+(test-equal "TECHO_BEHIND_PROXY=1: the 21st try from the same last entry is 429 rate_limited; the same request with another last entry is 401"
+  '((429 "rate_limited") (401 "invalid_credentials"))
+  (list (list (lg-st "lg:px-21-same") (lg-code "lg:px-21-same"))
+        (list (lg-st "lg:px-21-other") (lg-code "lg:px-21-other"))))
+
+(for-each
+ (lambda (v)
+   (test-equal (string-append "TECHO_BEHIND_PROXY=" v ": the server refuses to start, status 2, stderr names the variable and not the value, stdout empty")
+     '(2 #t #f "")
+     (let ((r (obs (string-append "lg:proxy-" v))))
+       (if (and (pair? r) (string? (caddr r)))
+           (list (car r) (contains? (caddr r) "TECHO_BEHIND_PROXY")
+                 (and (> (string-length v) 1) (contains? (caddr r) v))
+                 (cadr r))
+           r))))
+ '("x" "9" "zzq7"))
+
+(test-equal "login servers: SIGTERM ends each with status 0 and `stopped` (the hasher stops with them)"
+  '(0 0 #t #t)
+  (list (obs "lgsrv:exit") (obs "lgproxy:exit")
+        (and (string? (obs "lgsrv:out")) (contains? (obs "lgsrv:out") "stopped\n"))
+        (and (string? (obs "lgproxy:out")) (contains? (obs "lgproxy:out") "stopped\n"))))
+
+(test-equal "login servers: no raise while observing them"
+  '(unobserved unobserved) (list (obs "lgsrv:raised") (obs "lgproxy:raised")))
+
+(test-equal "login log: each login's line shows the account when it answered 201 and `-` when it did not"
+  (obs "lg:expect")
+  (let ((o (obs "lgsrv:out")))
+    (if (string? o)
+        (let ((mine (filter (lambda (l) (equal? (field-of l "path") "/v1/login")) (request-lines o))))
+          (map (lambda (l) (list (field-of l "status") (field-of l "account"))) mine))
+        o)))
+
+;; Q3: no password, no hash and no secret is anywhere the run wrote
+(define (string-leaks hays needles)
+  (apply append
+         (map (lambda (h)
+                (let loop ((ns needles) (i 0) (acc '()))
+                  (cond ((null? ns) (reverse acc))
+                        ((bytes-contain? (cdr h) (string->utf8 (car ns))) (loop (cdr ns) (+ i 1) (cons (list (car h) i) acc)))
+                        (else (loop (cdr ns) (+ i 1) acc)))))
+              hays)))
+
+(define lg-all-hays (append lg-outputs lg-bodies lg-bodies-201))
+(define lg-no-secret-hays (append lg-outputs lg-bodies))
+
+(test-equal "Q3: the search finds a password and `$argon2` in bytes that hold them, and not in bytes that do not"
+  '(((x 0) (x 1)) ())
+  (list (map (lambda (r) (list 'x (cadr r)))
+             (string-leaks (list (cons "h" (string->utf8 "..$argon2id$v=19.. correct horse battery ..")))
+                           (list "correct horse battery" "$argon2")))
+        (string-leaks (list (cons "h" (string->utf8 "nothing here"))) (list "correct horse battery" "$argon2"))))
+
+(test-equal "Q3: the run's outputs and answers are not empty, and it made four keys"
+  '(#t #t #t)
+  (list (> (length lg-outputs) 20) (> (length lg-bodies) 20) (= (length lg-secrets) 4)))
+
+(test-equal "Q3: no password and no `$argon2` in any server output, command output or response body"
+  '() (string-leaks lg-all-hays (append lg-passwords '("$argon2"))))
+
+(test-equal "Q3: no key secret in any output or response body but the login answer that made it"
+  '() (leaks lg-no-secret-hays (reverse lg-secrets)))
+
+(test-equal "Q3: each secret is in the 201 body that made it"
+  #t (let ((bodies (map cdr lg-bodies-201)))
+       (for-all (lambda (s) (exists (lambda (b) (bytes-contain? b (string->utf8 s))) bodies)) lg-secrets)))
 
 (test-end "integration")
 

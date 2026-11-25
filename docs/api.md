@@ -1,7 +1,58 @@
 # The API
 
-Every route is under `/v1`, speaks JSON, and needs an API key.
-`GET /health` needs none.
+Every route is under `/v1`, speaks JSON, and needs an API key, except
+`POST /v1/login`, which is how you get one. `GET /health` needs none.
+
+An account is made at the command line, not over the API: see
+[Make an account](running.md#make-an-account).
+
+## Log in
+
+An email and a password make a new API key.
+
+```sh
+curl -H 'Content-Type: application/json' \
+  -d '{"email":"ada@example.com","password":"correct horse battery","name":"laptop"}' \
+  http://127.0.0.1:8080/v1/login
+```
+
+```json
+{"id":"0193a5c0-8000-7000-8000-000000000001","name":"laptop","created":1795515226123,"last_used":null,"revoked":null,"key":"techo_9f2c…"}
+```
+
+- It answers `201`, with `Cache-Control: no-store`.
+- `name` is the key's name, 1 to 64 characters. It is needed.
+- The email's ASCII letters are not case sensitive. The password is, all of it.
+- **The key is shown once.** Keep it. Log in again for another.
+- Every login makes a new key. Send it as the [Bearer key](#authenticate) below.
+
+What can go wrong:
+
+| Status | `code` | When |
+|---|---|---|
+| 400 | `invalid_json` | The body is not JSON. |
+| 400 | `invalid_request` | Not an object; a field missing, given twice, or unknown; a value that is not text; a bad email or key name; a password over 1,024 bytes. |
+| 401 | `invalid_credentials` | The email or the password is wrong. |
+| 409 | `too_many_keys` | The password was right, but the account has 100 active keys. |
+| 413 | `payload_too_large` | The body is over 16 KiB. |
+| 415 | `unsupported_media_type` | `Content-Type` is not `application/json`. |
+| 429 | `rate_limited` | Too many tries. `Retry-After` says how many seconds to wait. |
+| 503 | `unavailable` | Busy: too many logins at once, or the server is short of memory. `Retry-After: 5`. |
+
+**A wrong email and a wrong password get the same answer** on purpose: the same
+status, body and headers. So nobody can use login to find out which emails have
+accounts. Do not try to tell them apart.
+
+**The limit:** 5 wrong tries for one email, and 20 tries from one address, in 15
+minutes. The next try is a `429`, and `Retry-After` is a whole number of seconds,
+at most `900`, until the window ends. A good login clears the email's count.
+[Login limits](running.md#login-limits) says more.
+
+**The 100-key cap:** an account may have 100 active keys. At the cap, a login with
+the right password is a `409`. Revoke a key you do not use
+(`POST /v1/keys/{id}/revoke`, with a key you still have), then log in again. With
+no working key, `techo user password` revokes them all (see
+[Make an account](running.md#make-an-account)).
 
 ## Authenticate
 
@@ -16,10 +67,6 @@ curl -H 'Authorization: Bearer techo_0123…' http://127.0.0.1:8080/v1/account
   key cannot be looked up. Regenerate it while it still works.
 - No header, a key in the wrong shape, an unknown key and a revoked key all get
   the same `401`.
-
-**In this version an admin cannot yet make an account or a key.** That arrives with
-login. So on a fresh server no key works, and every request to `/v1` with one
-answers `401`.
 
 ## The routes
 
@@ -144,11 +191,14 @@ An error is [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) problem details,
 | `invalid_json` | 400 | The request body is not valid JSON. |
 | `invalid_request` | 400 | The request is not valid. |
 | `unauthorized` | 401 | A valid API key is needed. Has `WWW-Authenticate: Bearer`. |
+| `invalid_credentials` | 401 | The email or password is wrong. Login only. |
 | `forbidden` | 403 | A key can only regenerate itself. |
 | `not_found` | 404 | There is no such thing here. |
 | `method_not_allowed` | 405 | That method is not allowed here. Has `Allow`. |
+| `too_many_keys` | 409 | The account has 100 active keys; revoke one first. Login only. |
 | `payload_too_large` | 413 | The request body is too large. |
 | `unsupported_media_type` | 415 | The request body must be `application/json`. |
+| `rate_limited` | 429 | Too many login attempts. Has `Retry-After`. |
 | `internal` | 500 | Something went wrong on the server. |
 | `unavailable` | 503 | The service is busy or not ready; try again soon. |
 | `timeout` | 504 | The request took too long. |

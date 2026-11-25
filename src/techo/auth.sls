@@ -20,10 +20,23 @@
 ;;;      the account and db_ms into the request's note (D10); then hand
 ;;;      what the work returned to the plan's answer.
 ;;;
-;;; A job closes over plain data only: the hash, the time, and the plan's
-;;; work, which closes over plain data too. Never the request, never a
-;;; parameter (ADR-0013). The note is written here, on the loop's thread,
-;;; never from inside a job.
+;;; A job closes over plain data only, and one cell (below): the hash, the
+;;; time, and the plan's work, which closes over plain data too. Never the
+;;; request, never a parameter (ADR-0013). The note is written here, on the
+;;; loop's thread, never from inside a job.
+;;;
+;;; The cell is the one exception (slice 3b's L8): one slot, made for each
+;;; request, read and written under its mutex. The job puts the account's
+;;; id in it as soon as the key check passes. When the runner raises
+;;; anything but a &refusal (a deadline, a hung-up client, a 500), the
+;;; note gets the cell's account: the key's, once it was checked; #f for a
+;;; job still queued, or waiting for the lock, at that moment.
+;;;
+;;; Login has no key, so it reaches the database by two procedures of its
+;;; own (L7), and no others: login-read, one read job, and login-write, one
+;;; write job. Their db_ms is added to the note's, so a login's is the sum
+;;; of its two jobs, and neither touches the note's account: the handler
+;;; writes it once the password has matched, before the write.
 ;;;
 ;;; The catch is the doorway's own pattern (wrap-db's, circuit's): call/cc
 ;;; around with-exception-handler, anything but a &refusal passed on by
@@ -32,14 +45,16 @@
 ;;; wrap-timeout and wrap-catch as if this were not here.
 (library (techo auth)
   (export key-hash key-state touch-due? make-plan plan?
-          db-read-as db-write-as)
+          db-read-as db-write-as
+          login-read login-write)
   (import (rnrs)
+          (only (chezscheme) make-mutex with-mutex)
           (only (circuit) req-header-values res?)
           (only (chez-sodium) blake2b)
           (techo errors)
           (only (techo keys) key-step read-bearer)
           (except (techo store) key-hash)
-          (only (techo log) note-request!))
+          (only (techo log) note-request! note-add-db-ms!))
 
   ;; Runner = ((Tx -> Any) -> Any)      db-read or db-write, given a doorway
   ;; Clock = (-> Integer)               milliseconds, for durations
@@ -74,6 +89,22 @@
   (define-record-type (plan make-plan plan?)
     (fields (immutable work plan-work) (immutable answer plan-answer)))
 
+  ;; Cell : the account a job's key check passed for, or #f, under a mutex
+  ;; (L8). The job writes it from its thread; the loop's thread reads it.
+  (define-record-type cell
+    (fields (immutable mutex cell-mutex) (mutable account cell-account cell-account-set!)))
+
+  ;; new-cell : -> Cell
+  (define (new-cell) (make-cell (make-mutex) #f))
+
+  ;; cell-put! : Cell Bytevector -> Void
+  (define (cell-put! c account)
+    (with-mutex (cell-mutex c) (cell-account-set! c account)))
+
+  ;; cell-take : Cell -> (U Bytevector #f)
+  (define (cell-take c)
+    (with-mutex (cell-mutex c) (cell-account c)))
+
   ;; checked : Tx Bytevector -> (values Key Account)
   ;; In the job: the asking key by its hash, D5's `check`, and its account.
   ;; refuse-401 raises a &refusal with no account.
@@ -86,29 +117,32 @@
           (else (assertion-violation 'checked "D5's check named a command with no action here"
                                      command))))))
 
-  ;; read-job : Bytevector Work -> (Tx -> (Pair Bytevector A))
-  ;; The account's id, and what the work returned.
-  (define (read-job hash work)
+  ;; read-job : Bytevector Work Cell -> (Tx -> (Pair Bytevector A))
+  ;; The account's id, and what the work returned. The id goes into CELL
+  ;; as soon as the key has passed its check.
+  (define (read-job hash work cell)
     (lambda (tx)
       (let-values (((key account) (checked tx hash)))
+        (cell-put! cell (account-id account))
         (cons (account-id account) (work tx account key)))))
 
-  ;; write-job : Bytevector Natural Work -> (Tx -> (Pair Bytevector A))
+  ;; write-job : Bytevector Natural Work Cell -> (Tx -> (Pair Bytevector A))
   ;; As read-job, and first the asking key's last_used set to NOW when it is
   ;; due, in the same transaction: the work sees the row as it now is. A
   ;; refusal rolls it back with the rest.
-  (define (write-job hash now work)
+  (define (write-job hash now work cell)
     (lambda (tx)
       (let-values (((key account) (checked tx hash)))
+        (cell-put! cell (account-id account))
         (let ((key (if (touch-due? (key-last-used key) now)
                        (begin (touch-key! tx (key-id key) now)
                               (key-of-account tx (account-id account) (key-id key)))
                        key)))
           (cons (account-id account) (work tx account key))))))
 
-  ;; run-as : Symbol Runner Clock Req (-> (U Res Plan)) (Bytevector Work -> Job) -> Res
-  ;; Steps 1 to 5 of the header, MAKE-JOB building the job of the hash and
-  ;; the plan's work.
+  ;; run-as : Symbol Runner Clock Req (-> (U Res Plan)) (Bytevector Work Cell -> Job) -> Res
+  ;; Steps 1 to 5 of the header, MAKE-JOB building the job of the hash, the
+  ;; plan's work and the request's cell.
   (define (run-as who run clock req prepare make-job)
     (let ((secret (read-bearer (req-header-values req "authorization"))))
       (if (not secret)
@@ -117,27 +151,30 @@
                  (step (prepare)))
             (cond ((res? step) step)
                   ((plan? step)
-                   (let ((outcome (outcome-of run (make-job hash (plan-work step)) clock req)))
+                   (let* ((cell (new-cell))
+                          (outcome (outcome-of run (make-job hash (plan-work step) cell)
+                                               clock req cell)))
                      (if (res? outcome)
                          outcome
                          ((plan-answer step) (cdr outcome)))))
                   (else (assertion-violation who "a plan is a make-plan or a response" step)))))))
 
-  ;; outcome-of : Runner Job Clock Req -> (U Res (Pair Bytevector A))
+  ;; outcome-of : Runner Job Clock Req Cell -> (U Res (Pair Bytevector A))
   ;; RUN's answer to JOB, or a &refusal's answer in the format. Whichever
   ;; way the runner comes back, a raise too, db_ms is written into REQ's
   ;; note: the time from handing the job over to its answer, the queue's
-  ;; wait included; and the account when it is known: the job's, or the
-  ;; refusal's. Anything but a &refusal goes on, raised again from where it
-  ;; was raised.
-  (define (outcome-of run job clock req)
+  ;; wait included; and the account when it is known: the job's, the
+  ;; refusal's, or, for any other raise, CELL's (L8). Anything but a
+  ;; &refusal goes on, raised again from where it was raised.
+  (define (outcome-of run job clock req cell)
     (let ((start (clock)))
       (call/cc
        (lambda (k)
          (with-exception-handler
           (lambda (e)
             (let ((refused? (refusal? e)))
-              (note-request! req (and refused? (refusal-account e)) (- (clock) start))
+              (note-request! req (if refused? (refusal-account e) (cell-take cell))
+                             (- (clock) start))
               (if refused?
                   (k (problem-res (refusal-code e)))
                   (raise-continuable e))))
@@ -159,5 +196,89 @@
   ;; for last_used.
   (define (db-write-as run clock now req prepare)
     (run-as 'db-write-as run clock req prepare
-            (lambda (hash work) (write-job hash now work))))
+            (lambda (hash work cell) (write-job hash now work cell))))
+
+  ;;; Login's two jobs (L7)
+
+  ;; timed : Runner Job Clock Req -> A
+  ;; RUN's answer to JOB. Whichever way it comes back, a raise too, the
+  ;; time it took is added to REQ's note's db_ms, and the note's account is
+  ;; left as it is. A raise goes on, raised again from where it was raised.
+  (define (timed run job clock req)
+    (let ((start (clock)))
+      (with-exception-handler
+       (lambda (e)
+         (note-add-db-ms! req (- (clock) start))
+         (raise-continuable e))
+       (lambda ()
+         (let ((r (run job)))
+           (note-add-db-ms! req (- (clock) start))
+           r)))))
+
+  ;; login-read-job : String -> (Tx -> (U (Pair Bytevector String) #f))
+  (define (login-read-job email)
+    (lambda (tx)
+      (let ((a (account-by-email tx email)))
+        (and a (cons (account-id a) (account-password-hash a))))))
+
+  ;; login-read : Runner Clock Req String -> (U (Pair Bytevector String) #f)
+  ;; One read job: the account's id and password hash by EMAIL, normalised
+  ;; already, or #f for none. RUN is the read runner. The job closes over
+  ;; the email alone.
+  (define (login-read run clock req email)
+    (unless (string? email)
+      (assertion-violation 'login-read "the email must be a string"))
+    (timed run (login-read-job email) clock req))
+
+  ;; key-cap : Natural     an account's most active keys (slice 3's plan)
+  (define key-cap 100)
+
+  ;; login-write-job : Bytevector String (U String #f) Bytevector String Bytevector Natural
+  ;;                   -> (Tx -> (U Key 'stale 'full))
+  ;; L1's step 6, in one transaction. 'stale and 'full write nothing.
+  (define (login-write-job account verified new-hash id name hash now)
+    (lambda (tx)
+      (let ((row (account-by-id tx account)))
+        (cond
+          ((not (and row (string=? (account-password-hash row) verified))) 'stale)
+          ((>= (count-active-keys tx account) key-cap) 'full)
+          (else
+           (when new-hash
+             (unless (eq? (set-password-hash! tx account verified new-hash) #t)
+               (assertion-violation 'login-write "the new password hash was not stored")))
+           (let-values (((next command) (key-step 'none 'create)))
+             (case command
+               ((insert)
+                (insert-key! tx id account name hash now)
+                (key-of-account tx account id))
+               (else (assertion-violation 'login-write
+                                          "D5's create named a command with no action here"
+                                          command)))))))))
+
+  ;; login-write : Runner Clock Req Bytevector String (U String #f) Key-fields
+  ;;               -> (U Key 'stale 'full)
+  ;; Key-fields = (List Bytevector String Bytevector Natural): the new
+  ;; key's id (16 bytes), its name, its hash (32 bytes) and the time of day
+  ;; in whole milliseconds since 1970, UTC.
+  ;; One write job: the account by ACCOUNT's id; 'stale unless its password
+  ;; hash is still VERIFIED, the one the password matched; 'full when it has
+  ;; 100 active keys; else NEW-HASH stored when there is one, D5's `create`
+  ;; stepped from `none` and its `insert` performed, and the new key's row.
+  ;; RUN is the write runner. The job closes over plain data: no request,
+  ;; no password, no secret. Key-fields of another shape are an assertion
+  ;; violation, before any job.
+  (define (login-write run clock req account verified new-hash fields)
+    (unless (and (list? fields) (= (length fields) 4)
+                 (bytevector? (car fields)) (= (bytevector-length (car fields)) 16)
+                 (string? (cadr fields))
+                 (bytevector? (caddr fields)) (= (bytevector-length (caddr fields)) 32)
+                 (let ((now (cadddr fields))) (and (integer? now) (exact? now) (>= now 0))))
+      (assertion-violation 'login-write "Key-fields are an id, a name, a hash and a time"))
+    (unless (and (bytevector? account) (= (bytevector-length account) 16)
+                 (string? verified) (or (not new-hash) (string? new-hash)))
+      (assertion-violation 'login-write "an account's id, the verified hash, and a new hash or #f"))
+    (timed run
+           (login-write-job account verified new-hash
+                            (car fields) (cadr fields) (caddr fields) (cadddr fields))
+           clock req))
 )

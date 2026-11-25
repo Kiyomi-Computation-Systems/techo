@@ -221,6 +221,41 @@ it.
 - **Rule:** to capture output, import Chez's `current-output-port` under another
   name and parameterize that (`tests/http-support.sls`, `capture-output`).
 
+## Chez's `map` does not go left to right
+
+- **Expected:** `(map (lambda (i) (start-call! i)) '(1 2 3 4 5 6 7 8))` starts the
+  calls in order.
+- **Happened:** they started as 7 8 5 6 3 4 1 2. A test that queued eight jobs with
+  `map` queued them in that order.
+- **See it again:** `(map (lambda (i) (display i) i) '(1 2 3 4 5 6 7 8))`.
+- **Rule:** never run side effects through `map`. Use `for-each` or a named `let`.
+
+## `#\xe9;` starts a comment
+
+- **Expected:** `(list #\xe9;)` is a list of one character, as `"\xe9;"` is a string
+  of one.
+- **Happened:** "unexpected end-of-file reading list". The character is `#\xe9`, and
+  the semicolon comments out the rest of the line.
+- **See it again:** a program whose body is `(write (list #\xe9;))`.
+- **Rule:** the semicolon belongs to the escape only inside a string. Write a
+  character as `#\xe9` or `(integer->char #xe9)`.
+
+## A program that imports `(rnrs)` cannot define `fields` or `port?`
+
+- **Expected:** `(define (fields n) n)` is a new procedure.
+- **Happened:** "multiple definitions for fields in body". `(rnrs)` exports `fields`
+  (for `define-record-type`) and `port?`.
+- **See it again:** `(import (rnrs))` then `(define (fields n) n)`.
+- **Rule:** pick another name, or import `(rnrs)` with `except`.
+
+## `get-bytevector-all` on an empty file answers the eof object
+
+- **Expected:** an empty bytevector.
+- **Happened:** the eof object, and `bytevector=?` on it raised.
+- **See it again:** `(call-with-port (open-file-input-port "an-empty-file")
+  get-bytevector-all)`.
+- **Rule:** test `eof-object?` before comparing a file's bytes.
+
 The siblings' traps apply wherever Techo touches the same ground. Read them there:
 
 - chez-sqlite3: `.plans/traps.md`

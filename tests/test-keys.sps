@@ -305,6 +305,20 @@
   (problem-symbol? (attempt (lambda () (key-name-problem "a\x0;b")))))
 (test-assert "name: not a string"
   (problem-symbol? (attempt (lambda () (key-name-problem 5)))))
+;; DEL and C1 controls: a terminal can read U+009B as the start of an escape
+(for-each
+ (lambda (c)
+   (test-equal (string-append "name: " (car c) " is a control character")
+     'control-character
+     (attempt (lambda () (key-name-problem (string-append "lap" (string (integer->char (cdr c))) "top"))))))
+ '(("U+007F" . #x7f) ("U+0080" . #x80) ("U+009B" . #x9b) ("U+009F" . #x9f)))
+
+(test-equal "name: ordinary non-ASCII still passes: e acute, U+00A1 (just past C1), CJK"
+  '(#f #f #f)
+  (attempt (lambda () (list (key-name-problem "caf\xe9;")
+                            (key-name-problem "\xa1;hola!")
+                            (key-name-problem "\x65e5;\x672c;\x8a9e;")))))
+
 (test-equal "name: the symbols differ by cause"
   '(empty too-long control-character not-a-string)
   (attempt (lambda () (list (key-name-problem "") (key-name-problem (make-string 65 #\a))
