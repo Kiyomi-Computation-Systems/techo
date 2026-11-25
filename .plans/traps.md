@@ -256,6 +256,21 @@ it.
   get-bytevector-all)`.
 - **Rule:** test `eof-object?` before comparing a file's bytes.
 
+## `(file-options no-fail append)` empties the file at every open
+
+- **Expected:** opening a file with `no-fail append` adds to what is there.
+- **Happened:** each open emptied it first. A child that reported a number after
+  each batch held only its last number, and for a moment, between the open and the
+  write, nothing. A kill in that moment left an empty report, and three integration
+  tests failed: once in a while locally, and once in CI (slice 3b's last pull
+  request).
+- **See it again:** open a file three times with those options, writing a line each
+  time, and read it: one line.
+- **Rule:** to add to a file, say `(file-options no-fail no-truncate append)`.
+- **How it was found:** the suite printed only a failing test's name. It now prints
+  what it expected and what it saw, and six copies of it pinned to two cores
+  (`taskset -c 0,1`) showed the failure in one run.
+
 The siblings' traps apply wherever Techo touches the same ground. Read them there:
 
 - chez-sqlite3: `.plans/traps.md`

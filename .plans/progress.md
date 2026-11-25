@@ -116,6 +116,19 @@ From [outline.md](outline.md) §14, each for the slice named:
 
 ## Close-outs
 
+### The clause 11 flake (2026-11-25)
+
+- **What it was:** three integration tests failed once in a while, and once in CI.
+  The helper that writes rows until it is killed opened its report with
+  `(file-options no-fail append)`, which empties the file at every open. A kill
+  between the open and the write left no number.
+- **The fix:** `no-truncate`. A new test holds that the report has a line for every
+  batch, and failed every time before the fix.
+- **How it was found:** the integration suite now prints what a failing test
+  expected and saw, and six copies pinned to two cores showed it.
+- **What to keep:** a flake was recorded twice as "not this slice's" and left. It
+  then failed a CI run. A flake gets its own task when it is first seen.
+
 ### Slice 3b: users and login (merged 2026-11-25, PR #12)
 
 - **Built:** `(techo login)`, `(techo limiter)`, `(techo address)`,

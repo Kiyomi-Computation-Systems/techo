@@ -40,6 +40,19 @@
 (define runner (test-runner-simple))
 (test-runner-current runner)
 
+;; A failing test shows what it expected and what it saw: these tests watch
+;; processes, and a name alone does not say what happened. CI keeps no log
+;; file, so this is all a failed run there leaves behind.
+(let ((simple-end (test-runner-on-test-end runner)))
+  (test-runner-on-test-end! runner
+    (lambda (r)
+      (simple-end r)
+      (when (memq (test-result-kind r) '(fail xpass))
+        (let ((out (current-output-port)))
+          (put-string out "  expected: ") (write (test-result-ref r 'expected-value) out) (newline out)
+          (put-string out "  actual:   ") (write (test-result-ref r 'actual-value) out) (newline out)
+          (flush-output-port out))))))
+
 ;; attempt : (-> A) -> (U A (List 'raised String))
 (define (attempt thunk)
   (guard (e (#t (list 'raised (describe e))))
@@ -382,6 +395,7 @@
                (status (sigkilled writer))
                (wal-size (file-size (string-append db "-wal")))
                (reported (last-number report))
+               (report-lines (length (split-lines (file-text report))))
                (dropped (and drop-shm?
                              (begin (delete-file (string-append db "-shm")) #t)))
                (mig (migrate-run dir (string-append tag "-migrate") db))
@@ -401,7 +415,10 @@
                 facts
                 served
                 on-top
-                (and (integer? reported) (= rows-after rows)))))
+                (and (integer? reported) (= rows-after rows))
+                ;; The report is appended to, never emptied: a kill between
+                ;; an emptying open and its write would leave no number.
+                (and (integer? reported) (= report-lines (div reported 100))))))
       (lambda () (kill! writer)))))
 
 ;; foreign-left-alone : String String Boolean -> (List Boolean Boolean Boolean (List Status String String))
@@ -1303,17 +1320,17 @@
 (define (clause-11-tests label key)
   (test-equal (string-append label ": the setup migrate, the -wal large, non-empty at the kill, a report")
     '(0 #t #t #t)
-    (let ((r (obs key))) (if (and (list? r) (= (length r) 12)) (head r 4) r)))
+    (let ((r (obs key))) (if (and (list? r) (= (length r) 13)) (head r 4) r)))
   (test-equal (string-append label ": techo migrate exits 0 and every reported row is there")
     '(0 #t #t)
-    (let ((r (obs key))) (if (and (list? r) (= (length r) 12))
+    (let ((r (obs key))) (if (and (list? r) (= (length r) 13))
                              (list (list-ref r 5) (list-ref r 6) (list-ref r 7))
                              r)))
   (test-equal (string-append label ": the file is current and in WAL, and serve answers /health")
     (list (list techo-application-id shipped-latest (+ shipped-objects 1) 'wal)
           (list 'listening (list 200 "application/json" '(("status" . "ok"))) 0))
     (let ((r (obs key)))
-      (if (and (list? r) (= (length r) 12))
+      (if (and (list? r) (= (length r) 13))
           (list (list-ref r 8)
                 (list-ref r 9))
           r)))
@@ -1321,7 +1338,11 @@
   (test-equal (string-append label ": a migration then applies on top, and the rows are still there")
     (list (list 'applied (list fixture-notes-version fixture-tags-version)) #t)
     (let ((r (obs key)))
-      (if (and (list? r) (= (length r) 12)) (list (list-ref r 10) (list-ref r 11)) r))))
+      (if (and (list? r) (= (length r) 13)) (list (list-ref r 10) (list-ref r 11)) r)))
+
+  (test-equal (string-append label ": the writer's report holds a line for every batch, so a kill at any moment leaves the last one")
+    #t
+    (let ((r (obs key))) (if (and (list? r) (= (length r) 13)) (list-ref r 12) r))))
 
 (clause-11-tests "clause 11" "clause-11")
 (clause-11-tests "clause 11, -shm deleted" "clause-11-no-shm")
