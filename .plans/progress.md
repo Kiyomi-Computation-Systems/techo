@@ -50,7 +50,7 @@ close-out under **Close-outs**, newest first.
 **Slice 3b: `techo user add`, `techo user password`, login, the
 rate limit and the hashing worker.** It waits on chez-sodium's M3, the password verbs,
 which is planned and being built. Its outline and decisions D11 to D14 are in
-[slice 3's plan](2026-11-24-slice-3-accounts.md); they are not yet accepted.
+[slice 3's plan](2026-11-24-slice-3-accounts.md); the owner accepted them on 2026-11-24, D13 as a count of proxies.
 
 **Watch for:** the Akku index gaining chez-http-server 0.12.0 and a chez-websocket
 that admits it. That ends the server's submodule (ADR-0011, amended 2026-11-23).
@@ -100,10 +100,6 @@ From [outline.md](outline.md) §14, each for the slice named:
 | Does the server refuse an id that is not version 7? | 4 |
 | The node lifecycle's states, and which transitions can be undone | 4 |
 | A Contact's first fields, exactly | 6 |
-| The login rate limit's numbers (plan's D12, not yet accepted) | 3b |
-| Does password hashing go to a worker of its own? (plan's D11, not yet accepted) | 3b |
-| May two `serve` processes share one file? (plan's D14, not yet accepted) | 3b |
-| Is a password normalised (NFC) before it is hashed? | 3b |
 | Does a regenerate that timed out need a way to be told whose key changed? | 3b |
 | The container's stop grace (30 s) and a check that asks more than `/health` | 9 |
 

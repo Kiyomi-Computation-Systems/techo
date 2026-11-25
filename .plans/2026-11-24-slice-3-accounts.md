@@ -2,8 +2,8 @@
 
 Date: 2026-11-24
 Status: built, and reviewed three times (the last three sections). **Accepted (owner, 2026-11-24):** D1, D2, D4,
-D5, D6, D8, D9 and D15. D3 and D10 were offered and not objected to. D7 is accepted as RFC 9457. D11 to D14 are 3b's and wait
-for its plan.
+D5, D6, D8, D9 and D15. D3 and D10 were offered and not objected to. D7 is accepted as RFC 9457. **Accepted for 3b (owner, 2026-11-24, after 3a merged):** D11, D12, D13 with a count of proxies in place of a flag, D14, NFC for passwords,
+and the account on a timed-out request's log line.
 Records: ADR-0006 (accounts and keys), ADR-0002 (the API), ADR-0007 (machines),
 ADR-0013 (the doorway). Read [global-constraints.md](global-constraints.md) first.
 
@@ -336,13 +336,24 @@ This answers the ledger's question on a hashing worker.
   Keys already given keep working. Someone with a few hundred addresses can fill the
   table and stop every login for a while.
 
-### D13. Behind a proxy, one flag says so (3b)
+### D13. Behind proxies, one number says how many (3b)
 
-`TECHO_BEHIND_PROXY=1` makes the address the last one in the last `X-Forwarded-For`
-header, when that is an address. Otherwise, and when unset, it is the peer's.
+`TECHO_BEHIND_PROXY=N` says N proxies stand in front. The address is then the Nth
+from the end of the `X-Forwarded-For` entries, all such headers read as one list in
+order. So `1` is the last entry, which the one proxy wrote, and `2` is the one before
+it, which a CDN's nginx wrote. Unset or `0`, it is the peer's.
 
-- Set it only when nothing but the proxy can reach the port.
-- Behind a proxy without it, every login shares one address's count. The docs say both.
+- When the list is shorter than N, or that entry is not an address, it is the
+  peer's.
+- Anything but a whole number from 0 to 8 refuses to start, exit 2 (the largest
+  number is this plan's choice, not the owner's).
+- Set it only when nothing but the proxies can reach the port. Too high a number
+  lets a client write its own address.
+- Behind a proxy without it, every login shares one address's count.
+- **The docs must cover all of this well** (owner): what to count, an example for
+  one proxy and for a CDN with a proxy, and both ways to get it wrong.
+
+First offered as a flag, `=1`. The owner chose the count (2026-11-24).
 
 The other choice is a list of trusted proxy addresses, which is safer, but a proxy's
 address in a Docker network is not fixed.
@@ -552,9 +563,12 @@ Planned in full when chez-sodium's M3 lands; its interface may still move.
   the new one.
 - `techo user add` and `techo user password`, each one write transaction beside a
   running server. `user password` revokes every key of the account.
-- D13's flag and D14's line in the docs.
-- **To decide then:** whether a password is normalised (NFC) before hashing. Changing
-  it later means checking both ways.
+- D13's number and D14's line in the docs.
+- **A password is normalised to NFC before it is hashed or verified** (owner,
+  2026-11-24), so one password typed on two systems is one hash. R6RS has
+  `string-normalize-nfc`.
+- **A request that times out is to log its account** (owner, 2026-11-24): 3a's
+  regenerate could commit and leave a line that names nobody. The commit stays.
 
 **A question for chez-sodium, before its M3 is built** (sent to its session on
 2026-11-24, as [the brief](briefs/chez-sodium-verify-out-of-memory.md). Its answer the
