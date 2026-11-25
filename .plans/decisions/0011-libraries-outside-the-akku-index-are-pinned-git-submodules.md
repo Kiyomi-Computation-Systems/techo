@@ -108,3 +108,13 @@ Status: accepted (owner, 2026-11-24, with slice 3's D1 and D2)
   `manifest.scm` (1.0.22), `libsodium23` in CI (Ubuntu 24.04's 1.0.18, chez-sodium's
   floor). The container names it to chez-sodium by `CHEZ_SODIUM_LIBRARY`.
 - Both are in ADR-0001's stack already, so neither needs a record of its own.
+
+## Amendment, 2026-11-24: chez-sodium's pin moves to its password verbs
+
+Status: accepted (owner, 2026-11-24: "do the pin move", for slice 3b)
+
+- **chez-sodium's pin moves to `d53e83c`,** its M3: `password-hash`,
+  `password-verify`, `password-needs-rehash?` and `make-password-limits`, which
+  slice 3b's login needs. It still has no release, so the pin is a commit.
+- It still names nothing in the Akku index, and asks for the same libsodium (1.0.18
+  or later). `Akku.manifest`, `Akku.lock`, `manifest.scm` and CI do not change.

@@ -86,7 +86,7 @@ own `.plans/` is the truth from then on.**
 
 | Project | Where | State on 2026-11-22 |
 |---|---|---|
-| chez-sodium | `../chez-sodium` | M2 on `main` (3a14085, pinned here). M3, the password verbs, planned and being built. Asked on 2026-11-24 whether `password-verify` can tell "could not check" from "wrong" ([brief](briefs/chez-sodium-verify-out-of-memory.md)): no, settled in its M3 plan |
+| chez-sodium | `../chez-sodium` | M3, the password verbs, on `main` (d53e83c, pinned here). Asked on 2026-11-24 whether `password-verify` can tell "could not check" from "wrong" ([brief](briefs/chez-sodium-verify-out-of-memory.md)): no, settled in its M3 plan |
 | unique-id | `../unique-id` | v0.1.0 released (2026-11-23, e0ed128), pinned here since slice 3a |
 | chez-http-server: `await-outside` | `../chez-http-server` | Released in v0.12.0 (bba2ba6); not on the Akku index yet |
 | circuit: the worker | `../circuit` | Issue 53 done: W2, the shell (b7e6f95, pinned here); W3, the docs (a39346c, 2026-11-24) |

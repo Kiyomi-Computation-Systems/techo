@@ -10,8 +10,9 @@
 ;;;   (http-server)   exports await-outside, so the path takes the server
 ;;;                   from its submodule, 0.12.0, ahead of Akku's 0.11.0
 ;;;                   (ADR-0011, amended), and circuit hands on the same one
-;;;   (chez-sodium)   blake2b of a fixed input is the known hash, and
-;;;                   random-bytes answers fresh bytes
+;;;   (chez-sodium)   blake2b of a fixed input is the known hash,
+;;;                   random-bytes answers fresh bytes, and a password's
+;;;                   hash verifies it and no other
 ;;;   (unique-id)     a generator makes version 7 ids, each greater
 ;;;
 ;;; Everything that can raise is computed under a guard, and a raise comes
@@ -107,6 +108,19 @@
   '(32 32 #f)
   (run-in '(let ((a (random-bytes 32)) (b (random-bytes 32)))
              (list (bytevector-length a) (bytevector-length b) (equal? a b)))
+          '(rnrs) '(chez-sodium)))
+
+;; password-verify takes the hash first. The limits here are the smallest
+;; libsodium allows (1 pass, 8 MiB), so the suite stays quick.
+(test-equal "chez-sodium: a password's hash is argon2id, verifies it and no other, and is current at its limits"
+  '("$argon2id$" #t #f #f #t)
+  (run-in '(let* ((small (make-password-limits 1 8192))
+                  (h (password-hash "correct horse" small)))
+             (list (substring h 0 10)
+                   (password-verify h "correct horse")
+                   (password-verify h "wrong horse")
+                   (password-needs-rehash? h small)
+                   (password-needs-rehash? h 'interactive)))
           '(rnrs) '(chez-sodium)))
 
 (test-equal "unique-id: a generator over a fixed clock and bytes makes a version 7 id, then a greater one"
