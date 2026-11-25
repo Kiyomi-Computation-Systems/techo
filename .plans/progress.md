@@ -37,9 +37,17 @@ close-out under **Close-outs**, newest first.
   and `api_keys` tables, the key check, four routes under `/v1`, RFC 9457 errors and
   the request log ([the plan](2026-11-24-slice-3-accounts.md); ADR-0002 and ADR-0006,
   amended). No account can be made until 3b, so a real server answers 401.
-- **chez-sodium (3a14085, its M2) and unique-id (v0.1.0) are pinned submodules,** and
-  circuit's pin is at a39346c (ADR-0011, amended 2026-11-24).
-- **`techo user add` moved to slice 3** (owner, 2026-11-22), and now to 3b.
+- **chez-sodium (d53e83c, its M3) and unique-id (v0.1.0) are pinned submodules,** and
+  circuit's pin is at a39346c (ADR-0011, amended 2026-11-24). The move to M3 was
+  [PR #11](https://github.com/Kiyomi-Computation-Systems/techo/pull/11), rebased on
+  2026-11-25.
+- **Slice 3b is merged**, squashed from
+  [PR #12](https://github.com/Kiyomi-Computation-Systems/techo/pull/12) on 2026-11-25:
+  `techo user add`, `techo user password`, `POST /v1/login`, the login limit,
+  `TECHO_BEHIND_PROXY` and the hashing worker
+  ([the plan](2026-11-24-slice-3b-login.md); ADR-0006, ADR-0009 and ADR-0013,
+  amended 2026-11-25). A real server can now be used: make an account, log in, use
+  the key.
 - **ADR-0006's amendment is accepted** (owner, 2026-11-23): a key is looked up by its
   BLAKE2b hash.
 - **T5 is restated** (owner, 2026-11-23; ADR-0008's second amendment), since circuit's
@@ -47,10 +55,7 @@ close-out under **Close-outs**, newest first.
 
 ## Next
 
-**Slice 3b: `techo user add`, `techo user password`, login, the
-rate limit and the hashing worker.** It waits on chez-sodium's M3, the password verbs,
-which is planned and being built. Its outline and decisions D11 to D14 are in
-[slice 3's plan](2026-11-24-slice-3-accounts.md); the owner accepted them on 2026-11-24, D13 as a count of proxies.
+**Slice 4: node create, read, update; revisions; `If-Match`.** Not planned yet.
 
 **Watch for:** the Akku index gaining chez-http-server 0.12.0 and a chez-websocket
 that admits it. That ends the server's submodule (ADR-0011, amended 2026-11-23).
@@ -70,7 +75,7 @@ run: the owner tests on the Mac by hand.
 | 2 | Migrations, the CLI's `migrate`, `serve`'s check | merged (PR #6) | |
 | 2b | The database doorway: write and read workers | merged (PR #7) | |
 | 3a | The tables, the key check, the key routes, the error format, the request log | merged (PR #9) | |
-| 3b | `techo user add`, login, the rate limit, the hashing worker | outlined | chez-sodium M3 |
+| 3b | `techo user add`, login, the rate limit, the hashing worker | merged (PR #12) | |
 | 4 | Node create, read, update; revisions; `If-Match` | not planned | unique-id |
 | 5 | The tree and move; links | not planned | |
 | 6 | Kinds and props; task transitions | not planned | |
@@ -100,10 +105,37 @@ From [outline.md](outline.md) §14, each for the slice named:
 | Does the server refuse an id that is not version 7? | 4 |
 | The node lifecycle's states, and which transitions can be undone | 4 |
 | A Contact's first fields, exactly | 6 |
-| Does a regenerate that timed out need a way to be told whose key changed? | 3b |
 | The container's stop grace (30 s) and a check that asks more than `/health` | 9 |
 
 ## Close-outs
+
+### Slice 3b: users and login (merged 2026-11-25, PR #12)
+
+- **Built:** `(techo login)`, `(techo limiter)`, `(techo address)`,
+  `(techo passwords)`, `(techo hasher)`, `(techo users)`, `(techo wiring)`;
+  `POST /v1/login`; `techo user add` and `techo user password`;
+  `TECHO_BEHIND_PROXY`; machine 3 with the hasher; eight new suites, 31 in all, one a
+  model test of 300 random sequences. No migration.
+- **Answered:** hashing has its own worker; the limit's numbers; the proxy setting is
+  a count; one `serve` a file; NFC; what a timed-out request logs (ADR-0006,
+  ADR-0009, ADR-0013, amended).
+- **Two reviews.** The plan's found the 100-key cap missing and login's body errors
+  wrong. The build's found no hole, and that the program's wiring was still untested.
+- **What went well:** the owner said "go on its notice", and the notice carried the
+  verbs' behaviour; probes checked it and corrected one claim; each hand-back met
+  mutants of the parent's own (about thirty); the model test caught every one of its
+  24 mutants.
+- **What did not:**
+  - **the wiring gap came back.** 3a's close-out named it, and 3b's plan still left
+    `techo.sps` to the parent with no test. Eighteen mutants survived there. A
+    slice's plan must give the program's own wiring a task and a suite;
+  - one full run on the pin's branch failed and its output was not kept;
+  - a probe's line numbers were wrong throughout, though its facts held;
+  - two builders were briefed to plant mutants in `src/` while sharing the checkout.
+    They were told in time to use a copy. Nothing went wrong.
+- **Recorded, not fixed:** see the plan's closing review.
+- **Answered after the build** (owner, 2026-11-25): the request log's `address` is
+  the client's behind proxies, by the same count as the login limit.
 
 ### Slice 3a: keys (merged 2026-11-24, PR #9)
 

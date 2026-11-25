@@ -26,11 +26,14 @@
     '((invalid_json 400 "The request body is not valid JSON.")
       (invalid_request 400 "The request is not valid.")
       (unauthorized 401 "A valid API key is needed.")
+      (invalid_credentials 401 "The email or password is wrong.")
       (forbidden 403 "A key can only regenerate itself.")
       (not_found 404 "There is no such thing here.")
       (method_not_allowed 405 "That method is not allowed here.")
+      (too_many_keys 409 "This account has 100 active keys; revoke one first.")
       (payload_too_large 413 "The request body is too large.")
       (unsupported_media_type 415 "The request body must be application/json.")
+      (rate_limited 429 "Too many login attempts; try again later.")
       (internal 500 "Something went wrong on the server.")
       (unavailable 503 "The service is busy or not ready; try again soon.")
       (timeout 504 "The request took too long.")
@@ -57,7 +60,9 @@
   ;; status->code : Natural -> Symbol
   ;; The code a bare status gets: 400 is invalid_request (invalid_json is
   ;; a handler's own choice); 401, 403, 404, 405, 413, 415, 500, 503 and 504
-  ;; are theirs; any other is `error`.
+  ;; are theirs; any other is `error`. invalid_credentials, too_many_keys and
+  ;; rate_limited are a handler's own choice, like invalid_json: a bare 401,
+  ;; 409 or 429 never gets them.
   (define (status->code status)
     (case status
       ((400) 'invalid_request)

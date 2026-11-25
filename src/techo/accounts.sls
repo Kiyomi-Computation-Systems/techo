@@ -17,8 +17,10 @@
         c))
 
   ;; control? : Char -> Boolean
+  ;; C0 (below U+0020), DEL (U+007F) and C1 (U+0080 to U+009F): a terminal
+  ;; can read U+009B as the start of an escape.
   (define (control? c)
-    (let ((n (char->integer c))) (or (< n 32) (= n 127))))
+    (let ((n (char->integer c))) (or (< n 32) (<= 127 n 159))))
 
   ;; trim : String -> String
   (define (trim s)

@@ -96,6 +96,21 @@ disagree, the record wins and this file gets fixed.
 - **`serve` starts only on a current file in WAL.** Stop the server before migrating,
   and before a restore (ADR-0012, ADR-0013).
 
+## Login
+
+- **Login is refused before any reading or hashing** when its email or address is
+  over the limit (ADR-0006, amended 2026-11-25).
+- **A wrong email and a wrong password get the same answer and do the same work**
+  (ADR-0006, amended).
+- **A try is forgiven only where nothing was checked** (ADR-0006, amended).
+- **Only `login-read` and `login-write` reach the database without a key,** and only
+  the login route calls them (ADR-0006, amended).
+- **A password is normalised to NFC** before it is hashed or verified, and never
+  comes from the command line (ADR-0006, amended).
+- **Hashing runs on the hasher's one thread,** never the loop's (ADR-0013, amended).
+- **`TECHO_BEHIND_PROXY` is a count,** and the client's address is the Nth from the
+  end of `X-Forwarded-For` (ADR-0009, amended).
+
 ## Secrets
 
 - **A password is hashed with argon2id.** It is never logged, and never put in a

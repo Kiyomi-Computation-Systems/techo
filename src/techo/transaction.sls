@@ -2,7 +2,9 @@
 ;;; (techo transaction): the three tables of slice 2b's doorway, and their
 ;;; pure step functions. Nothing here opens a file, calls SQLite or starts a
 ;;; thread (ADR-0007). The plan is .plans/2026-11-23-slice-2b-doorway.md; each
-;;; row below carries its W, R or S number from the plan's tables.
+;;; row below carries its W, R or S number from the plan's tables. Slice 3b
+;;; (.plans/2026-11-24-slice-3b-login.md, L5) put the hasher into `serve`:
+;;; rows S15 to S18 are its own.
 ;;;
 ;;; State data
 ;;; ----------
@@ -29,8 +31,8 @@
 ;;;            (raised . Object)   an object raised
 ;;; `ended`'s data is (status prints), status the exit status: what was
 ;;; carried, else 0 after a clean stop. Its command is (end . status).
-;;; State kinds: checking opening-writer opening-readers serving
-;;;   stopping-readers stopping-writer ended.
+;;; State kinds: checking opening-writer opening-hasher opening-readers
+;;;   serving stopping-readers stopping-hasher stopping-writer ended.
 ;;;
 ;;; An Event is (cons kind raw), the raw outcome as the shell saw it.
 (library (techo transaction)
@@ -383,23 +385,32 @@
   (define (end-raised status)
     (lambda (d e) (with-exit d status (cons 'raised (cadr e)))))
 
+  ;; The order: the writer, the hasher, the readers open; the readers, the
+  ;; hasher, the writer stop. A raise in an open stops what opened before
+  ;; it; a raised open itself left nothing running.
   (define serve-named
     (list
      (list 'S2 'checking 'serve 'opening-writer 'open-writer same)
      (list 'S3 'checking 'refused 'ended 'end
            (lambda (d e) (with-exit d 1 (cons 'line (caddr (cadr e))))))
-     (list 'S4 'opening-writer 'ok 'opening-readers 'open-readers same)
+     (list 'S4 'opening-writer 'ok 'opening-hasher 'open-hasher same)
      (list 'S5 'opening-writer 'raised 'ended 'end (end-raised 1))
+     (list 'S15 'opening-hasher 'ok 'opening-readers 'open-readers same)
+     (list 'S16 'opening-hasher 'raised 'stopping-writer 'stop-writer
+           (carry-raised-obj 1 'raised))
      (list 'S6 'opening-readers 'ok 'serving 'serve same)
-     (list 'S7 'opening-readers 'raised 'stopping-writer 'stop-writer
+     (list 'S7 'opening-readers 'raised 'stopping-hasher 'stop-hasher
            (carry-raised-obj 1 'raised))
      (list 'S8 'serving 'returned 'stopping-readers 'stop-readers same)
      (list 'S9 'serving 'refused-settings 'stopping-readers 'stop-readers
            (carry-raised-obj 2 'refused))
      (list 'S10 'serving 'raised 'stopping-readers 'stop-readers
            (carry-raised-obj 1 'raised))
-     (list 'S11 'stopping-readers 'ok 'stopping-writer 'stop-writer same)
-     (list 'S12 'stopping-readers 'raised 'stopping-writer 'stop-writer
+     (list 'S11 'stopping-readers 'ok 'stopping-hasher 'stop-hasher same)
+     (list 'S12 'stopping-readers 'raised 'stopping-hasher 'stop-hasher
+           (carry-raised-obj 1 'raised))
+     (list 'S17 'stopping-hasher 'ok 'stopping-writer 'stop-writer same)
+     (list 'S18 'stopping-hasher 'raised 'stopping-writer 'stop-writer
            (carry-raised-obj 1 'raised))
      (list 'S13 'stopping-writer 'ok 'ended 'end
            (lambda (d e) (list (or (s-carried d) 0) (s-prints d))))
@@ -412,9 +423,11 @@
   (define serve-possible
     '((checking serve refused)
       (opening-writer ok raised)
+      (opening-hasher ok raised)
       (opening-readers ok raised)
       (serving returned refused-settings raised)
       (stopping-readers ok raised)
+      (stopping-hasher ok raised)
       (stopping-writer ok raised)))
   (define serve-event-kinds
     '(serve refused ok raised returned refused-settings))
@@ -427,9 +440,11 @@
     (case (car s)
       ((checking) (list 'check))
       ((opening-writer) (list 'open-writer))
+      ((opening-hasher) (list 'open-hasher))
       ((opening-readers) (list 'open-readers))
       ((serving) (list 'serve))
       ((stopping-readers) (list 'stop-readers))
+      ((stopping-hasher) (list 'stop-hasher))
       ((stopping-writer) (list 'stop-writer))
       ((ended) (cons 'end (s-carried (cdr s))))
       (else (assertion-violation 'serve-command "not a state" s))))
@@ -457,7 +472,8 @@
   ;; serve-event-kind : Command RawOutcome -> EventKind
   ;;   (check)        (ok verdict #f)      serve (verdict 'serve) or refused
   ;;                                       (verdict (refuse Symbol String))
-  ;;   (open-writer) (open-readers) (stop-readers) (stop-writer)
+  ;;   (open-writer) (open-hasher) (open-readers)
+  ;;   (stop-readers) (stop-hasher) (stop-writer)
   ;;                  (ok #t #f) (raised obj #f)        ok, raised
   ;;   (serve)        (returned #t #f)     returned
   ;;                  (refused obj #f)     refused-settings
@@ -479,7 +495,7 @@
                      (symbol? (cadr v)) (string? (caddr v)))
                 'refused)
                (else (bad))))
-        ((open-writer open-readers stop-readers stop-writer)
+        ((open-writer open-hasher open-readers stop-readers stop-hasher stop-writer)
          (case s ((ok) 'ok) ((raised) 'raised) (else (bad))))
         ((serve)
          (case s

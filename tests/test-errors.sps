@@ -33,10 +33,10 @@
 
 (test-begin "errors")
 
-(test-equal "codes: the twelve of 3a, in order"
-  '(invalid_json invalid_request unauthorized forbidden not_found
-    method_not_allowed payload_too_large unsupported_media_type
-    internal unavailable timeout error)
+(test-equal "codes: the fifteen, in status order"
+  '(invalid_json invalid_request unauthorized invalid_credentials forbidden not_found
+    method_not_allowed too_many_keys payload_too_large unsupported_media_type
+    rate_limited internal unavailable timeout error)
   error-codes)
 
 (test-assert "codes: no two share a name"
@@ -45,13 +45,17 @@
 
 (define fixed (filter (lambda (c) (not (eq? c 'error))) error-codes))
 
+;; 3b's three codes share a status with a 3a code, so a bare status never gets them.
+(define three-b '(invalid_credentials too_many_keys rate_limited))
+(define old-fixed (filter (lambda (c) (not (memq c three-b))) fixed))
+
 (test-assert "status: every fixed code has one in 400 to 599"
   (for-all (lambda (c) (let ((s (attempt (lambda () (error-status c)))))
                          (and (integer? s) (<= 400 s 599))))
            fixed))
 
 (test-equal "status: the table, code by code"
-  '(400 400 401 403 404 405 413 415 500 503 504)
+  '(400 400 401 401 403 404 405 409 413 415 429 500 503 504)
   (attempt (lambda () (map error-status fixed))))
 
 (test-equal "status: the fallback has none" #f (attempt (lambda () (error-status 'error))))
@@ -67,6 +71,16 @@
     (let loop ((l ms))
       (or (null? l) (and (not (member (car l) (cdr l))) (loop (cdr l)))))))
 
+(test-equal "3b codes: status, code by code"
+  '(401 409 429)
+  (attempt (lambda () (map error-status three-b))))
+
+(test-equal "3b codes: message, code by code"
+  '("The email or password is wrong."
+    "This account has 100 active keys; revoke one first."
+    "Too many login attempts; try again later.")
+  (attempt (lambda () (map error-message three-b))))
+
 (test-equal "status: unknown code raises" 'assertion
   (raised-kind (lambda () (error-status 'nope))))
 (test-equal "message: unknown code raises" 'assertion
@@ -80,13 +94,16 @@
   '(invalid_request invalid_request unauthorized forbidden not_found
     method_not_allowed payload_too_large unsupported_media_type
     internal unavailable timeout)
-  (attempt (lambda () (map (lambda (c) (status->code (error-status c))) fixed))))
+  (attempt (lambda () (map (lambda (c) (status->code (error-status c))) old-fixed))))
+
+(test-equal "status->code: a bare 401, 409 and 429 are not 3b's codes"
+  '(unauthorized error error)
+  (map status->code '(401 409 429)))
 
 (test-equal "status->code: 400 is invalid_request" 'invalid_request (status->code 400))
 (test-equal "status->code: 418 is error" 'error (status->code 418))
 (test-equal "status->code: 599 is error" 'error (status->code 599))
 (test-equal "status->code: 200 is error" 'error (status->code 200))
-(test-equal "status->code: 409 is error (3b's code, not 3a's)" 'error (status->code 409))
 
 ;;; &refusal
 
@@ -174,6 +191,25 @@
                                    (cons "status" s) (cons "code" (symbol->string c))
                                    (cons "detail" (error-message c)))))))
            fixed))
+
+(test-equal "problem-res: each 3b code, in the format"
+  '((401 "application/problem+json"
+     (("type" . "about:blank") ("title" . "Unauthorized") ("status" . 401)
+      ("code" . "invalid_credentials") ("detail" . "The email or password is wrong.")))
+    (409 "application/problem+json"
+     (("type" . "about:blank") ("title" . "Conflict") ("status" . 409)
+      ("code" . "too_many_keys")
+      ("detail" . "This account has 100 active keys; revoke one first.")))
+    (429 "application/problem+json"
+     (("type" . "about:blank") ("title" . "Too Many Requests") ("status" . 429)
+      ("code" . "rate_limited") ("detail" . "Too many login attempts; try again later."))))
+  (map (lambda (c) (problem-summary (lambda () (problem-res c)))) three-b))
+
+(test-equal "problem-res: rate_limited keeps its retry-after"
+  "7"
+  (attempt (lambda ()
+             (header-of (problem-res 'rate_limited (list (cons "retry-after" "7")))
+                        "retry-after"))))
 
 (test-equal "problem-res: a 401 carries www-authenticate: Bearer; a 403 and a 404 carry none"
   '("Bearer" #f #f)

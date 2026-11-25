@@ -25,13 +25,32 @@ Each release's changes. Dates are UTC.
 - The second migration: the `accounts` and `api_keys` tables.
 - The first API routes, under `/v1`, each needing an API key in
   `Authorization: Bearer`: `GET /v1/account`, `GET /v1/keys`, and
-  `POST /v1/keys/{id}/revoke` and `/regenerate`. No account can be made yet, so
-  on a real server they all answer 401 until login arrives. See `docs/api.md`.
+  `POST /v1/keys/{id}/revoke` and `/regenerate`. See `docs/api.md`.
 - Every error is RFC 9457 problem details with a `code` member.
 - A request log: one line a request on standard output.
+- `techo user add --username NAME --email EMAIL` makes an account, and
+  `techo user password --email EMAIL` sets a new password and revokes the
+  account's keys. The password is read from standard input, never an option.
+  Both work while the server runs.
+- `POST /v1/login`: an email and a password make a new API key (201, shown once).
+  A wrong email and a wrong password get the same answer. An account may hold 100
+  active keys; the next login is a 409. New codes: `invalid_credentials`,
+  `too_many_keys`, `rate_limited`.
+- Login is rate limited: 5 tries for one email and 20 for one address in 15
+  minutes, kept in memory, with `Retry-After`.
+- `TECHO_BEHIND_PROXY`: how many proxies add to `X-Forwarded-For`, so the limit
+  counts the client and not the proxy. Default `0`. `docs/running.md` explains
+  how to count.
+- Passwords are hashed with Argon2 (64 MiB, one at a time) on a thread of their
+  own; a full queue answers 503.
 
 ### Changed
 
+- The request log's `address` is the client's address behind proxies, when
+  `TECHO_BEHIND_PROXY` finds one in `X-Forwarded-For`. It was always whoever
+  connected.
+- The request log's `account` now shows on a 500 or 504 when the key had been
+  checked. A login's line shows it only when the password matched.
 - The 404 for an unknown route was `{"error":"not_found"}`. It is now in the
   error format.
 - Dependencies: chez-sodium and unique-id as git submodules. Techo now needs

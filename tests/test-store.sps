@@ -382,6 +382,59 @@
          (w set-up!)
          (r (lambda (tx) (count-active-keys tx acct-a))))))))
 
+;;; Login's three statements
+
+(test-equal "account-by-username: finds the account, every field; exact; a missing name answers #f"
+  (list (list acct-b "bob" "bob@example.com" "hash-b" 2000) '(ok #f) '(ok #f))
+  (attempt
+   (lambda ()
+     (with-store "by-username.db"
+       (lambda (w r p)
+         (w set-up!)
+         (list (account->list (ok-of (r (lambda (tx) (account-by-username tx "bob")))))
+               (r (lambda (tx) (account-by-username tx "BOB")))
+               (r (lambda (tx) (account-by-username tx "nobody")))))))))
+
+(test-equal "set-password-hash!: right old hash changes it (#t) and only that row; wrong old hash, unknown id: #f and nothing changes"
+  (list '(ok #t) "new-a" "hash-b"
+        '(ok #f) "new-a"
+        '(ok #f) "new-a" "hash-b")
+  (attempt
+   (lambda ()
+     (with-store "set-hash.db"
+       (lambda (w r p)
+         (w set-up!)
+         (let* ((hash-of (lambda (id) (account-password-hash (ok-of (r (lambda (tx) (account-by-id tx id)))))))
+                (r1 (w (lambda (tx) (set-password-hash! tx acct-a "hash-a" "new-a"))))
+                (a1 (hash-of acct-a))
+                (b1 (hash-of acct-b))
+                (r2 (w (lambda (tx) (set-password-hash! tx acct-a "hash-a" "other"))))
+                (a2 (hash-of acct-a))
+                (r3 (w (lambda (tx) (set-password-hash! tx (bv 16 9) "hash-a" "other"))))
+                (a3 (hash-of acct-a))
+                (b3 (hash-of acct-b)))
+           (list r1 a1 b1 r2 a2 r3 a3 b3)))))))
+
+(test-equal "revoke-all-keys!: revokes the active keys of one account, counts them, keeps old times, leaves another account's keys"
+  (list '(ok 2) 6000 6000 5000 #f '(ok 0) '(ok 0))
+  (attempt
+   (lambda ()
+     (with-store "revoke-all.db"
+       (lambda (w r p)
+         (w (lambda (tx)
+              (set-up! tx)
+              (insert-key! tx (kid 1) acct-a "one" (khash 1) 1)
+              (insert-key! tx (kid 2) acct-a "two" (khash 2) 1)
+              (insert-key! tx (kid 3) acct-a "three" (khash 3) 1)
+              (insert-key! tx (kid 4) acct-b "bobs" (khash 4) 1)))
+         (w (lambda (tx) (revoke-key! tx acct-a (kid 3) 5000)))
+         (let* ((n (w (lambda (tx) (revoke-all-keys! tx acct-a 6000))))
+                (rev (lambda (a k) (key-revoked (ok-of (r (lambda (tx) (key-of-account tx a (kid k))))))))
+                (v1 (rev acct-a 1)) (v2 (rev acct-a 2)) (v3 (rev acct-a 3)) (v4 (rev acct-b 4))
+                (again (w (lambda (tx) (revoke-all-keys! tx acct-a 7000))))
+                (none (w (lambda (tx) (revoke-all-keys! tx (bv 16 9) 7000)))))
+           (list n v1 v2 v3 v4 again none)))))))
+
 ;;; A read job
 
 (test-equal "db-read: each writing procedure raises SQLite's readonly, and nothing changes"

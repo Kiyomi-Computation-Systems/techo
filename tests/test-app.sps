@@ -151,6 +151,18 @@
              (summary a 'GET "/health")
              (summary b 'GET "/other"))))))
 
+(test-equal "POST /v1/login with no login kit, or #f for one: a 404 like any unknown path"
+  (list not-found-summary not-found-summary)
+  (list (summary app 'POST "/v1/login")
+        (summary (attempt (lambda () (make-app never never stopped-clock no-bytes stopped-clock #f)))
+                 'POST "/v1/login")))
+
+(test-equal "make-app: a kit that is no login kit raises at once"
+  'assertion
+  (guard (e ((assertion-violation? e) 'assertion) (#t 'other))
+    (make-app never never stopped-clock no-bytes stopped-clock 'not-a-kit)
+    'no-raise))
+
 (test-equal "/health and the 404s ran no job and drew no random bytes"
   0 calls)
 

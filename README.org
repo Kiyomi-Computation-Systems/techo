@@ -8,8 +8,9 @@ Document storage API specifically geared for note taking.
 
 ** Status
 
-Early. The server starts and answers =GET /health=; nothing else is built
-yet. [[file:.plans/outline.md][The outline]] says what is planned, and
+Early. The server answers =GET /health=, makes accounts and API keys, and lets
+a person log in; the notes themselves are not built yet.
+[[file:.plans/outline.md][The outline]] says what is planned, and
 [[file:.plans/progress.md][the ledger]] where it stands.
 
 ** Build and test
@@ -53,11 +54,18 @@ network, which the container has not.
 ** Run
 
 #+begin_src sh
-TECHO_DB_PATH=/var/lib/techo/techo.db make run ARGS=serve
+export TECHO_DB_PATH=/var/lib/techo/techo.db
+make run ARGS=migrate                  # make the database
+printf 'correct horse battery\n' | make run ARGS='user add --username ada --email ada@example.com'
+make run ARGS=serve                    # in another terminal; leave it running
 curl http://127.0.0.1:8080/health
+curl -H 'Content-Type: application/json' \
+  -d '{"email":"ada@example.com","password":"correct horse battery","name":"laptop"}' \
+  http://127.0.0.1:8080/v1/login       # answers an API key, once
 #+end_src
 
-[[file:docs/running.md][Running Techo]] has the settings.
+Send the key as =Authorization: Bearer KEY=. [[file:docs/api.md][The API]] has the
+routes, and [[file:docs/running.md][Running Techo]] the settings.
 
 ** License
 

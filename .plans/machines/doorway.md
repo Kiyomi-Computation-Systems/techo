@@ -50,11 +50,14 @@ stateDiagram-v2
 stateDiagram-v2
     checking --> opening-writer: serve
     checking --> ended: refused
-    opening-writer --> opening-readers: ok
+    opening-writer --> opening-hasher: ok
     opening-writer --> ended: raised
+    opening-hasher --> opening-readers: ok
+    opening-hasher --> stopping-writer: raised
     opening-readers --> serving: ok
-    opening-readers --> stopping-writer: raised
+    opening-readers --> stopping-hasher: raised
     serving --> stopping-readers: returned, refused-settings, raised
-    stopping-readers --> stopping-writer: ok, raised
+    stopping-readers --> stopping-hasher: ok, raised
+    stopping-hasher --> stopping-writer: ok, raised
     stopping-writer --> ended: ok, raised
 ```

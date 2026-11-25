@@ -11,6 +11,9 @@
 ;;; account (ADR-0003): another account's key is a key that is not there.
 ;;; `touch-key!` takes the key id the caller just found by its hash.
 ;;;
+;;; Login (slice 3b) adds `account-by-username`, `set-password-hash!` (only
+;;; while the stored hash is the one given) and `revoke-all-keys!`.
+;;;
 ;;; Rows. An Account and a Key are R6RS records, made here only, from a
 ;;; row's columns in the table's order. A column that is NULL reads as #f.
 ;;;   Account = (id username email password-hash created)
@@ -21,7 +24,8 @@
 ;;;     created: Natural  last-used, revoked: (U Natural #f); revoked #f
 ;;;     means active.
 (library (techo store)
-  (export insert-account! account-by-id account-by-email
+  (export insert-account! account-by-id account-by-email account-by-username
+          set-password-hash! revoke-all-keys!
           insert-key! key-by-hash key-of-account keys-page keys-page-sql
           revoke-key! replace-key-hash! touch-key! count-active-keys
           account? account-id account-username account-email
@@ -101,6 +105,27 @@
                                      " FROM accounts WHERE email = ?")
                    email)))
 
+  ;; account-by-username : Tx String -> (U Account #f)
+  (define (account-by-username tx username)
+    (row->account
+     (tx-query-row tx (string-append "SELECT " account-columns
+                                     " FROM accounts WHERE username = ?")
+                   username)))
+
+  ;; changes : Tx -> Natural
+  ;; Rows the last statement of this transaction changed.
+  (define (changes tx)
+    (vector-ref (tx-query-row tx "SELECT changes()") 0))
+
+  ;; set-password-hash! : Tx Bytevector String String -> Boolean
+  ;; id, the hash the account must hold now, the new hash. #t when a row
+  ;; changed; #f for an unknown id or a stored hash that is not the old one.
+  (define (set-password-hash! tx id old-hash new-hash)
+    (tx-execute! tx
+      "UPDATE accounts SET password_hash = ? WHERE id = ? AND password_hash = ?"
+      new-hash id old-hash)
+    (> (changes tx) 0))
+
   ;;; Keys
 
   ;; insert-key! : Tx Bytevector Bytevector String Bytevector Natural -> Void
@@ -153,6 +178,15 @@
     (tx-execute! tx
       "UPDATE api_keys SET revoked = ? WHERE account = ? AND id = ? AND revoked IS NULL"
       now account id))
+
+  ;; revoke-all-keys! : Tx Bytevector Natural -> Natural
+  ;; account, now: revokes each key of the account not revoked yet, and
+  ;; answers how many. Keys revoked before keep their time.
+  (define (revoke-all-keys! tx account now)
+    (tx-execute! tx
+      "UPDATE api_keys SET revoked = ? WHERE account = ? AND revoked IS NULL"
+      now account)
+    (changes tx))
 
   ;; replace-key-hash! : Tx Bytevector Bytevector Bytevector -> Void
   ;; account, id, new hash.

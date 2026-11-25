@@ -101,6 +101,51 @@
     ("request method=GET path=/v1/account status=200 ending=written ms=10 db_ms=- account=- address=-"))
   (run-logged (lambda (req) (make-res 200 '() "ok")) (make-test-req 'GET "/v1/account") 'written))
 
+;; logged-address : Any (Listof (Pair String String)) -> (U String Any)
+;; The address field of the one line a GET with HEADERS writes, behind
+;; PROXIES proxies. The test host has no peer, so the peer's address is "-".
+(define (logged-address proxies headers)
+  (attempt
+   (lambda ()
+     (let-values (((write! lines) (logged)))
+       (let* ((h ((wrap-request-log write! (step-clock 0 10) proxies)
+                  (lambda (req) (make-res 200 '() "ok"))))
+              (req (make-test-req 'GET "/x" headers "")))
+         (h req)
+         (test-req-done! req 'written)
+         (let ((ls (lines)))
+           (if (= (length ls) 1)
+               (let loop ((i 0))
+                 (cond ((> (+ i 9) (string-length (car ls))) (car ls))
+                       ((string=? (substring (car ls) i (+ i 9)) " address=")
+                        (substring (car ls) (+ i 9) (string-length (car ls))))
+                       (else (loop (+ i 1)))))
+               ls)))))))
+
+(define forwarded '(("X-Forwarded-For" . "6.6.6.6, 203.0.113.9")))
+
+(test-equal "wrap-request-log: behind one proxy the address is the last X-Forwarded-For entry; behind two, the one before"
+  '("203.0.113.9" "6.6.6.6")
+  (list (logged-address 1 forwarded) (logged-address 2 forwarded)))
+
+(test-equal "wrap-request-log: with no proxy the header is ignored: the peer's address"
+  "-"
+  (logged-address 0 forwarded))
+
+(test-equal "wrap-request-log: a list too short, or an entry that is no address, gives the peer's; a port is dropped"
+  '("-" "-" "203.0.113.9")
+  (list (logged-address 3 forwarded)
+        (logged-address 1 '(("X-Forwarded-For" . "6.6.6.6, unknown")))
+        (logged-address 1 '(("X-Forwarded-For" . "203.0.113.9:5555")))))
+
+(test-equal "wrap-request-log: a proxy count that is no whole number is refused when the middleware is made"
+  '(refused refused)
+  (map (lambda (bad)
+         (guard (e ((assertion-violation? e) 'refused) (#t (list 'other e)))
+           (wrap-request-log (lambda (l) #f) (step-clock 0 10) bad)
+           'made))
+       '(-1 "1")))
+
 (test-equal "wrap-request-log: the path has no query string"
   '(200 ()
     ("request method=GET path=/v1/keys status=200 ending=written ms=10 db_ms=- account=- address=-"))
@@ -225,6 +270,33 @@
                 (note-request! (req-with-path (req-set req (make-req-key 'other) 1) "/other") #f 7)
                 (make-res 200 '() #f))
               (make-test-req 'GET "/x") 'written))
+
+;;; The note, a piece at a time (slice 3b: login's two jobs)
+
+(test-equal "note-account!: writes the account alone, and keeps db_ms"
+  '(200 ()
+    ("request method=POST path=/v1/login status=200 ending=written ms=10 db_ms=3 account=01930000-0000-7000-8000-00000000002a address=-"))
+  (run-logged (lambda (req) (note-request! req #f 3) (note-account! req acct) (make-res 200 '() #f))
+              (make-test-req 'POST "/v1/login") 'written))
+
+(test-equal "note-add-db-ms!: adds to db_ms, nothing yet counting as 0, and keeps the account"
+  '(200 ()
+    ("request method=POST path=/v1/login status=200 ending=written ms=10 db_ms=7 account=01930000-0000-7000-8000-00000000002a address=-"))
+  (run-logged (lambda (req)
+                (note-add-db-ms! req 2)
+                (note-account! req acct)
+                (note-add-db-ms! req 5)
+                (make-res 200 '() #f))
+              (make-test-req 'POST "/v1/login") 'written))
+
+(test-equal "note-account! and note-add-db-ms!: a request with no note is left as it is"
+  '(#f ok)
+  (attempt
+   (lambda ()
+     (let ((req (make-test-req 'GET "/x")))
+       (note-account! req acct)
+       (note-add-db-ms! req 4)
+       (list (req-note req) 'ok)))))
 
 (test-end "log")
 

@@ -14,7 +14,7 @@
           (only (techo doorway) wrap-db db-retry-after)
           (only (techo errors) problem-res status-problem-res)
           (only (techo log) wrap-request-log)
-          (only (techo routes) key-routes))
+          (only (techo routes) key-routes login-routes login-kit?))
 
   ;; Runner = ((Tx -> Any) -> Any)
   ;; Clock = (-> Integer)
@@ -31,28 +31,36 @@
   ;; not-found : Req -> Res
   (define (not-found req) (problem-res 'not_found))
 
-  ;; make-app : Runner Runner (-> Natural) (Natural -> Bytevector) [Clock] -> Handler
+  ;; make-app : Runner Runner (-> Natural) (Natural -> Bytevector) [Clock [(U LoginKit #f)]]
+  ;;            -> Handler
   ;; A handler from a request to a response: /health, free of the database,
   ;; and D9's key routes under /v1. READ and WRITE each run one job: the
   ;; program makes them from db-read and db-write and its doorway, a test
   ;; gives its own. WALL-CLOCK is the time of day in whole milliseconds since
   ;; 1970, UTC; RANDOM-BYTES gives N random bytes; CLOCK reads milliseconds
-  ;; for a job's db_ms, real-time by default. No such route is a 404 in the
-  ;; format. HEAD and 405 (with its allow header) are the router's own; its
-  ;; bare 400 and 405 get the format from wrap-errors.
+  ;; for a job's db_ms and the login limiter's windows, real-time by
+  ;; default. KIT, make-login-kit's, adds POST /v1/login; without one, or
+  ;; with #f, there is no such route. No such route is a 404 in the format.
+  ;; HEAD and 405 (with its allow header) are the router's own; its bare 400
+  ;; and 405 get the format from wrap-errors.
   (define make-app
     (case-lambda
       ((read write wall-clock random-bytes)
-       (make-app read write wall-clock random-bytes real-time))
+       (make-app read write wall-clock random-bytes real-time #f))
       ((read write wall-clock random-bytes clock)
+       (make-app read write wall-clock random-bytes clock #f))
+      ((read write wall-clock random-bytes clock kit)
        (for-each (lambda (p)
                    (unless (procedure? p)
                      (assertion-violation 'make-app "runners, clocks and random-bytes are procedures"
                                           p)))
                  (list read write wall-clock random-bytes clock))
+       (unless (or (not kit) (login-kit? kit))
+         (assertion-violation 'make-app "a login kit is make-login-kit's, or #f" kit))
        (make-router
         (cons (route "/health" (GET health))
-              (key-routes read write wall-clock random-bytes clock))
+              (append (key-routes read write wall-clock random-bytes clock)
+                      (if kit (login-routes read write wall-clock random-bytes clock kit) '())))
         not-found))))
 
   ;; wrap-app : Handler (String -> Void) [Natural] -> Handler
@@ -120,11 +128,11 @@
               (status-problem-res (res-status res) (res-headers res)))
             res))))
 
-  ;; wrap-server : Handler (String -> Void) [Natural [Clock]] -> Handler
+  ;; wrap-server : Handler (String -> Void) [Natural [Clock [Natural]]] -> Handler
   ;; What the server runs: HANDLER inside wrap-app (LOG for wrap-db's lines,
   ;; TIMEOUT-MS as wrap-app takes it), then wrap-request-log (LOG for its
-  ;; lines, CLOCK for ms, real-time by default), then wrap-errors
-  ;; outermost. As wrap takes them, innermost first:
+  ;; lines, CLOCK for ms, real-time by default, PROXIES for the line's
+  ;; address, 0 by default), then wrap-errors outermost. As wrap takes them, innermost first:
   ;;   (wrap router (wrap-db log) (wrap-busy 5) wrap-catch (wrap-timeout ms)
   ;;         wrap-request-log wrap-errors)
   ;; So the log sees the 500, 503 and 504 the client gets, and wrap-errors,
@@ -134,8 +142,9 @@
     (case-lambda
       ((handler log) (wrap-server handler log request-timeout-ms real-time))
       ((handler log timeout-ms) (wrap-server handler log timeout-ms real-time))
-      ((handler log timeout-ms clock)
+      ((handler log timeout-ms clock) (wrap-server handler log timeout-ms clock 0))
+      ((handler log timeout-ms clock proxies)
        (wrap (wrap-app handler log timeout-ms)
-             (wrap-request-log log clock)
+             (wrap-request-log log clock proxies)
              wrap-errors))))
 )
