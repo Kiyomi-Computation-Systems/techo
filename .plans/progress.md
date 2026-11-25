@@ -38,9 +38,11 @@ close-out under **Close-outs**, newest first.
   the request log ([the plan](2026-11-24-slice-3-accounts.md); ADR-0002 and ADR-0006,
   amended). No account can be made until 3b, so a real server answers 401.
 - **chez-sodium (d53e83c, its M3) and unique-id (v0.1.0) are pinned submodules,** and
-  circuit's pin is at a39346c (ADR-0011, amended 2026-11-24). The move to M3 is
-  [PR #11](https://github.com/Kiyomi-Computation-Systems/techo/pull/11).
-- **Slice 3b is built** on branch `slice-3b-login`, on top of PR #11, not yet merged:
+  circuit's pin is at a39346c (ADR-0011, amended 2026-11-24). The move to M3 was
+  [PR #11](https://github.com/Kiyomi-Computation-Systems/techo/pull/11), rebased on
+  2026-11-25.
+- **Slice 3b is merged**, squashed from
+  [PR #12](https://github.com/Kiyomi-Computation-Systems/techo/pull/12) on 2026-11-25:
   `techo user add`, `techo user password`, `POST /v1/login`, the login limit,
   `TECHO_BEHIND_PROXY` and the hashing worker
   ([the plan](2026-11-24-slice-3b-login.md); ADR-0006, ADR-0009 and ADR-0013,
@@ -53,8 +55,7 @@ close-out under **Close-outs**, newest first.
 
 ## Next
 
-Merge PR #11 (by rebase: a pin move is its own commit), then slice 3b. Then **slice 4:
-node create, read, update; revisions; `If-Match`.** Not planned yet.
+**Slice 4: node create, read, update; revisions; `If-Match`.** Not planned yet.
 
 **Watch for:** the Akku index gaining chez-http-server 0.12.0 and a chez-websocket
 that admits it. That ends the server's submodule (ADR-0011, amended 2026-11-23).
@@ -74,7 +75,7 @@ run: the owner tests on the Mac by hand.
 | 2 | Migrations, the CLI's `migrate`, `serve`'s check | merged (PR #6) | |
 | 2b | The database doorway: write and read workers | merged (PR #7) | |
 | 3a | The tables, the key check, the key routes, the error format, the request log | merged (PR #9) | |
-| 3b | `techo user add`, login, the rate limit, the hashing worker | built, not merged | PR #11 |
+| 3b | `techo user add`, login, the rate limit, the hashing worker | merged (PR #12) | |
 | 4 | Node create, read, update; revisions; `If-Match` | not planned | unique-id |
 | 5 | The tree and move; links | not planned | |
 | 6 | Kinds and props; task transitions | not planned | |
@@ -108,7 +109,7 @@ From [outline.md](outline.md) §14, each for the slice named:
 
 ## Close-outs
 
-### Slice 3b: users and login (built 2026-11-25, not yet merged)
+### Slice 3b: users and login (merged 2026-11-25, PR #12)
 
 - **Built:** `(techo login)`, `(techo limiter)`, `(techo address)`,
   `(techo passwords)`, `(techo hasher)`, `(techo users)`, `(techo wiring)`;
