@@ -6,6 +6,11 @@
 #   submodules-no-git   with no git on PATH it exits non-zero, naming git
 #   deps-hint           deps' missing-submodule message names `make
 #                       submodules`, not a bare git command
+#   submodule-head      scripts/submodule-head prints the commit a submodule's
+#                       files are at, without git, and nothing when it cannot
+#                       tell
+#   deps-off-pin        deps refuses a submodule that is not at its pin, and
+#                       names `make submodules`
 #   no-gnu-only         no recipe or script uses `mv -T` or `ln -sT`, which
 #                       BSD (macOS) lacks
 #   rename-flag         scripts/mv-no-follow-flag names a flag this system's
@@ -70,6 +75,46 @@ if [ "$rc" -ne 0 ] && grep -q "deps: .*Run 'make submodules' on the host" "$tmp/
   ok "deps-hint"
 else
   fail "deps-hint: exit $rc, make said:"; sed 's/^/  /' "$tmp/out" >&2
+fi
+
+# submodule-head: a made-up submodule, each way its HEAD can be written.
+sh_ok=1
+a=1111111111111111111111111111111111111111
+b=2222222222222222222222222222222222222222
+c=3333333333333333333333333333333333333333
+mkdir -p "$tmp/sm/outer/.git/modules/one/refs/heads" "$tmp/sm/outer/one" \
+         "$tmp/sm/plain/.git" "$tmp/sm/none" "$tmp/sm/odd/.git"
+echo "gitdir: ../.git/modules/one" > "$tmp/sm/outer/one/.git"
+echo "$a" > "$tmp/sm/outer/.git/modules/one/HEAD"
+[ "$(sh scripts/submodule-head "$tmp/sm/outer/one" 2>&1)" = "$a" ] || sh_ok=0
+echo "ref: refs/heads/main" > "$tmp/sm/outer/.git/modules/one/HEAD"
+echo "$b" > "$tmp/sm/outer/.git/modules/one/refs/heads/main"
+[ "$(sh scripts/submodule-head "$tmp/sm/outer/one" 2>&1)" = "$b" ] || sh_ok=0
+rm "$tmp/sm/outer/.git/modules/one/refs/heads/main"
+printf '# pack-refs with: peeled fully-peeled sorted\n%s refs/heads/other\n%s refs/heads/main\n' \
+  "$a" "$c" > "$tmp/sm/outer/.git/modules/one/packed-refs"
+[ "$(sh scripts/submodule-head "$tmp/sm/outer/one" 2>&1)" = "$c" ] || sh_ok=0
+echo "$b" > "$tmp/sm/plain/.git/HEAD"
+[ "$(sh scripts/submodule-head "$tmp/sm/plain" 2>&1)" = "$b" ] || sh_ok=0
+echo "not a commit" > "$tmp/sm/odd/.git/HEAD"
+[ -z "$(sh scripts/submodule-head "$tmp/sm/odd" 2>&1)" ] || sh_ok=0
+[ -z "$(sh scripts/submodule-head "$tmp/sm/none" 2>&1)" ] || sh_ok=0
+[ -z "$(sh scripts/submodule-head "$tmp/sm/no-such-dir" 2>&1)" ] || sh_ok=0
+if [ "$sh_ok" -eq 1 ]; then
+  ok "submodule-head"
+else
+  fail "submodule-head: a made-up submodule's commit was not read as written"
+fi
+
+# deps-off-pin: the real circuit checkout, held against a pin it is not at.
+wrong=0000000000000000000000000000000000000000
+"$make_path" --no-print-directory CHEZ="$CHEZ" SUBMODULE_PINS="circuit:$wrong" deps \
+  > "$tmp/out" 2>&1 < /dev/null
+rc=$?
+if [ "$rc" -ne 0 ] && grep -q "deps: vendor/circuit is at .*not its pin 0000000.*Run 'make submodules' on the host" "$tmp/out"; then
+  ok "deps-off-pin"
+else
+  fail "deps-off-pin: exit $rc, make said:"; sed 's/^/  /' "$tmp/out" >&2
 fi
 
 # no-gnu-only: the flags, not the comments that name them.

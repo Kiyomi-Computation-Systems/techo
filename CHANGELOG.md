@@ -56,6 +56,8 @@ Each release's changes. Dates are UTC.
 - Dependencies: chez-sodium and unique-id as git submodules. Techo now needs
   libsodium, 1.0.18 or later, on the machine.
 - `make submodules` checks out each submodule at its pin, for a fresh clone.
+- `make deps` stops when a submodule's files are not at its pin, as after a
+  `git pull` that moved one, and says to run `make submodules`.
 - `make check-makefile` holds the Makefile's own promises: `submodules`, the
   hint `deps` gives, the rename `deps` uses, and `clean`.
 - The Makefile runs on macOS for development: `deps` no longer needs GNU's

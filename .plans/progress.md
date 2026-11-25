@@ -64,8 +64,15 @@ Nothing fails when it happens.
 **Still GNU-only, found by the macOS audit and left:** `make test` needs `timeout` or
 `gtimeout`; `make help`'s awk pattern `.*?` is untested on BSD awk; `check-pins` and
 `fetch` use `diff --no-dereference`. On macOS chez-sodium needs
-`CHEZ_SODIUM_LIBRARY`. The `mv -h` branch of `scripts/mv-no-follow-flag` has never
-run: the owner tests on the Mac by hand.
+`CHEZ_SODIUM_LIBRARY`, and chez-sqlite3 needs `CHEZ_SQLITE3_LIBRARY` set to
+Homebrew's SQLite: Apple's own fails six suites.
+
+**Run on the owner's Mac, by hand, 2026-11-25, at slice 3b's merge:** `make test`
+passed 31 of 31 suites (two `/proc` tests skipped), and `techo user add` at a real
+terminal hid the password, refused a short one, and made the account. The `mv -h`
+branch of `scripts/mv-no-follow-flag` ran there on 2026-11-24. The same day's run
+met a submodule left behind by a pull, which is why `make deps` now checks each
+pin.
 
 ## Slices
 

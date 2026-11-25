@@ -1,0 +1,62 @@
+#!/bin/sh
+# submodule-head DIR: print the commit DIR's checkout is at, without git.
+#
+# `make deps` runs where there may be no git (the Guix container has none),
+# so it cannot ask git whether a submodule is at its pin. It reads the same
+# files git would:
+#
+#   DIR/.git             a directory, or a file "gitdir: PATH" (a submodule's)
+#   <gitdir>/HEAD        40 hex digits, or "ref: NAME"
+#   <gitdir>/NAME        the ref's commit, or its line in <gitdir>/packed-refs
+#
+# Prints the 40 hex digits and a newline, or nothing when it cannot tell: no
+# .git there (an unpacked archive), or a HEAD it does not understand. It
+# always exits 0: not knowing is not a fault, and the caller skips the check.
+set -u
+
+dir=${1:-}
+if [ -z "$dir" ] || [ ! -e "$dir/.git" ]; then exit 0; fi
+
+if [ -d "$dir/.git" ]; then
+  gitdir=$dir/.git
+else
+  line=
+  IFS= read -r line < "$dir/.git" || :
+  case $line in
+    "gitdir: "*) path=${line#gitdir: } ;;
+    *) exit 0 ;;
+  esac
+  case $path in
+    /*) gitdir=$path ;;
+    *) gitdir=$dir/$path ;;
+  esac
+fi
+if [ ! -f "$gitdir/HEAD" ]; then exit 0; fi
+
+# is_commit TEXT: 40 lowercase hex digits.
+is_commit() {
+  case $1 in
+    *[!0-9a-f]*) return 1 ;;
+  esac
+  [ "${#1}" -eq 40 ]
+}
+
+head=
+IFS= read -r head < "$gitdir/HEAD" || :
+commit=
+case $head in
+  "ref: "*)
+    ref=${head#ref: }
+    if [ -f "$gitdir/$ref" ]; then
+      IFS= read -r commit < "$gitdir/$ref" || :
+    elif [ -f "$gitdir/packed-refs" ]; then
+      while IFS=' ' read -r sha name; do
+        if [ "$name" = "$ref" ]; then commit=$sha; fi
+      done < "$gitdir/packed-refs"
+    fi
+    ;;
+  *) commit=$head ;;
+esac
+
+if is_commit "$commit"; then printf '%s\n' "$commit"; fi
+exit 0
