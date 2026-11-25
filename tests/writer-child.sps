@@ -15,8 +15,11 @@
 (define batch 100)
 
 ;; report! : String Integer -> Void
+;; One more line at the end of PATH. `no-truncate` matters: `no-fail` alone
+;; empties the file at each open, `append` or not, and a kill between that
+;; open and the write then leaves no number at all (traps.md).
 (define (report! path n)
-  (let ((p (open-file-output-port path (file-options no-fail append)
+  (let ((p (open-file-output-port path (file-options no-fail no-truncate append)
                                   (buffer-mode block) (native-transcoder))))
     (put-string p (number->string n))
     (newline p)

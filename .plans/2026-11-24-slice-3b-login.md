@@ -540,4 +540,5 @@ or find a password, a hash or a key in any output.
 - Not run: a real short-memory server (`ulimit -v`), an IPv6 listener, a slow body
   near the deadline, the terminal path of the password prompt.
 - An older integration test, "clause 11, -shm deleted", fails now and then under
-  load. It is not this slice's.
+  load. It is not this slice's. (Found and fixed on 2026-11-25: its helper emptied
+  its report file at every write. See `traps.md`.)
