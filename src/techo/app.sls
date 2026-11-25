@@ -128,11 +128,11 @@
               (status-problem-res (res-status res) (res-headers res)))
             res))))
 
-  ;; wrap-server : Handler (String -> Void) [Natural [Clock]] -> Handler
+  ;; wrap-server : Handler (String -> Void) [Natural [Clock [Natural]]] -> Handler
   ;; What the server runs: HANDLER inside wrap-app (LOG for wrap-db's lines,
   ;; TIMEOUT-MS as wrap-app takes it), then wrap-request-log (LOG for its
-  ;; lines, CLOCK for ms, real-time by default), then wrap-errors
-  ;; outermost. As wrap takes them, innermost first:
+  ;; lines, CLOCK for ms, real-time by default, PROXIES for the line's
+  ;; address, 0 by default), then wrap-errors outermost. As wrap takes them, innermost first:
   ;;   (wrap router (wrap-db log) (wrap-busy 5) wrap-catch (wrap-timeout ms)
   ;;         wrap-request-log wrap-errors)
   ;; So the log sees the 500, 503 and 504 the client gets, and wrap-errors,
@@ -142,8 +142,9 @@
     (case-lambda
       ((handler log) (wrap-server handler log request-timeout-ms real-time))
       ((handler log timeout-ms) (wrap-server handler log timeout-ms real-time))
-      ((handler log timeout-ms clock)
+      ((handler log timeout-ms clock) (wrap-server handler log timeout-ms clock 0))
+      ((handler log timeout-ms clock proxies)
        (wrap (wrap-app handler log timeout-ms)
-             (wrap-request-log log clock)
+             (wrap-request-log log clock proxies)
              wrap-errors))))
 )

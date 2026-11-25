@@ -24,5 +24,6 @@ proxies, well documented")
   can be reached past the proxy, lets a client write its own address.
 - **Run one `techo serve` for each database file.** The database is safe with two,
   but each keeps its own login counts. Nothing enforces it.
-- The request log's `address` is still the peer's. Whether it should be the client's
-  is open.
+- **The request log's `address` is that same address** (owner, 2026-11-25: "show the
+  client's address when possible"): the client's when the count finds one, else the
+  peer's.

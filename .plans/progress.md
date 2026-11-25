@@ -133,8 +133,8 @@ From [outline.md](outline.md) §14, each for the slice named:
   - two builders were briefed to plant mutants in `src/` while sharing the checkout.
     They were told in time to use a copy. Nothing went wrong.
 - **Recorded, not fixed:** see the plan's closing review.
-- **For the owner:** should the request log's `address` be the client's behind a
-  proxy? Today it is the peer's.
+- **Answered after the build** (owner, 2026-11-25): the request log's `address` is
+  the client's behind proxies, by the same count as the login limit.
 
 ### Slice 3a: keys (merged 2026-11-24, PR #9)
 

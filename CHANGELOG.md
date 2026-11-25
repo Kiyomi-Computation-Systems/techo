@@ -46,6 +46,9 @@ Each release's changes. Dates are UTC.
 
 ### Changed
 
+- The request log's `address` is the client's address behind proxies, when
+  `TECHO_BEHIND_PROXY` finds one in `X-Forwarded-For`. It was always whoever
+  connected.
 - The request log's `account` now shows on a 500 or 504 when the key had been
   checked. A login's line shows it only when the password matched.
 - The 404 for an unknown route was `{"error":"not_found"}`. It is now in the

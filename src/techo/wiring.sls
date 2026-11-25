@@ -13,10 +13,10 @@
 ;;;   program-user-kit   what the `user` commands need
 (library (techo wiring)
   (export duration-clock id-source sodium-hasher program-login-kit program-app
-          program-user-kit)
+          program-server program-user-kit)
   (import (rnrs)
           (only (chezscheme) real-time)
-          (only (techo app) make-app)
+          (only (techo app) make-app wrap-server request-timeout-ms)
           (only (techo hasher) make-hasher hasher-verify hasher-doubt hasher-hash)
           (only (techo limiter) make-limiter)
           (only (techo passwords) sodium-hash sodium-verify sodium-needs-rehash?
@@ -76,6 +76,14 @@
   ;;                    -> UserKit
   ;; The `user` commands' kit: the database at PATH and MIGRATIONS,
   ;; sodium-hash, the wall clock, and ids from it and RANDOM-BYTES.
+  ;; program-server : Handler (String -> Void) Natural -> Handler
+  ;; What the server runs: HANDLER inside (techo app)'s wrap-server, with
+  ;; the program's timeout and duration clock, LOG for both kinds of line,
+  ;; and PROXIES, the count of proxies in front, so the request log shows
+  ;; the client's address as the login limit takes it.
+  (define (program-server handler log proxies)
+    (wrap-server handler log request-timeout-ms duration-clock proxies))
+
   (define (program-user-kit path migrations wall-clock random-bytes)
     (make-user-kit path migrations sodium-hash wall-clock
                    (id-source wall-clock random-bytes)))

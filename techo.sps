@@ -16,7 +16,6 @@
         (only (chezscheme) getenv current-time time-second time-nanosecond)
         (only (chez-sodium) random-bytes)
         (only (circuit http-server) run-server)
-        (techo app)
         (techo cli)
         (techo config)
         (techo db)
@@ -26,7 +25,7 @@
         (only (techo hasher) hasher-open! hasher-stop!)
         (only (techo users) user-add-command! user-password-command!)
         (only (techo wiring) id-source sodium-hasher program-login-kit program-app
-              program-user-kit)
+              program-server program-user-kit)
         (techo version))
 
 ;; say : TextualOutputPort String ... -> Void
@@ -99,8 +98,9 @@
 ;; wall clock; chez-sodium's random-bytes; and login's kit, which (techo
 ;; wiring) builds: the hasher's three calls (one thread, which machine 3
 ;; opens after the writer and stops before it), the rate limiter, the
-;; count of proxies in front and the ids. wrap-server puts the request
-;; log and the error format around it; stdout-log! writes both kinds of
+;; count of proxies in front and the ids. program-server puts the request
+;; log, with the client's address by that same count, and the error format
+;; around it; stdout-log! writes both kinds of
 ;; line, each in one write, from the loop's thread.
 (define (serve!)
   (let* ((config (config!))
@@ -115,9 +115,10 @@
                   (serve-loop (config-db-path config) migrations doorway
                               (lambda ()
                                 (run-server
-                                 (wrap-server (program-app reader writer wall-clock random-bytes
-                                                           kit)
-                                              stdout-log!)))
+                                 (program-server
+                                  (program-app reader writer wall-clock random-bytes kit)
+                                  stdout-log!
+                                  (config-behind-proxy config))))
                               (lambda () (hasher-open! hasher))
                               (lambda () (hasher-stop! hasher)))))
       (print-serve-ends! (current-error-port) prints)

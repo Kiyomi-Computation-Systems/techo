@@ -1821,6 +1821,26 @@
         (and (string? (obs "lgsrv:out")) (contains? (obs "lgsrv:out") "stopped\n"))
         (and (string? (obs "lgproxy:out")) (contains? (obs "lgproxy:out") "stopped\n"))))
 
+;; The request log's address (the owner, 2026-11-25): the client's when the
+;; proxy count finds one, else the peer's.
+(test-equal "request log: behind one proxy the address is the last X-Forwarded-For entry, never the proxy's own or the client's forgery"
+  '(#t #t #f #f)
+  (let ((out (obs "lgproxy:out")))
+    (if (string? out)
+        (list (contains? out " address=198.51.100.1\n")
+              (contains? out " address=198.51.100.2\n")
+              (contains? out "path=/v1/login status=401 ending=written ms=0 db_ms=- account=- address=127.0.0.1")
+              (contains? out " address=203.0.113."))
+        out)))
+
+(test-equal "request log: with TECHO_BEHIND_PROXY unset the address is the peer's, whatever X-Forwarded-For says"
+  '(#t #f)
+  (let ((out (obs "lgsrv:out")))
+    (if (string? out)
+        (list (contains? out " address=127.0.0.1\n")
+              (contains? out " address=203.0.113."))
+        out)))
+
 (test-equal "login servers: no raise while observing them"
   '(unobserved unobserved) (list (obs "lgsrv:raised") (obs "lgproxy:raised")))
 

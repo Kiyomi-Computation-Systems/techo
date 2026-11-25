@@ -216,7 +216,8 @@ Content-Type: application/json
   client shares one count. The docs say so.
 - The `Forwarded` header is not read.
 - **The request log's `address` stays the peer's.** Behind a proxy it is the
-  proxy's. Whether it should be the client's is a question for the owner.
+  proxy's. Whether it should be the client's is a question for the owner. (Answered
+  on 2026-11-25: the client's. See "As built".)
 - `TECHO_BEHIND_PROXY` is a row in `(techo config)`: unset or `0` to `8`, digits
   only. Anything else refuses to start, exit 2, naming the variable and not its
   value.
@@ -361,7 +362,7 @@ techo user password --email EMAIL
 - An unknown field in the login body is a 400.
 - A login's log line shows the account once the password matched, and not before.
 - Every raise logs the account when the key check had passed, a 500 too.
-- The request log's `address` stays the peer's.
+- The request log's `address` stays the peer's. (Changed by the owner on 2026-11-25.)
 - A bare 429 keeps the code `error`; only login makes a 429, and names it itself.
 - The largest proxy count is 8.
 - A piped password is one line; the terminal asks twice.
@@ -487,6 +488,10 @@ start; hash and revoke in one write for `user password`.
   password.**
 - **U+007F to U+009F are refused** in a username, an email and a key's name, as the
   other control characters are.
+- **The request log's `address` is the client's when the proxy count finds one**
+  (owner, 2026-11-25, after the closing review). `wrap-request-log` and
+  `wrap-server` take the count, and `(techo wiring)`'s `program-server` passes the
+  setting's. It is the same `client-address` the login limit uses.
 - **`tests/doorway-child.sps` keeps `serve-loop`'s four-argument form.** It tests the
   doorway, and needs no hasher.
 - **Tasks 1 to 8 as planned; task 9 was the closing review's fixes.** Suites: 31.

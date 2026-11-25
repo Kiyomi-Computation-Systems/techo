@@ -142,7 +142,7 @@ request method=GET path=/v1/keys status=200 ending=written ms=4 db_ms=1 account=
 | `ms` | How long the request took. |
 | `db_ms` | How long the database part took, queue included. `-` if it had none. |
 | `account` | The account's id, once Techo had checked the key. That includes a `500` or `504`. `-` with no key or a bad one, and when the request never got that far: still queued, or waiting for the write lock. Such a write may still commit afterwards. A login shows the account only when the password matched. |
-| `address` | Who connected. |
+| `address` | The client's address. Behind proxies, with [`TECHO_BEHIND_PROXY`](#behind-a-proxy) set, it is the entry Techo takes from `X-Forwarded-For`. Otherwise, or when that entry is no address, it is whoever connected. |
 
 Two other lines can appear:
 
@@ -265,8 +265,10 @@ every visitor would share one count.)
 - The `Forwarded` header is **not** read, only `X-Forwarded-For`.
 - An IPv6 client is counted by its `/64`: two addresses in the same `/64` share a
   count. IPv4 addresses are counted one by one.
-- The [request log](#the-request-log)'s `address` is still the one that connected:
-  the proxy's.
+- The [request log](#the-request-log)'s `address` is the same address the login
+  limit counts: the client's when the number finds one, else whoever connected.
+  So a wrong number shows up in the log: every line with the proxy's own address
+  means it is too low.
 
 A number that is not `0` to `8` stops Techo before it listens, with status 2. The
 line names `TECHO_BEHIND_PROXY`, not what you wrote.
