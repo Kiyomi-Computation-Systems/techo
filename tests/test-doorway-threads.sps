@@ -36,7 +36,7 @@
 ;;; Everything that can raise is computed under a guard.
 (import (rnrs)
         (srfi :64)
-        (only (chezscheme) directory-list system process getenv real-time sleep make-time
+        (only (chezscheme) directory-list file-directory? system process getenv real-time sleep make-time
                            library-directories)
         (techo-testing)
         (only (chez-sqlite3) close-database! query query-row)
@@ -678,7 +678,12 @@
 (test-equal "sigterm idle: the write is in the file"
   '("i") (field "sigterm-idle" 4))
 
-;; the read threads' count
+;; the read threads' count. threads-of reads /proc, which only Linux has.
+;; Elsewhere (a Mac, for development: ADR-0001) the two tests are skipped by
+;; name and a line says so, so the skip is never silent.
+(unless (file-directory? "/proc/self/task")
+  (display "doorway-threads: no /proc here, so the two readers tests are skipped\n")
+  (test-skip 2))
 (test-equal "readers: three read threads are two threads more than one"
   2 (- (field "readers" 1) (field "readers" 0)))
 (test-equal "readers: both servers stop with exit 0"

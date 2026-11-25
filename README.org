@@ -19,14 +19,27 @@ later, SQLite, libcurl, libsodium 1.0.18 or later, a C compiler and =pkg-config=
 =scripts/guix-env= gives all of them, pinned.
 
 The Makefile also runs on macOS, for development only: tested by hand, never in
-CI. There, chez-sodium does not find libsodium by itself: set
-=CHEZ_SODIUM_LIBRARY= to the library's absolute path. =make test= needs
-=timeout=, or Homebrew's =gtimeout=.
+CI. There, use Homebrew's SQLite and
+libsodium, and name both before =make test=:
+
+#+begin_src sh
+brew install sqlite libsodium coreutils
+export CHEZ_SQLITE3_LIBRARY="$(brew --prefix sqlite)/lib/libsqlite3.dylib"
+export CHEZ_SODIUM_LIBRARY="$(brew --prefix libsodium)/lib/libsodium.dylib"
+#+end_src
+
+- Apple's own SQLite keeps the =-wal= file after the last close and answers locks
+  differently: four suites fail on it and two hang.
+- chez-sodium does not find libsodium by itself there.
+- =brew --prefix= prints a path even when the formula is not installed. Check the
+  file is there.
+- =make test= needs =timeout=, or coreutils' =gtimeout=.
+- Two tests that count threads in =/proc= are skipped, and a line says so.
 
 #+begin_src sh
 git clone https://github.com/Kiyomi-Computation-Systems/techo.git
 cd techo
-make submodules               # circuit, chez-sqlite3, chez-curl, chez-http-server, each at its pin
+make submodules               # the six submodules under vendor/, each at its pin
 make fetch                    # the Akku dependencies, as Akku.lock pins them
 make test                     # builds chez-libuv's shim, then runs every tests/test-*.sps
 #+end_src
