@@ -365,9 +365,13 @@ define link-srfi
 	done
 endef
 
-# CHECK_LOCKED first. Then each submodule's src/ must be there, and the
-# server's submodule must be the release SERVER_VERSION names, by its own
-# Akku.manifest: the container has no git, so check-pins holds the commit.
+# CHECK_LOCKED first. Then each submodule's src/ must be there and its
+# checkout at its pin: scripts/submodule-head reads the commit from git's
+# own files, since the container has no git, and a checkout it cannot read
+# is let through (check-pins, on the host, holds the gitlinks). A pull that
+# moves a pin leaves the files behind until `make submodules`, and this is
+# what says so. The server's submodule must also be the release
+# SERVER_VERSION names, by its own Akku.manifest.
 # Each
 # tree must be there, by the file AKKU_TREES names under it, and record the
 # sha256 Akku.lock pins (scripts/fetch-akku-lock --check-record), as
@@ -381,6 +385,14 @@ deps: check-chez ## Copy chez-libuv to build/chez-libuv and build its shim there
 	@for d in $(CIRCUIT_DIR) $(SQLITE3_DIR) $(CURL_DIR) $(SERVER_DIR) $(SODIUM_DIR) $(UNIQUE_ID_DIR); do \
 	  if [ ! -d $$d/src ]; then \
 	    echo "deps: $$d/src not found, so the submodule isn't checked out. Run 'make submodules' on the host: the container has no git." >&2; \
+	    exit 1; \
+	  fi; \
+	done
+	@for p in $(SUBMODULE_PINS); do \
+	  n=$${p%%:*}; want=$${p#*:}; \
+	  got=$$(sh scripts/submodule-head vendor/$$n); \
+	  if [ -n "$$got" ] && [ "$$got" != "$$want" ]; then \
+	    echo "deps: vendor/$$n is at $$(printf %.7s "$$got"), not its pin $$(printf %.7s "$$want"). Run 'make submodules' on the host: the container has no git." >&2; \
 	    exit 1; \
 	  fi; \
 	done
@@ -503,10 +515,11 @@ check-test-fails: ## Plant a failing suite, a hanging one and others in a copy; 
 	@scripts/require-tools "$(GOAL)" $(TIMEOUT) $(CHEZ) tar
 	@MAKE='$(MAKE)' TIMEOUT='$(TIMEOUT)' CHEZ='$(CHEZ)' sh tests/check-test-fails.sh
 
-# Holds make submodules, deps' hint, the absence of GNU-only mv and ln
+# Holds make submodules, deps' two hints (a submodule missing, and one off
+# its pin), scripts/submodule-head, the absence of GNU-only mv and ln
 # flags, scripts/mv-no-follow-flag and make clean on a read-only directory,
 # in scratch directories (tests/check-makefile.sh).
-check-makefile: ## Check make submodules, deps' hint, the mv flag and make clean on a read-only directory
+check-makefile: ## Check make submodules, deps' hints, the mv flag and make clean on a read-only directory
 	@MAKE='$(MAKE)' CHEZ='$(CHEZ)' sh tests/check-makefile.sh
 
 # Removes build/ (BUILD_DIR), and with it chez-libuv's copy and its shim, and Akku

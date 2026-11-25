@@ -49,6 +49,10 @@ On a Guix host the last line is =scripts/guix-env make test=. The
 =make submodules= and =make fetch= lines stay on the host: they need git and the
 network, which the container has not.
 
+After a =git pull= that moves a submodule's pin, run =make submodules= again. Until
+you do, =make deps= (and so =make test= and =make run=) stops and says which
+submodule is behind.
+
 =make help= lists every target.
 
 ** Run
