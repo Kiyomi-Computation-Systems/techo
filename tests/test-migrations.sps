@@ -862,10 +862,10 @@
 (test-equal "shipped list: the list equals its recorded copy"
   (read-datum "tests/shipped-migrations.scm")
   migrations)
-(test-equal "shipped list: the copy is one datum, a list of three migrations, versions 1, 2 and 3"
-  '(1 2 3)
+(test-equal "shipped list: the copy is one datum, a list of four migrations, versions 1, 2, 3 and 4"
+  '(1 2 3 4)
   (let ((r (read-datum "tests/shipped-migrations.scm")))
-    (if (and (list? r) (= (length r) 3)) (map car r) r)))
+    (if (and (list? r) (= (length r) 4)) (map car r) r)))
 (test-equal "shipped list: migration 1 is the one that sets the id"
   '(1 "techo's database" ("PRAGMA application_id = 1952801640"))
   (car migrations))
@@ -885,6 +885,10 @@
                 (string=? prefix (substring s 0 (string-length prefix)))))
          ss
          '("CREATE TABLE nodes" "CREATE INDEX nodes_owner" "CREATE TABLE revisions" "CREATE TABLE changes"))))
+(test-equal "shipped list: migration 4 is one statement, named for a node's state, adding the state column with its CHECK"
+  (list "a node's state"
+        (list "ALTER TABLE nodes ADD COLUMN state TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active','archived','trashed','purged'))"))
+  (let ((m (list-ref migrations 3))) (list (cadr m) (caddr m))))
 (test-equal "shipped list: the id is `tech`"
   #x74656368
   techo-application-id)

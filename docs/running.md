@@ -286,6 +286,20 @@ the same time.
   limit the kernel may kill the process instead. Give the container at least 64 MiB
   more than Techo uses when idle.
 
+## Disk
+
+Three files live side by side: the database, `-wal` and `-shm`.
+
+- **Deleting a node does not shrink the database file.** The space is wiped and
+  used again by later writes.
+- **The `-wal` file can grow for a moment** by the size of a deleted node's
+  history, then shrinks back to 16 MiB. Keep that much room free: a node with
+  200 MiB of history needs 200 MiB more while it is deleted.
+- **A large delete holds every other write** while it runs: about half a second
+  for 200 MiB on a quiet disk, three times that on a busy one. Reads carry on.
+- A deleted node's text is overwritten in the database file at once. It can
+  stay in the `-wal` until the next write, and it stays in any backup you took.
+
 ## Check it
 
 ```sh

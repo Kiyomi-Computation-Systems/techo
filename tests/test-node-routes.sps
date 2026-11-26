@@ -1,16 +1,19 @@
 #!r6rs
-;;; The node routes suite: slice 4's seven routes, (techo node-routes), as
-;;; a router serves them inside the whole stack (wrap-server), against real
-;;; SQLite through the test doorway, raw HTTP bytes in through circuit's
-;;; test host. The routes are not yet joined to make-app, so the rig makes
-;;; its own router of them.
+;;; The node routes suite: slice 4's routes and slice 4b's lifecycle, (techo
+;;; node-routes), as a router serves them inside the whole stack
+;;; (wrap-server), against real SQLite through the test doorway, raw HTTP
+;;; bytes in through circuit's test host. The rig makes its own router of
+;;; them; tests/test-app.sps holds them joined to make-app.
 ;;;
-;;;   PUT  /v1/nodes/:id                         create (If-None-Match: *) or replace (If-Match)
-;;;   GET  /v1/nodes/:id                         the node, with its ETag
-;;;   GET  /v1/nodes                             the account's nodes, paged, no bodies
-;;;   GET  /v1/nodes/:id/revisions               its snapshots, newest first, no bodies
-;;;   GET  /v1/nodes/:id/revisions/:n            one snapshot, whole
-;;;   POST /v1/nodes/:id/revisions/:n/restore    a new revision copied from snapshot n
+;;;   PUT    /v1/nodes/:id                       create (If-None-Match: *) or replace (If-Match)
+;;;   GET    /v1/nodes/:id                       the node, with its ETag
+;;;   DELETE /v1/nodes/:id                       a purge (If-Match), 204
+;;;   GET    /v1/nodes?state=                    the account's nodes in one state, paged, no bodies
+;;;   GET    /v1/nodes/:id/revisions             its snapshots, newest first, no bodies
+;;;   GET    /v1/nodes/:id/revisions/:n          one snapshot, whole
+;;;   POST   /v1/nodes/:id/revisions/:n/restore  a new revision copied from snapshot n
+;;;   POST   /v1/nodes/:id/archive, /unarchive, /trash, /untrash
+;;;                                              a state change (If-Match), the node without its body
 ;;;
 ;;; Each test gets a file of its own (a rig), seeded through the store's own
 ;;; procedures in a write job: account A (alice) with key 1, account B (bob)
@@ -32,12 +35,13 @@
         (only (jsonparse easy) json->string)
         (http-support)
         (techo errors)
-        (only (techo keys) key-secret)
+        (only (techo keys) key-secret id->string)
         (except (techo store) key-hash)
         (only (techo auth) key-hash)
         (only (techo doorway) tx-query tx-query-row)
-        (only (techo nodes) parse-node-id body-cap request-cap)
-        (only (techo node-store) insert-node! write-node!)
+        (only (techo nodes) parse-node-id body-cap request-cap node-states)
+        (only (techo node-store) insert-node! write-node! set-node-state! purge-node!)
+        (only (techo migrations) migrations)
         (only (techo app) wrap-server)
         (techo node-routes))
 
@@ -219,6 +223,34 @@
 (define (restore! g who n r rev)
   ((rig-call g) 'POST (restore-path n r) (list (key-h who) (match-h rev))))
 
+;; The five lifecycle events, each its own route.
+(define events '(archive unarchive trash untrash purge))
+
+;; event-target : Symbol String -> (Pair Symbol String)
+;; EVENT's method and path on the node at PATH: DELETE on the node itself
+;; for purge, a POST to its sub-resource for the four others.
+(define (event-target event path)
+  (if (eq? event 'purge)
+      (cons 'DELETE path)
+      (cons 'POST (string-append path "/" (symbol->string event)))))
+
+;; event-request : Symbol Natural (Listof Header) [(U String #f)]
+;;                 -> (List Symbol String (Listof Header) (U String #f))
+;; The arguments of a rig's call for EVENT on node N, with HEADERS and BODY
+;; (none when not given).
+(define (event-request event n headers . body)
+  (let ((t (event-target event (node-path n))))
+    (append (list (car t) (cdr t) headers) (if (null? body) (list #f) body))))
+
+;; lifecycle! : Rig Natural Natural Symbol Natural -> Answer
+;; WHO's EVENT on node N, with If-Match REV and no body.
+(define (lifecycle! g who n event rev)
+  (apply (rig-call g) (event-request event n (list (key-h who) (match-h rev)))))
+
+;; send-event : Rig Symbol Natural (Listof Header) [(U String #f)] -> Answer
+(define (send-event g event n headers . body)
+  (apply (rig-call g) (apply event-request event n headers body)))
+
 (define (get! g who path) ((rig-call g) 'GET path (list (key-h who))))
 
 ;;; What answers look like
@@ -232,17 +264,26 @@
 (define (member-of j name) (let ((m (and (list? j) (assoc name j)))) (if m (cdr m) 'absent)))
 (define (names j) (map car j))
 
-;; node-json : Natural String String String String Natural Natural Natural -> Alist
-(define (node-json n kind title body type revision created updated)
-  (list (cons "id" (nid-text n)) (cons "kind" kind) (cons "title" title) (cons "body" body)
+;; node-json-in : String Natural String String String String Natural Natural Natural -> Alist
+;; A node's answer in STATE: id, kind, state, title, body, content_type,
+;; props, revision, created, updated, in that order.
+(define (node-json-in state n kind title body type revision created updated)
+  (list (cons "id" (nid-text n)) (cons "kind" kind) (cons "state" state) (cons "title" title)
+        (cons "body" body) (cons "content_type" type) (cons "props" '()) (cons "revision" revision)
+        (cons "created" created) (cons "updated" updated)))
+
+;; node-json : as node-json-in, for an active node
+(define (node-json . args) (apply node-json-in "active" args))
+
+;; item-json-in : as node-json-in, without the body: a list's item, and a
+;; state change's answer
+(define (item-json-in state n kind title type revision created updated)
+  (list (cons "id" (nid-text n)) (cons "kind" kind) (cons "state" state) (cons "title" title)
         (cons "content_type" type) (cons "props" '()) (cons "revision" revision)
         (cons "created" created) (cons "updated" updated)))
 
-;; item-json : as node-json, without the body
-(define (item-json n kind title type revision created updated)
-  (list (cons "id" (nid-text n)) (cons "kind" kind) (cons "title" title)
-        (cons "content_type" type) (cons "props" '()) (cons "revision" revision)
-        (cons "created" created) (cons "updated" updated)))
+;; item-json : as item-json-in, for an active node
+(define (item-json . args) (apply item-json-in "active" args))
 
 ;; snapshot-json : Natural String String String Natural -> Alist
 (define (snapshot-json revision title body type created)
@@ -271,9 +312,11 @@
     ((list-revisions) (list 'GET (revisions-path 1) '() #f))
     ((get-revision) (list 'GET (revision-path 1 1) '() #f))
     ((restore) (list 'POST (restore-path 1 1) (list (match-h 1)) #f))
+    ((archive unarchive trash untrash purge) (event-request which 1 (list (match-h 1))))
     (else (assertion-violation 'route-request "no such route" which))))
 
-(define route-names '(list-nodes get-node create replace list-revisions get-revision restore))
+(define route-names (append '(list-nodes get-node create replace list-revisions get-revision restore)
+                            events))
 
 ;; send : Rig Symbol (Listof Header) -> Answer     the route, with KEY-HEADERS first
 (define (send g which key-headers)
@@ -321,9 +364,11 @@
       ((list-revisions) (list 'GET (string-append p "/revisions") (list (key-h 1)) #f))
       ((get-revision) (list 'GET (string-append p "/revisions/1") (list (key-h 1)) #f))
       ((restore) (list 'POST (string-append p "/revisions/1/restore") (list (key-h 1) (match-h 1)) #f))
+      ((archive unarchive trash untrash purge)
+       (let ((t (event-target which p))) (list (car t) (cdr t) (list (key-h 1) (match-h 1)) #f)))
       (else (assertion-violation 'id-request "no such route" which)))))
 
-(define id-routes '(get-node create replace list-revisions get-revision restore))
+(define id-routes (append '(get-node create replace list-revisions get-revision restore) events))
 
 (define (send-id g which text)
   (let ((r (id-request which text)))
@@ -394,6 +439,7 @@
     ((list-revisions) (list 'GET (revisions-path n) (list (key-h 1)) #f))
     ((get-revision) (list 'GET (revision-path n 1) (list (key-h 1)) #f))
     ((restore) (list 'POST (restore-path n 1) (list (key-h 1) (match-h 1)) #f))
+    ((archive unarchive trash untrash purge) (event-request which n (list (key-h 1) (match-h 1))))
     (else (assertion-violation 'missing-request "no such route" which))))
 
 (for-each
@@ -417,7 +463,7 @@
                     ((rig-jobs g))
                     (equal? (map (lambda (t) (list-ref before t)) '(0 1 2))
                             (let ((after (tables g))) (map (lambda (t) (list-ref after t)) '(0 1 2))))))))))))
- '(get-node replace list-revisions get-revision restore))
+ (append '(get-node replace list-revisions get-revision restore) events))
 
 (test-equal "owner: A's list holds A's nodes and never B's"
   (list (nid-text 1) (nid-text 3))
@@ -636,6 +682,22 @@
                (b (put! g 1 (list (key-h 1) json-type (match-h 7))
                         "{\"title\":\"t\",\"body\":\"b\",\"content_type\":\"text/plain\",\"props\":{\"a\":1}}")))
            (list (status+code a) (status+code b) ((rig-reads g)) ((rig-writes g)))))))))
+
+(test-equal "put: a state member is one the route does not know: 400 invalid_request on a create and on a replace at the node's revision, a read job each, no write job, the node still active"
+  '((400 "invalid_request") (400 "invalid_request") 2 0 "active")
+  (attempt
+   (lambda ()
+     (with-rig "put-state.db"
+       (lambda (g)
+         (seed-node! g acct-a 1 "note")
+         (let* ((a (put! g 2 (list (key-h 1) json-type none-match)
+                         "{\"kind\":\"note\",\"title\":\"t\",\"body\":\"b\",\"content_type\":\"text/plain\",\"state\":\"active\"}"))
+                (b (put! g 1 (list (key-h 1) json-type (match-h 1))
+                         "{\"title\":\"t\",\"body\":\"b\",\"content_type\":\"text/plain\",\"state\":\"archived\"}"))
+                (reads ((rig-reads g)))
+                (writes ((rig-writes g))))
+           (list (status+code a) (status+code b) reads writes
+                 (member-of (answer-json (get! g 1 (node-path 1))) "state"))))))))
 
 ;;; PUT: create
 
@@ -1565,6 +1627,633 @@
                              (map (lambda (t) (list-ref after t)) '(0 1 2)))
                      (last-used g 1))))))))))
 
+;;; Slice 4b: the lifecycle
+
+;; in-order : (A -> B) (Listof A) -> (Listof B)     F on each of XS, first to last
+(define (in-order f xs)
+  (if (null? xs) '() (let ((v (f (car xs)))) (cons v (in-order f (cdr xs))))))
+
+;; repeat : Natural A -> (Listof A)
+(define (repeat n x) (if (= n 0) '() (cons x (repeat (- n 1) x))))
+
+;; seed-state! : Rig Bytevector Natural String Symbol -> Natural
+;; Node N for OWNER, of KIND, through the store: made at 5000 ("seed",
+;; "seed body", text/plain), replaced at 5500 ("seed 2", "seed body 2",
+;; text/markdown), then, for archived or trashed, moved there at 6000, with
+;; no snapshot. Its revision: 2 when active, else 3.
+(define (seed-state! g owner n kind state)
+  (run-write (rig-store g)
+             (lambda (tx)
+               (insert-node! tx (nid n) owner kind "seed" "seed body" "text/plain" "{}" 5000)
+               (write-node! tx (nid n) owner 1 "seed 2" "seed body 2" "text/markdown" "{}" "update" 5500)
+               (case state
+                 ((active) 2)
+                 ((archived) (set-node-state! tx (nid n) owner 2 "archived" "archive" 6000) 3)
+                 ((trashed) (set-node-state! tx (nid n) owner 2 "trashed" "trash" 6000) 3)
+                 (else (assertion-violation 'seed-state! "no such state" state))))))
+
+(define live-states '(active archived trashed))
+
+;; writes : (Listof Symbol)     every request that takes If-Match
+(define writes (append events '(replace restore)))
+
+;; write! : Rig Natural Natural Symbol Natural -> Answer
+;; WHO's request WHICH on node N at If-Match REV: an event; a replace
+;; naming no kind, of title "t3", body "b3", text/plain; or a restore of
+;; revision 1.
+(define (write! g who n which rev)
+  (case which
+    ((replace) (replace! g who n rev #f "t3" "b3" "text/plain"))
+    ((restore) (restore! g who n 1 rev))
+    (else (lifecycle! g who n which rev))))
+
+;; state-of : Rig Natural -> (U String #f)     node N's stored state
+(define (state-of g n)
+  (run-read (rig-store g)
+            (lambda (tx)
+              (let ((r (tx-query-row tx "SELECT state FROM nodes WHERE id = ?" (nid n))))
+                (and r (vector-ref r 0))))))
+
+(define (id-of j) (member-of j "id"))
+(define (sym->str s) (symbol->string s))
+
+;; The lifecycle as the plan's table reads it, with a replace and a
+;; restore: each state's answer to each request at the node's own
+;; revision. (200 S) is 200 with the node now in S; 204 a purge; 409 the
+;; state's refusal.
+(define lifecycle-answers
+  '((active (archive 200 "archived") (unarchive 409) (trash 200 "trashed") (untrash 409)
+            (purge 409) (replace 200 "active") (restore 200 "active"))
+    (archived (archive 409) (unarchive 200 "active") (trash 200 "trashed") (untrash 409)
+              (purge 409) (replace 200 "archived") (restore 200 "archived"))
+    (trashed (archive 409) (unarchive 409) (trash 409) (untrash 200 "active")
+             (purge 204) (replace 409) (restore 409))))
+
+;; expected-cell : Symbol Natural (List Symbol Natural [String]) -> (List ...)
+;; For STATE at revision REV and its table ENTRY: the status, the code,
+;; the ETag, the JSON's state and revision, the stored state and revision.
+(define (expected-cell state rev entry)
+  (case (cadr entry)
+    ((200) (list 200 'absent (tag (+ rev 1)) (caddr entry) (+ rev 1) (caddr entry) (+ rev 1)))
+    ((204) (list 204 'absent #f 'absent 'absent "purged" (+ rev 1)))
+    ((409) (list 409 "wrong_state" #f 'absent 'absent (sym->str state) rev))
+    (else (assertion-violation 'expected-cell "no such entry" entry))))
+
+;; cell-at : Rig Natural Answer -> (List ...)     what expected-cell describes, for node N
+(define (cell-at g n a)
+  (let ((j (answer-json a)))
+    (list (answer-status a) (member-of j "code") (answer-header a "etag")
+          (member-of j "state") (member-of j "revision")
+          (state-of g n) (car (stored g n)))))
+
+(define (cell-of g a) (cell-at g 1 a))
+
+(for-each
+ (lambda (row)
+   (let ((state (car row)))
+     (for-each
+      (lambda (entry)
+        (let ((which (car entry)))
+          (test-equal (string-append "lifecycle: " (sym->str state) " x " (sym->str which)
+                                     ", at the node's revision: status, code, ETag, the answer's state and revision, the stored state and revision")
+            (expected-cell state (if (eq? state 'active) 2 3) entry)
+            (attempt
+             (lambda ()
+               (with-rig "cell.db"
+                 (lambda (g)
+                   (let* ((r (seed-state! g acct-a 1 "note" state))
+                          (a (write! g 1 1 which r)))
+                     (cell-of g a)))))))))
+      (cdr row))))
+ lifecycle-answers)
+
+;; The state changes the table allows: from, event, to.
+(define moves
+  '((active archive "archived") (active trash "trashed") (archived unarchive "active")
+    (archived trash "trashed") (trashed untrash "active")))
+
+;; members : Alist (Listof String) -> Alist     J's members named NAMES, in J's order
+(define (members j names) (filter (lambda (m) (member (car m) names)) j))
+
+;; but-body : Alist -> Alist
+(define (but-body j) (filter (lambda (m) (not (equal? (car m) "body"))) j))
+
+(for-each
+ (lambda (move)
+   (let ((from (car move)) (event (cadr move)) (to (caddr move)))
+     (test-equal (string-append "state change: " (sym->str from) " x " (sym->str event)
+                                ": revision + 1, one change row of op " (sym->str event)
+                                ", no snapshot; title, body, content type, props, kind, created and author as they were; the answer is the GET's node but its body (G3, G9, G11)")
+       (let ((r (if (eq? from 'active) 2 3)))
+         (list 200 (tag (+ r 1)) #t "seed body 2" #t (list to (+ r 1) now0) #t #t
+               (list (+ r 1) "task" acct-a 5000 now0) #t))
+       (attempt
+        (lambda ()
+          (with-rig "change.db"
+            (lambda (g)
+              (let* ((r (seed-state! g acct-a 1 "task" from))
+                     (before (answer-json (get! g 1 (node-path 1))))
+                     (snaps (snapshot-rows g 1))
+                     (changes (change-rows g acct-a))
+                     (row (stored g 1))
+                     (a (lifecycle! g 1 1 event r))
+                     (after (answer-json (get! g 1 (node-path 1))))
+                     (row2 (stored g 1)))
+                (list (answer-status a) (answer-header a "etag")
+                      (equal? (answer-json a) (but-body after))
+                      (member-of after "body")
+                      (equal? (members before '("id" "kind" "title" "body" "content_type" "props" "created"))
+                              (members after '("id" "kind" "title" "body" "content_type" "props" "created")))
+                      (map (lambda (k) (member-of after k)) '("state" "revision" "updated"))
+                      (equal? snaps (snapshot-rows g 1))
+                      (equal? (change-rows g acct-a)
+                              (append changes (list (list (+ r 1) (nid 1) (+ r 1) (sym->str event) now0))))
+                      (list (car row2) (cadr row2) (caddr row2) (cadddr row2) (list-ref row2 4))
+                      (equal? (list-ref row 5) (list-ref row2 5)))))))))))
+ moves)
+
+(for-each
+ (lambda (move)
+   (let ((from (car move)) (event (cadr move)) (to (caddr move)))
+     (test-equal (string-append "answer: " (sym->str event) " from " (sym->str from)
+                                ": 200, the node without its body, as a list's item, no text of the body, no num")
+       (let ((r (if (eq? from 'active) 2 3)))
+         (list 200 "application/json"
+               (item-json-in to 1 "note" "seed 2" "text/markdown" (+ r 1) 5000 now0) #f #f))
+       (attempt
+        (lambda ()
+          (with-rig "answer.db"
+            (lambda (g)
+              (let* ((r (seed-state! g acct-a 1 "note" from))
+                     (a (lifecycle! g 1 1 event r)))
+                (list (answer-status a) (answer-header a "content-type") (answer-json a)
+                      (contains? (answer-body a) "seed body") (contains? (answer-body a) "num"))))))))))
+ moves)
+
+;; The cells where the state refuses, at the node's own revision.
+(define wrong-state-cells
+  '((active unarchive) (active untrash) (active purge)
+    (archived archive) (archived untrash) (archived purge)
+    (trashed archive) (trashed unarchive) (trashed trash) (trashed replace) (trashed restore)))
+
+(for-each
+ (lambda (cell)
+   (test-equal (string-append "G13: " (sym->str (car cell)) " x " (sym->str (cadr cell))
+                              " is 409 wrong_state in its write job (a PUT's after the key's read job): nodes, revisions, changes and last_used as they were")
+     (list '(409 "wrong_state") (if (eq? (cadr cell) 'replace) '(read write) '(write)) #f #t #f)
+     (attempt
+      (lambda ()
+        (with-rig "g13.db"
+          (lambda (g)
+            (let* ((r (seed-state! g acct-a 1 "note" (car cell)))
+                   (before (tables g))
+                   (a (write! g 1 1 (cadr cell) r)))
+              (list (status+code a) ((rig-order g)) (answer-header a "etag")
+                    (equal? before (tables g)) (last-used g 1)))))))))
+ wrong-state-cells)
+
+(for-each
+ (lambda (event)
+   (test-equal (string-append "G13: " (sym->str event)
+                              " on a missing node is 404 not_found in its write job: every table as it was, last_used null")
+     '((404 "not_found") (write) #t #f)
+     (attempt
+      (lambda ()
+        (with-rig "g13-missing.db"
+          (lambda (g)
+            (seed-state! g acct-a 1 "note" 'trashed)
+            (let* ((before (tables g))
+                   (a (lifecycle! g 1 2 event 3)))
+              (list (status+code a) ((rig-order g)) (equal? before (tables g)) (last-used g 1)))))))))
+ events)
+
+(test-equal "G13: an accepted state change and an accepted purge set the key's last_used, so the refusals above would have shown it"
+  (list now0 (+ now0 (* 2 day)))
+  (attempt
+   (lambda ()
+     (with-rig "g13-accepted.db"
+       (lambda (g)
+         (let* ((r (seed-state! g acct-a 1 "note" 'active))
+                (a (lifecycle! g 1 1 'trash r))
+                (t1 (last-used g 1)))
+           ((rig-set-now! g) (+ now0 (* 2 day)))
+           (lifecycle! g 1 1 'purge (+ r 1))
+           (list t1 (last-used g 1))))))))
+
+(for-each
+ (lambda (state)
+   (for-each
+    (lambda (which)
+      (test-equal (string-append "G5: " (sym->str state) " x " (sym->str which)
+                                 ", a revision behind the node's and one past it: 412 precondition_failed, no ETag, every table as it was, last_used null")
+        '((412 "precondition_failed") #f (412 "precondition_failed") #f #t #f)
+        (attempt
+         (lambda ()
+           (with-rig "g5.db"
+             (lambda (g)
+               (let* ((r (seed-state! g acct-a 1 "note" state))
+                      (before (tables g))
+                      (a (write! g 1 1 which (- r 1)))
+                      (b (write! g 1 1 which (+ r 1))))
+                 (list (status+code a) (answer-header a "etag")
+                       (status+code b) (answer-header b "etag")
+                       (equal? before (tables g)) (last-used g 1)))))))))
+    writes))
+ live-states)
+
+(test-equal "G15: a trashed node: a replace naming another kind is 409 wrong_state, never kind_fixed; stale, it is 412; nothing written"
+  '((409 "wrong_state") (412 "precondition_failed") #t)
+  (attempt
+   (lambda ()
+     (with-rig "g15.db"
+       (lambda (g)
+         (let* ((r (seed-state! g acct-a 1 "note" 'trashed))
+                (before (tables g))
+                (a (replace! g 1 1 r "task" "t" "b" "text/plain"))
+                (b (replace! g 1 1 (+ r 1) "task" "t" "b" "text/plain")))
+           (list (status+code a) (status+code b) (equal? before (tables g)))))))))
+
+(test-equal "G15: an archived node is written as an active one: a replace naming another kind is 409 kind_fixed; the same kind is 200 and stays archived"
+  '((409 "kind_fixed") (200 "archived") "archived")
+  (attempt
+   (lambda ()
+     (with-rig "g15-archived.db"
+       (lambda (g)
+         (let* ((r (seed-state! g acct-a 1 "note" 'archived))
+                (a (replace! g 1 1 r "task" "t" "b" "text/plain"))
+                (b (replace! g 1 1 r "note" "t" "b" "text/plain")))
+           (list (status+code a) (list (answer-status b) (member-of (answer-json b) "state"))
+                 (state-of g 1))))))))
+
+(test-equal "restore: on a trashed node at its revision, the revision its trash made (no snapshot) and one never reached are 409 wrong_state, not 404; nothing written"
+  '((409 "wrong_state") (409 "wrong_state") #t)
+  (attempt
+   (lambda ()
+     (with-rig "restore-trashed.db"
+       (lambda (g)
+         (let* ((r (seed-state! g acct-a 1 "note" 'trashed))
+                (before (tables g))
+                (a (restore! g 1 1 3 r))
+                (b (restore! g 1 1 9 r)))
+           (list (status+code a) (status+code b) (equal? before (tables g)))))))))
+
+(test-equal "restore: on an archived node, the revision its archive made has no snapshot: 404 not_found; nothing written"
+  '((404 "not_found") #t)
+  (attempt
+   (lambda ()
+     (with-rig "restore-gap.db"
+       (lambda (g)
+         (let* ((r (seed-state! g acct-a 1 "note" 'archived))
+                (before (tables g))
+                (a (restore! g 1 1 3 r)))
+           (list (status+code a) (equal? before (tables g)))))))))
+
+(test-equal "G12: a replace and a restore of an archived node keep it archived, in the answer, the GET and the row; the body is the newest snapshot's"
+  '((200 "archived" 4) (200 "archived" 5) ("archived" "seed body" 5) "archived")
+  (attempt
+   (lambda ()
+     (with-rig "g12.db"
+       (lambda (g)
+         (let* ((r (seed-state! g acct-a 1 "note" 'archived))
+                (a (replace! g 1 1 r #f "t4" "b4" "text/plain"))
+                (b (restore! g 1 1 1 (+ r 1)))
+                (c (answer-json (get! g 1 (node-path 1))))
+                (shown (lambda (x) (list (answer-status x) (member-of (answer-json x) "state")
+                                         (member-of (answer-json x) "revision")))))
+           (list (shown a) (shown b)
+                 (map (lambda (k) (member-of c k)) '("state" "body" "revision"))
+                 (state-of g 1))))))))
+
+;;; A purge
+
+;; purged-row : Rig Natural -> (List ...)
+;; Node N's row: title, props, content_type, state, revision, updated,
+;; kind, author, created.
+(define (purged-row g n)
+  (run-read (rig-store g)
+            (lambda (tx)
+              (vector->list
+               (tx-query-row tx
+                 (string-append "SELECT title, props, content_type, state, revision, updated,"
+                                " kind, author, created FROM nodes WHERE id = ?")
+                 (nid n))))))
+
+;; purged! : Rig -> Answer
+;; A's node 1 trashed at revision 3 through the store, then purged through
+;; the DELETE at "3": the node at revision 4.
+(define (purged! g)
+  (lifecycle! g 1 1 'purge (seed-state! g acct-a 1 "note" 'trashed)))
+
+(test-equal "purge: 204, no body, no ETag, no content type; the row emptied (no title, props {}, application/octet-stream, purged, revision 4, updated now), kind, author and created kept; no snapshot left; its change row, op purge, the node's fourth and last (G6, G9)"
+  (list 204 "" #f #f
+        (list "" "{}" "application/octet-stream" "purged" 4 now0 "note" acct-a 5000)
+        '()
+        (list (list 1 "create") (list 2 "update") (list 3 "trash") (list 4 "purge"))
+        (list 4 (nid 1) 4 "purge" now0))
+  (attempt
+   (lambda ()
+     (with-rig "purge.db"
+       (lambda (g)
+         (let ((a (purged! g)))
+           (list (answer-status a) (answer-body a) (answer-header a "etag")
+                 (answer-header a "content-type")
+                 (purged-row g 1)
+                 (snapshot-rows g 1)
+                 (map (lambda (c) (list (car c) (cadddr c))) (change-rows g acct-a))
+                 (car (reverse (change-rows g acct-a))))))))))
+
+(test-equal "purge: after it, every route but a create is the 404 a missing node gets, and writes nothing: the read, the revisions list, two revisions' reads, the five state changes, a replace and a restore at its new revision and its old; no change row follows the purge's (G6, G14, G16)"
+  (list 204 (repeat 18 '(404 "not_found")) #t #t (list 4 (nid 1) 4 "purge" now0))
+  (attempt
+   (lambda ()
+     (with-rig "purge-after.db"
+       (lambda (g)
+         (let* ((a (purged! g))
+                (before (tables g))
+                (answers (append (in-order (lambda (p) (get! g 1 p))
+                                           (list (node-path 1) (revisions-path 1)
+                                                 (revision-path 1 1) (revision-path 1 2)))
+                                 (in-order (lambda (which) (write! g 1 1 which 4)) writes)
+                                 (in-order (lambda (which) (write! g 1 1 which 3)) writes)))
+                (missing (get! g 1 (node-path 2))))
+           (list (answer-status a) (map status+code answers)
+                 (for-all (lambda (x) (equal? (answer-body x) (answer-body missing))) answers)
+                 (equal? before (tables g))
+                 (car (reverse (change-rows g acct-a))))))))))
+
+(test-equal "purge: a create on its id is 412 for its owner and for B, and writes nothing: the id is never used again (G6)"
+  '(204 (412 "precondition_failed") (412 "precondition_failed") #t)
+  (attempt
+   (lambda ()
+     (with-rig "purge-create.db"
+       (lambda (g)
+         (let* ((a (purged! g))
+                (before (tables g))
+                (c (create! g 1 1 "note" "t" "b" "text/plain"))
+                (d (create! g 3 1 "note" "t" "b" "text/plain")))
+           (list (answer-status a) (status+code c) (status+code d) (equal? before (tables g)))))))))
+
+(test-equal "purge: no list shows it, in any state, though each shows its own; ?state=purged is 400 (G8, G14)"
+  (list 204 (list (nid-text 2)) (list (nid-text 3)) (list (nid-text 4)) '(400 "invalid_request"))
+  (attempt
+   (lambda ()
+     (with-rig "purge-list.db"
+       (lambda (g)
+         (seed-state! g acct-a 2 "note" 'active)
+         (seed-state! g acct-a 3 "note" 'archived)
+         (seed-state! g acct-a 4 "note" 'trashed)
+         (let ((a (purged! g)))
+           (list (answer-status a)
+                 (map id-of (items (get! g 1 "/v1/nodes")))
+                 (map id-of (items (get! g 1 "/v1/nodes?state=archived")))
+                 (map id-of (items (get! g 1 "/v1/nodes?state=trashed")))
+                 (status+code (get! g 1 "/v1/nodes?state=purged")))))))))
+
+;;; Another account
+
+(for-each
+ (lambda (pair)
+   (let ((event (car pair)) (state (cadr pair)))
+     (test-equal (string-append "G7: B's " (sym->str event) " of A's " (sym->str state)
+                                " node, at A's revision: 404 not_found, the answer an id no one holds gets; every table as it was; A's own, after it, passes")
+       (list '(404 "not_found") #t #t #t (if (eq? event 'purge) 204 200))
+       (attempt
+        (lambda ()
+          (with-rig "g7.db"
+            (lambda (g)
+              (let* ((r (seed-state! g acct-a 1 "note" state))
+                     (before (tables g))
+                     (a (lifecycle! g 3 1 event r))
+                     (m (lifecycle! g 3 2 event r))
+                     (after (tables g))
+                     (own (lifecycle! g 1 1 event r)))
+                (list (status+code a) (equal? (answer-body a) (answer-body m))
+                      (equal? (answer-headers a) (answer-headers m))
+                      (equal? before after) (answer-status own))))))))))
+ '((archive active) (unarchive archived) (trash active) (trash archived) (untrash trashed)
+   (purge trashed)))
+
+;;; The revisions list across a state change
+
+(test-equal "revisions: a state change leaves a gap, which pages step over: 5 2 1, by twos and by ones; the gap's revisions are 404, the others 200 (H3')"
+  '(((5 2 1) null) ((5 2) 2) ((1) null) ((5) 5) ((2) 2) ((1) null) ((2 1) null) ((2 1) null)
+    (404 "not_found") (404 "not_found") 200)
+  (attempt
+   (lambda ()
+     (with-rig "revisions-gap.db"
+       (lambda (g)
+         (create! g 1 1 "note" "t1" "b1" "text/plain")
+         (replace! g 1 1 1 #f "t2" "b2" "text/plain")
+         (lifecycle! g 1 1 'archive 2)
+         (lifecycle! g 1 1 'unarchive 3)
+         (replace! g 1 1 4 #f "t5" "b5" "text/plain")
+         (list (revisions g "") (revisions g "?limit=2") (revisions g "?limit=2&after=2")
+               (revisions g "?limit=1") (revisions g "?limit=1&after=5")
+               (revisions g "?limit=1&after=2") (revisions g "?after=5") (revisions g "?after=4")
+               (status+code (get! g 1 (revision-path 1 3)))
+               (status+code (get! g 1 (revision-path 1 4)))
+               (answer-status (get! g 1 (revision-path 1 5)))))))))
+
+;;; Reads in every state
+
+(for-each
+ (lambda (state)
+   (test-equal (string-append "read: a " (sym->str state)
+                              " node is 200 with its state, its ETag and its newest snapshot's body; its revisions list and a revision's read are 200")
+     (let ((r (if (eq? state 'active) 2 3)))
+       (list 200 (tag r)
+             (node-json-in (sym->str state) 1 "note" "seed 2" "seed body 2" "text/markdown" r 5000
+                           (if (eq? state 'active) 5500 6000))
+             '((2 1) null) (list 200 "seed body")))
+     (attempt
+      (lambda ()
+        (with-rig "read-state.db"
+          (lambda (g)
+            (seed-state! g acct-a 1 "note" state)
+            (let ((a (get! g 1 (node-path 1)))
+                  (v (get! g 1 (revision-path 1 1))))
+              (list (answer-status a) (answer-header a "etag") (answer-json a)
+                    (revisions g "")
+                    (list (answer-status v) (member-of (answer-json v) "body"))))))))))
+ live-states)
+
+;;; The list's ?state=
+
+;; states-fixture! : Rig -> Void
+;; A's nodes 1 and 5 active, 2 and 6 archived, 3 and 7 trashed, 4 purged;
+;; B's 8 archived and 9 trashed.
+(define (states-fixture! g)
+  (for-each (lambda (n s) (seed-state! g acct-a n "note" s))
+            '(1 2 3 4 5 6 7) '(active archived trashed trashed active archived trashed))
+  (seed-state! g acct-b 8 "note" 'archived)
+  (seed-state! g acct-b 9 "note" 'trashed)
+  (run-write (rig-store g) (lambda (tx) (purge-node! tx (nid 4) acct-a 3 6500))))
+
+(define (listed g query)
+  (map (lambda (j) (list (id-of j) (member-of j "state")))
+       (items (get! g 1 (string-append "/v1/nodes" query)))))
+
+(test-equal "list: by default and with ?state=active the active nodes; ?state=archived and ?state=trashed theirs; each node under one state, each item showing it; a purged node and B's under none (G8)"
+  (list (list (list (nid-text 1) "active") (list (nid-text 5) "active"))
+        (list (list (nid-text 1) "active") (list (nid-text 5) "active"))
+        (list (list (nid-text 2) "archived") (list (nid-text 6) "archived"))
+        (list (list (nid-text 3) "trashed") (list (nid-text 7) "trashed")))
+  (attempt
+   (lambda ()
+     (with-rig "list-states.db"
+       (lambda (g)
+         (states-fixture! g)
+         (list (listed g "") (listed g "?state=active") (listed g "?state=archived")
+               (listed g "?state=trashed")))))))
+
+(test-equal "list: within ?state=archived, pages of 3 cover its 8 nodes once each, by id rising, with after and next as without a state; an after that is no archived node's id starts past it"
+  (list (list 3 (nid-text 14) (nid-text 14)) (list 3 (nid-text 20) (nid-text 20))
+        (list 2 'null (nid-text 24)) (list 2 (nid-text 14) (nid-text 14)))
+  (attempt
+   (lambda ()
+     (with-rig "list-state-pages.db"
+       (lambda (g)
+         (run-write (rig-store g)
+                    (lambda (tx)
+                      (let loop ((n 10))
+                        (when (<= n 25)
+                          (insert-node! tx (nid n) acct-a "note" "t" "b" "text/plain" "{}" 5000)
+                          (when (even? n) (set-node-state! tx (nid n) acct-a 1 "archived" "archive" 5100))
+                          (loop (+ n 1))))))
+         (list (page g "?state=archived&limit=3")
+               (page g (string-append "?state=archived&limit=3&after=" (nid-text 14)))
+               (page g (string-append "?state=archived&limit=3&after=" (nid-text 20)))
+               (page g (string-append "?state=archived&limit=2&after=" (nid-text 11)))))))))
+
+(for-each
+ (lambda (q)
+   (test-equal (string-append "list: ?" q " is a 400 invalid_request, no job")
+     '(400 "invalid_request" 0)
+     (attempt
+      (lambda ()
+        (with-rig "list-bad-state.db"
+          (lambda (g)
+            (let ((a (get! g 1 (string-append "/v1/nodes?" q))))
+              (append (status+code a) (list ((rig-jobs g)))))))))))
+ '("state=purged" "state=" "state=Active" "state=ARCHIVED" "state=deleted" "state=%20active"
+   "state=active&state=archived" "state=trashed&state=trashed"))
+
+;;; The five routes' preconditions, ids and bodies
+
+;; from-state : Symbol -> Symbol     a state from which EVENT is allowed
+(define (from-state event)
+  (case event ((archive trash) 'active) ((unarchive) 'archived) (else 'trashed)))
+
+(for-each
+ (lambda (event)
+   (test-equal (string-append "precondition: " (sym->str event) " with no If-Match is 428 precondition_required, no job")
+     '(428 "precondition_required" 0)
+     (attempt
+      (lambda ()
+        (with-rig "lc-none.db"
+          (lambda (g)
+            (seed-node! g acct-a 1 "note")
+            (let ((a (send-event g event 1 (list (key-h 1)))))
+              (append (status+code a) (list ((rig-jobs g))))))))))
+   (for-each
+    (lambda (bad)
+      (test-equal (string-append "precondition: " (sym->str event) " with " (car bad)
+                                 " is 400 invalid_request, no job")
+        '(400 "invalid_request" 0)
+        (attempt
+         (lambda ()
+           (with-rig "lc-bad-pre.db"
+             (lambda (g)
+               (seed-node! g acct-a 1 "note")
+               (let ((a (send-event g event 1 (cons (key-h 1) (cdr bad)))))
+                 (append (status+code a) (list ((rig-jobs g)))))))))))
+    (list (list "If-None-Match: *" none-match)
+          (list "both headers" (match-h 1) none-match)
+          (list "If-Match: *" (cons "If-Match" "*"))
+          (list "a weak tag" (cons "If-Match" "W/\"1\""))
+          (list "a list in If-Match" (cons "If-Match" "\"1\", \"2\""))
+          (list "If-Match twice" (match-h 1) (match-h 1))
+          (list "a tag of 0" (cons "If-Match" "\"0\""))))
+   (test-equal (string-append "order: " (sym->str event)
+                              " on a bad id with no precondition is the 400; with an unknown key a bad id is still the 400 and no precondition the 428, with no job")
+     '((400 "invalid_request") (400 "invalid_request") (428 "precondition_required") 0)
+     (attempt
+      (lambda ()
+        (with-rig "lc-order.db"
+          (lambda (g)
+            (let* ((t (event-target event (node-path-of v4-text)))
+                   (a ((rig-call g) (car t) (cdr t) (list (key-h 1))))
+                   (b ((rig-call g) (car t) (cdr t) (list (key-h 9) (match-h 1))))
+                   (c (send-event g event 1 (list (key-h 9)))))
+              (list (status+code a) (status+code b) (status+code c) ((rig-jobs g)))))))))
+   (test-equal (string-append "body: " (sym->str event)
+                               " reads no body and no Content-Type: text/plain, or JSON that does not parse, is answered as with none")
+     (let* ((s (from-state event))
+            (entry (assq event (cdr (assq s lifecycle-answers))))
+            (r (if (eq? s 'active) 2 3)))
+       (list (expected-cell s r entry) (expected-cell s r entry)))
+     (attempt
+      (lambda ()
+        (with-rig "lc-body.db"
+          (lambda (g)
+            (let* ((r1 (seed-state! g acct-a 1 "note" (from-state event)))
+                   (r2 (seed-state! g acct-a 2 "note" (from-state event)))
+                   (a (send-event g event 1
+                                  (list (key-h 1) (match-h r1) (cons "Content-Type" "text/plain"))
+                                  "not json at all"))
+                   (b (send-event g event 2 (list (key-h 1) (match-h r2) json-type) "{nope")))
+              (list (cell-at g 1 a) (cell-at g 2 b)))))))))
+ events)
+
+(test-equal "id: in capitals, a state change and a purge find node 1; the change answers its id in lower case"
+  (list (list 200 (nid-text 1)) (list 200 (nid-text 1)) 204)
+  (attempt
+   (lambda ()
+     (with-rig "lc-upper.db"
+       (lambda (g)
+         (seed-node! g acct-a 1 "note")
+         (let* ((up (node-path-of (string-upcase (nid-text 1))))
+                (send (lambda (event rev)
+                        (let ((t (event-target event up)))
+                          ((rig-call g) (car t) (cdr t) (list (key-h 1) (match-h rev))))))
+                (a (send 'archive 1))
+                (b (send 'trash 2))
+                (c (send 'purge 3)))
+           (list (list (answer-status a) (id-of (answer-json a)))
+                 (list (answer-status b) (id-of (answer-json b)))
+                 (answer-status c))))))))
+
+;;; States and migration 4
+
+;; state-check-names : String -> (U (Listof String) #f)
+;; The quoted names in STATEMENT's "state IN ('a','b',...)", in order; #f
+;; when it has none.
+(define (state-check-names statement)
+  (let* ((key "state IN (")
+         (n (string-length statement))
+         (k (string-length key))
+         (start (let loop ((i 0))
+                  (cond ((> (+ i k) n) #f)
+                        ((string=? (substring statement i (+ i k)) key) (+ i k))
+                        (else (loop (+ i 1)))))))
+    (and start
+         (let loop ((i start) (names '()))
+           (let ((c (string-ref statement i)))
+             (cond ((char=? c #\)) (reverse names))
+                   ((char=? c #\')
+                    (let close ((j (+ i 1)))
+                      (if (char=? (string-ref statement j) #\')
+                          (loop (+ j 1) (cons (substring statement (+ i 1) j) names))
+                          (close (+ j 1)))))
+                   (else (loop (+ i 1) names))))))))
+
+(test-equal "states: (techo nodes)' node-states are the names in migration 4's CHECK, in its order"
+  (map symbol->string node-states)
+  (attempt
+   (lambda ()
+     (let ((statements (caddr (assv 4 migrations))))
+       (and (= (length statements) 1) (state-check-names (car statements)))))))
+
 ;;; A job closes over plain data; no title or body leaves in a log line
 
 ;; req-like? : Any -> Boolean     a request, or a member of a parsed JSON object
@@ -1615,6 +2304,51 @@
                          '("secret-title-7" "secret-title-8" "secret-title-9"))
                  (exists (lambda (s) (contains? text s))
                          '("secret-body-7" "secret-body-8" "secret-body-9")))))))))
+
+(test-equal "job: a state change's job and a purge's hold plain data: no request, no parsed JSON"
+  '(200 #f 204 #f)
+  (attempt
+   (lambda ()
+     (with-rig "job-lifecycle.db"
+       (lambda (g)
+         (let* ((r (seed-state! g acct-a 1 "note" 'active))
+                (a (lifecycle! g 1 1 'trash r))
+                (ja ((rig-job g)))
+                (b (lifecycle! g 1 1 'purge (+ r 1)))
+                (jb ((rig-job g))))
+           (list (answer-status a) (reaches? ja req-like?)
+                 (answer-status b) (reaches? jb req-like?))))))))
+
+(test-equal "log: each state change's line, and a purge's, names its route and the account and holds no title and no body"
+  (list '(200 200 200 200 200 204) 6 #t #t #f #f)
+  (attempt
+   (lambda ()
+     (with-rig "log-lifecycle.db"
+       (lambda (g)
+         (run-write (rig-store g)
+                    (lambda (tx) (insert-node! tx (nid 1) acct-a "note" "secret-title-4" "secret-body-4"
+                                               "text/plain" "{}" 5000)))
+         (let* ((as (in-order (lambda (step) (lifecycle! g 1 1 (car step) (cdr step)))
+                              '((archive . 1) (unarchive . 2) (trash . 3) (untrash . 4) (trash . 5)
+                                (purge . 6))))
+                (lines ((rig-lines g)))
+                (text (apply string-append lines)))
+           (list (map answer-status as) (length lines)
+                 (for-all (lambda (l) (contains? l (string-append "account=" (id->string acct-a))))
+                          lines)
+                 (equal? (map (lambda (l) (contains? l "method=DELETE")) lines) '(#f #f #f #f #f #t))
+                 (contains? text "secret-title-4") (contains? text "secret-body-4"))))))))
+
+(test-equal "H20: num is in no state change's answer"
+  '((200 #f) (200 #f))
+  (attempt
+   (lambda ()
+     (with-rig "h20-lifecycle.db"
+       (lambda (g)
+         (seed-node! g acct-a 1 "note")
+         (let* ((a (lifecycle! g 1 1 'archive 1))
+                (b (lifecycle! g 1 1 'unarchive 2)))
+           (map (lambda (x) (list (answer-status x) (contains? (answer-body x) "num"))) (list a b))))))))
 
 (test-end "node-routes")
 

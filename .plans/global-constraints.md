@@ -56,9 +56,16 @@ disagree, the record wins and this file gets fixed.
 
 ## Data
 
-- **Every change to a node bumps its revision and appends a snapshot,** in one
-  transaction (ADR-0004).
-- **History is append-only.** A restore is a new revision (ADR-0004).
+- **Every change to a node bumps its revision,** and a change of content appends
+  a snapshot, in one transaction. A change of state appends none (ADR-0004,
+  amended 2026-11-25).
+- **History is append-only,** but for a purge, which removes a node's. A restore
+  is a new revision (ADR-0004, amended).
+- **A node's content is its newest snapshot's** (ADR-0004, amended).
+- **A purged node's row stays, and no query that answers a client reads it.**
+  Its id is never used again (ADR-0004, amended).
+- **Stale is answered before the state, and the state before the kind,** by one
+  pure function (ADR-0007, amended 2026-11-25).
 - **Every change gets the owner's next sequence number,** in the same transaction
   (ADR-0004).
 - **The server never interprets or merges a body** (ADR-0005).
@@ -75,6 +82,8 @@ disagree, the record wins and this file gets fixed.
 - **A node's kind never changes** (ADR-0003, amended).
 - **A body is kept once, in its snapshot.** A node's row holds none (ADR-0004,
   amended).
+- **A state change answers no body and reads none** (ADR-0002, amended
+  2026-11-25).
 - **A node's integer key never leaves the database** (ADR-0004, amended).
 - **A large column is its table's last** (ADR-0004, amended; traps.md).
 - **No raise in a node's job carries a title or a body:** a job's raise is logged
@@ -101,7 +110,9 @@ disagree, the record wins and this file gets fixed.
 - **A 503 from the database is a "no". A 500 or no answer to a write is a "maybe"**
   (ADR-0008, ADR-0013).
 - **Readers stop before the writer** (ADR-0013).
-- **WAL mode, foreign keys on, a busy timeout set** (ADR-0008, ADR-0009). `migrate`'s
+- **WAL mode, foreign keys on, a busy timeout set** (ADR-0008, ADR-0009). A
+  connection that writes limits the `-wal` to 16 MiB and has `secure_delete` on
+  (ADR-0008 and ADR-0004, amended 2026-11-26). `migrate`'s
   connection alone has foreign keys off, and checks them before each commit
   (ADR-0012).
 - **A connection is opened with `open-techo-db`,** where the settings live once

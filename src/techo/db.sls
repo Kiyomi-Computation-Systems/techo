@@ -14,7 +14,7 @@
 ;;; The connection belongs to the thread that made the shell (chez-sqlite3,
 ;;; ADR-0010); a shell is made and used in one thread.
 (library (techo db)
-  (export busy-timeout-ms open-techo-db read-db-facts
+  (export busy-timeout-ms wal-size-limit open-techo-db read-db-facts
           make-shell shell-database perform!
           migrate! check-db)
   (import (rnrs)
@@ -26,11 +26,22 @@
   ;; How long a connection waits for another's lock before it is told busy.
   (define busy-timeout-ms 5000)
 
+  ;; wal-size-limit : Natural
+  ;; The most bytes the write-ahead log keeps after a checkpoint: SQLite
+  ;; truncates a bigger one to this (PRAGMA journal_size_limit). A purge of a
+  ;; node with much history writes much through the log; this brings the
+  ;; file back. 16 MiB, a few of the largest writes.
+  (define wal-size-limit 16777216)
+
   ;; open-techo-db : (case-> (String Symbol -> Database)
   ;;                         (String Symbol Natural -> Database))
   ;; MODE is 'read-write, 'read-only or 'migrate; the optional third argument
   ;; is the busy timeout in ms. Sets the busy timeout, synchronous full and
-  ;; foreign keys: on, but off for 'migrate (ADR-0012). Sets no journal mode.
+  ;; foreign keys: on, but off for 'migrate (ADR-0012). On a connection that
+  ;; writes ('read-write, 'migrate) it also sets journal_size_limit to
+  ;; wal-size-limit, and secure_delete on: a freed page is written as zeros,
+  ;; which is what makes a purge final in the file, whatever the SQLite's
+  ;; build says. Sets no journal mode.
   ;; 'read-only never creates the file; 'migrate creates it; 'read-write
   ;; does not.
   (define open-techo-db
@@ -43,10 +54,16 @@
                      ((migrate) 'create)
                      (else (assertion-violation 'open-techo-db
                                                 "not a mode" mode)))))
-         (open-database path flag
-                        (list (cons 'busy-timeout timeout-ms)
-                              (cons 'synchronous 'full)
-                              (cons 'foreign-keys (not (eq? mode 'migrate)))))))))
+         (let ((db (open-database path flag
+                                  (list (cons 'busy-timeout timeout-ms)
+                                        (cons 'synchronous 'full)
+                                        (cons 'foreign-keys (not (eq? mode 'migrate)))))))
+           (unless (eq? mode 'read-only)
+             (guard (e (#t (close-database! db) (raise e)))
+               (execute! db "PRAGMA secure_delete = ON")
+               (execute! db (string-append "PRAGMA journal_size_limit = "
+                                           (number->string wal-size-limit)))))
+           db)))))
 
   ;; read-db-facts : Database -> DbFacts
   ;; DbFacts is (List Integer Integer Natural Symbol): application_id,

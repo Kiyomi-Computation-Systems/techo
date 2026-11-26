@@ -72,3 +72,35 @@ Plan: [slice 4](../2026-11-25-slice-4-nodes.md)
 - A node written 2^53 times can never be written again: no `If-Match` names its
   next revision. Not guarded.
 - The lifecycle (archive, trash, purge) is slice 4b.
+
+## Amendment, 2026-11-25: a state change, and a purge
+
+Status: accepted (owner, 2026-11-25: "i approve L1 - 10"; L11 on 2026-11-26)
+Plan: [slice 4b](../2026-11-25-slice-4b-node-lifecycle.md)
+
+1. **A state change bumps the revision and writes no snapshot.** Archive,
+   unarchive, trash, untrash and purge each take the owner's next sequence
+   number. So "every write appends a full snapshot" reads: every write of
+   content does.
+2. **A node's body is its newest snapshot's,** not the snapshot at its revision.
+   This replaces point 7's second sentence above.
+3. **A purge deletes the node's snapshots and empties its row,** in one
+   transaction. It is the one thing that removes history. The row stays, so the
+   id is never used again by anyone, and the integer key is never reused.
+4. **A purge's change row is the tombstone.** No change row for the node follows
+   it.
+
+**Consequences**
+
+- A node's revisions list has gaps where its state changed. The feed has every
+  number.
+- A purge writes every freed page as zeros: about 2 ms a MiB of history, with
+  the writer held. Through the real route: 0.45 s for 200 MiB and 0.73 s for
+  400 MiB on a quiet disk, 1.4 s for 200 MiB on a busy one. Accepted (L11).
+  Nothing caps a node's history: past the 10 s deadline (about 4.5 GiB quiet,
+  1.5 GiB busy) the purge answers 504 while its job runs on.
+- `open-techo-db` turns `secure_delete` on itself, so the zeros do not depend on
+  how SQLite was built. The purged text can stay in the `-wal` until the next
+  write. The file does not shrink.
+- Reads are not held: 3 ms at worst during a 200 MiB purge.
+- A purge leaves the row's times, the earlier change rows, and backups.

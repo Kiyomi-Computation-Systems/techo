@@ -15,6 +15,7 @@ whole milliseconds since 1970, UTC; JSON as text with a `json_valid` check; a
 | 1 | techo's database | Sets `application_id` to `0x74656368`. No table. |
 | 2 | accounts and api keys | Creates `accounts`, `api_keys` and the index `api_keys_account`. |
 | 3 | nodes, revisions and changes | Creates `nodes`, `revisions`, `changes` and the index `nodes_owner`. |
+| 4 | a node's state | Adds `nodes.state`. Every node there is becomes `active`. |
 
 ## The tables to come
 
@@ -64,7 +65,7 @@ CREATE INDEX api_keys_account ON api_keys(account, id);
 - **Decided:** `last_used` is set only by a request that writes, at most once a day.
 - **Open:** the login rate limit's counters. Slice 3b: in memory.
 
-### nodes (shipped in migration 3; ADR-0003, ADR-0004 amended)
+### nodes (shipped in migration 3, `state` in 4; ADR-0003, ADR-0004 amended)
 
 ```sql
 CREATE TABLE nodes (
@@ -78,18 +79,27 @@ CREATE TABLE nodes (
   props        TEXT    NOT NULL CHECK (json_valid(props)),
   revision     INTEGER NOT NULL CHECK (revision >= 1),
   created      INTEGER NOT NULL,
-  updated      INTEGER NOT NULL
+  updated      INTEGER NOT NULL,
+  state        TEXT    NOT NULL DEFAULT 'active'      -- migration 4, by ADD COLUMN
+               CHECK (state IN ('active','archived','trashed','purged'))
 ) STRICT;
 CREATE INDEX nodes_owner ON nodes(owner, id);
 ```
 
-- **Decided:** no body here. A node's body is its snapshot's at `revision`.
+- **Decided:** no body here. A node's body is its newest snapshot's. A change of
+  state bumps `revision` and writes no snapshot, so the two numbers can differ.
+- **Decided:** a purged node keeps its row, emptied: title `''`, props `'{}'`,
+  content type `application/octet-stream`, no snapshots. Its id and `num` are
+  never used again. No query that answers a client reads it.
+- **Decided:** `state` has a `CHECK`, as `kind` has. A fifth state would mean
+  rebuilding the table.
+- **Not built:** an index `(owner, state, id)`. A list of a rare state reads the
+  account's rows: 10 ms for 10 trashed among 100,000.
 - **Decided:** `num` is for a search index to point at, and never leaves the
   database. Every lookup is by `id`.
-- **To come, each by `ADD COLUMN`:** `state` (4b), `parent` (5), tags (7, or a
+- **To come, each by `ADD COLUMN`:** `parent` (5), tags (7, or a
   table). The table has no large column: at worst a title of 4,000 bytes puts later
   columns on one more page, not a walk of many.
-- **Open (4b):** the lifecycle's states. Whether a purged node keeps a row.
 - **Open (slice 5):** how a move is kept from making a loop.
 - **Open (slice 6):** each kind's props.
 
@@ -109,8 +119,8 @@ CREATE TABLE revisions (
 ) STRICT;
 ```
 
-- **Decided:** a full snapshot for every write, append-only, and the only copy of
-  a body. The body is the last column: one before others costs a walk of its
+- **Decided:** a full snapshot for every write of content, and the only copy of
+  a body. Append-only, but for a purge, which deletes a node's. The body is the last column: one before others costs a walk of its
   pages to read them.
 - **Decided:** a plain table. `WITHOUT ROWID` took 4,670 bytes a snapshot of a
   2,000-character body against 4,135, and was slower to read.
@@ -134,7 +144,9 @@ CREATE TABLE changes (
 - **Decided:** each owner has its own sequence, and a change gets the next number in
   the write's own transaction.
 - **Decided:** `op` has no `CHECK`: SQLite cannot change one. Today's values are
-  `create`, `update` and `restore`; the code's list is the truth.
+  `create`, `update`, `restore`, `archive`, `unarchive`, `trash`, `untrash` and
+  `purge`; the code's list is the truth. A `purge` row is the node's tombstone,
+  and its last row.
 
 ### links (slice 5; ADR-0003)
 

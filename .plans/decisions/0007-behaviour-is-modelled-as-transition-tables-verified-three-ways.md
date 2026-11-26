@@ -41,3 +41,18 @@ A key's lifecycle never ends: a revoked key is still checked and still refused.
 - **`machine-problems` takes `#f` for its terminal states to mean "no end, on
   purpose".** The dead-end check is skipped; every other check runs.
 - **An empty list is still checked,** so forgetting the terminals is still caught.
+
+## Amendment, 2026-11-25: the node's lifecycle
+
+Status: accepted (owner, 2026-11-25, as slice 4b's L1, L2, L5 and L8)
+Plan: [slice 4b](../2026-11-25-slice-4b-node-lifecycle.md)
+
+- **The states are `active`, `archived`, `trashed` and `purged`.** `purged` is
+  the one end, and no client sees it.
+- **Archive and trash can be undone. A purge cannot.** Untrash always lands on
+  `active`. A purge is allowed only from `trashed`.
+- **A trashed node takes no write.** An archived one does.
+- The table is [machines/lifecycle.md](../machines/lifecycle.md).
+- **Two tables answer one request through one pure function,** which takes what
+  was found, the state and the event. Stale is answered before the state, and
+  the state before the kind.

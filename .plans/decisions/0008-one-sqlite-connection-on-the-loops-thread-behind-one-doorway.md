@@ -113,3 +113,13 @@ Status: accepted (owner, 2026-11-23, answering the slice 2b plan)
   of the last read-write connection checkpoints (probed).
 - Points 3, 4, 6 and 7 stand. Point 7, the password hash on the loop, is slice 3's to
   revisit.
+
+## Amendment, 2026-11-26: the write-ahead log is kept small
+
+Status: accepted (owner, 2026-11-26, as slice 4b's L11)
+Plan: [slice 4b](../2026-11-25-slice-4b-node-lifecycle.md)
+
+- **A connection that writes sets `journal_size_limit` to 16 MiB.** SQLite never
+  shrinks the `-wal` file otherwise, and a purge can grow it by the size of the
+  history it removes. Probed: 211 MB after a purge, 4 MiB (the probe's limit)
+  after the next checkpoint and write.

@@ -2,13 +2,18 @@
 ;;; (techo nodes): slice 4's pure core. A node's id (D2); a revision, in a
 ;;; path and as the ETag (D4); If-Match and If-None-Match (D4); the content
 ;;; a write carries, and its limits (D6, D7); and the versioned write as a
-;;; table (D5). Pure: no database, no circuit, no clock (ADR-0007).
+;;; table (D5). Slice 4b's lifecycle: a node's states, the list's ?state=,
+;;; the feed's ops, the lifecycle as a table, and node-command, the one pure
+;;; function by which the two tables answer a request. Pure: no database, no
+;;; circuit, no clock (ADR-0007).
 ;;;
 ;;; The table is over what a write's job found: none (no node, or another
 ;;; account's), match (the node, at the revision given) and differ (the node
 ;;; at another revision, or a create's id in use). A state here has no data,
 ;;; so write-step takes and answers kinds. Every Found is a start, and no
-;;; state is an end.
+;;; state is an end. The lifecycle's table is over the states active,
+;;; archived, trashed and purged, a symbol each (the store keeps their
+;;; names): active is its start, and purged its one end.
 ;;;
 ;;; Nothing here raises with a title or a body: parse-content never raises,
 ;;; and every other raise carries a symbol or a number at most.
@@ -18,7 +23,11 @@
           content? content-kind content-title content-body content-content-type content-props
           parse-content
           found found-for-create write-event
-          write-rows write-cant-happen write-step write-document)
+          write-rows write-cant-happen write-step write-document
+          node-states node-state->string string->node-state parse-state-param
+          lifecycle-events event-op
+          lifecycle-rows lifecycle-cant-happen lifecycle-step lifecycle-document
+          node-command)
   (import (rnrs)
           (techo machine)
           (only (unique-id) string->uuid uuid-version uuid->bytevector bytevector->uuid
@@ -403,4 +412,213 @@
                                                (symbol->string (cadr c))
                                                (caddr c))))
                  write-cant-happen))))
+  ;;; The lifecycle (slice 4b: L1, L2, L5, L8, L10)
+
+  ;; node-states : (Listof Symbol)
+  ;; A node's four states. purged is the one end, and no client sees it.
+  (define node-states '(active archived trashed purged))
+
+  ;; The states a list may be asked for, and a found node may be in.
+  (define live-states '(active archived trashed))
+
+  ;; state-named : Any (Listof Symbol) -> (U Symbol #f)
+  ;; The state among STATES whose name is the string X; #f for anything else.
+  (define (state-named x states)
+    (and (string? x) (find (lambda (s) (string=? (symbol->string s) x)) states)))
+
+  ;; node-state->string : Symbol -> String
+  ;; The state's name, as the store keeps it. An assertion violation, with
+  ;; no irritant, for anything not in node-states.
+  (define (node-state->string state)
+    (unless (and (symbol? state) (memq state node-states))
+      (assertion-violation 'node-state->string "not a node's state"))
+    (symbol->string state))
+
+  ;; string->node-state : String -> Symbol
+  ;; The state the store's name names, exactly: no other case, no spaces. An
+  ;; assertion violation, with no irritant, for anything else.
+  (define (string->node-state x)
+    (or (state-named x node-states)
+        (assertion-violation 'string->node-state "not a node's state's name")))
+
+  ;; parse-state-param : (U String #f) -> (U Symbol 'invalid)
+  ;; The list's ?state=: #f (not given) is active; "active", "archived" and
+  ;; "trashed" are themselves. 'invalid for anything else: "purged", "",
+  ;; another case, what is no string. Never raises.
+  (define (parse-state-param x)
+    (cond ((not x) 'active)
+          ((state-named x live-states))
+          (else 'invalid)))
+
+  ;; lifecycle-events : (Listof Symbol)
+  ;; The five events a state change sends, each its own route.
+  (define lifecycle-events '(archive unarchive trash untrash purge))
+
+  ;; event-op : Symbol -> String
+  ;; A lifecycle event's op in the change feed: its own name. An assertion
+  ;; violation, with no irritant, for anything not in lifecycle-events.
+  (define (event-op event)
+    (unless (and (symbol? event) (memq event lifecycle-events))
+      (assertion-violation 'event-op "not a lifecycle event"))
+    (symbol->string event))
+
+  ;; lifecycle-rows : (Listof Row)
+  ;; The eighteen rows, by state and then by event, as the plan's table
+  ;; reads. Row is (state event next command update), as (techo machine)
+  ;; takes it. write is a replace or a revision's restore. A refusal and
+  ;; allow leave the state; untrash always lands on active (L2); a purge
+  ;; is only from trashed (L8). A state here has no data.
+  (define lifecycle-rows
+    (list
+     (list 'active 'archive 'archived 'set-state same)
+     (list 'active 'unarchive 'active 'refuse-wrong-state same)
+     (list 'active 'trash 'trashed 'set-state same)
+     (list 'active 'untrash 'active 'refuse-wrong-state same)
+     (list 'active 'purge 'active 'refuse-wrong-state same)
+     (list 'active 'write 'active 'allow same)
+     (list 'archived 'archive 'archived 'refuse-wrong-state same)
+     (list 'archived 'unarchive 'active 'set-state same)
+     (list 'archived 'trash 'trashed 'set-state same)
+     (list 'archived 'untrash 'archived 'refuse-wrong-state same)
+     (list 'archived 'purge 'archived 'refuse-wrong-state same)
+     (list 'archived 'write 'archived 'allow same)
+     (list 'trashed 'archive 'trashed 'refuse-wrong-state same)
+     (list 'trashed 'unarchive 'trashed 'refuse-wrong-state same)
+     (list 'trashed 'trash 'trashed 'refuse-wrong-state same)
+     (list 'trashed 'untrash 'active 'set-state same)
+     (list 'trashed 'purge 'purged 'purge same)
+     (list 'trashed 'write 'trashed 'refuse-wrong-state same)))
+
+  ;; lifecycle-cant-happen : (Listof (List StateKind EventKind String))
+  ;; purged's six cells, each with its reason. purged is the end: it has no row.
+  (define lifecycle-cant-happen
+    '((purged archive "a purged node is found as none, so its state is never stepped")
+      (purged unarchive "a purged node is found as none, so its state is never stepped")
+      (purged trash "a purged node is found as none, so its state is never stepped")
+      (purged untrash "a purged node is found as none, so its state is never stepped")
+      (purged purge "a purged node is found as none, so its state is never stepped")
+      (purged write "a purged node is found as none, so its state is never stepped")))
+
+  (define lifecycle-machine (make-machine lifecycle-rows))
+
+  ;; lifecycle-step : Symbol Symbol -> (values Symbol Symbol)
+  ;; The state and the event to the next state and the command. Commands:
+  ;; set-state purge allow refuse-wrong-state. An assertion violation, who
+  ;; 'machine-step, its irritants the state and the event, for a pair with
+  ;; no row: purged's six, and what is no state or event of the table.
+  (define (lifecycle-step state event)
+    (let-values (((next command)
+                  (machine-step lifecycle-machine (cons state #f) (cons event #f))))
+      (values (car next) (car command))))
+
+  ;;; How the two tables answer one request (the plan's review, blocker 2)
+
+  (define write-events '(create replace replace-other-kind restore restore-unknown))
+
+  ;; write-cant? : Found Symbol -> Boolean     a cell D5 says cannot happen
+  (define (write-cant? found-kind event)
+    (exists (lambda (c) (and (eq? (car c) found-kind) (eq? (cadr c) event)))
+            write-cant-happen))
+
+  ;; write-command : Found EventKind -> Symbol     D5's command for the cell
+  (define (write-command found-kind event)
+    (let-values (((next command) (write-step found-kind event))) command))
+
+  ;; node-command : Found (U Symbol #f) Symbol -> (values Symbol (U Symbol #f))
+  ;; What the job found (none, match, differ, as found answers), the node's
+  ;; state (#f when none was found), and the request's event: one of D5's
+  ;; five or one of lifecycle-events. Answers the command to perform and,
+  ;; for set-state only, the state to store; else #f. In this order:
+  ;;   none    a D5 event answers write-step's command (insert, refuse-404);
+  ;;           a lifecycle event answers refuse-404. The state is not looked at.
+  ;;   differ  refuse-412, whatever the state: stale comes before the state.
+  ;;   match   the lifecycle's step, D5's four events but create as its
+  ;;           write. refuse-wrong-state is answered as it is, before the
+  ;;           kind and before a missing snapshot; allow answers write-step's
+  ;;           command for match (write, copy, refuse-409, refuse-404);
+  ;;           set-state answers the next state too; purge answers purge.
+  ;; Commands: insert write copy set-state purge refuse-404 refuse-409
+  ;; refuse-412 refuse-wrong-state. An assertion violation, who
+  ;; 'node-command, its irritants the Found, the state and the event, for a
+  ;; cell that cannot happen: an event of neither table; a Found of none of
+  ;; the three; D5's three (none with replace-other-kind or restore, match
+  ;; with create), whatever the state; match with a state not active,
+  ;; archived or trashed (a purged node is found as none).
+  (define (node-command found-kind state event)
+    (define (cannot) (assertion-violation 'node-command "this cell cannot happen"
+                                          found-kind state event))
+    (let ((life? (and (memq event lifecycle-events) #t)))
+      (unless (or life? (memq event write-events)) (cannot))
+      (case found-kind
+        ((none)
+         (cond (life? (values 'refuse-404 #f))
+               ((write-cant? 'none event) (cannot))
+               (else (values (write-command 'none event) #f))))
+        ((differ) (values 'refuse-412 #f))
+        ((match)
+         (unless (memq state live-states) (cannot))
+         (when (and (not life?) (write-cant? 'match event)) (cannot))
+         (let-values (((next command) (lifecycle-step state (if life? event 'write))))
+           (case command
+             ((allow) (values (write-command 'match event) #f))
+             ((set-state) (values 'set-state next))
+             ((purge refuse-wrong-state) (values command #f))
+             (else (cannot)))))
+        (else (cannot)))))
+
+  ;;; The lifecycle's document
+
+  (define lifecycle-columns '(archive unarchive trash untrash purge write))
+
+  ;; lifecycle-cell : StateKind EventKind -> String
+  ;; The row's command, with "-> next, " before it when the state moves;
+  ;; "cannot happen"; or "no row", which no test passes.
+  (define (lifecycle-cell s e)
+    (cond ((find (lambda (r) (and (eq? (car r) s) (eq? (cadr r) e))) lifecycle-rows)
+           => (lambda (r)
+                (if (eq? (caddr r) s)
+                    (symbol->string (cadddr r))
+                    (string-append "-> " (symbol->string (caddr r)) ", "
+                                   (symbol->string (cadddr r))))))
+          ((find (lambda (c) (and (eq? (car c) s) (eq? (cadr c) e))) lifecycle-cant-happen)
+           "cannot happen")
+          (else "no row")))
+
+  ;; lifecycle-document : -> String
+  ;; The text of .plans/machines/lifecycle.md, rendered from the table: the
+  ;; diagram, each cell's answer, and why each can't-happen cell can't.
+  (define (lifecycle-document)
+    (string-append
+     "# The lifecycle machine\n\n"
+     "Generated from the table in `src/techo/nodes.sls`. Do not edit.\n"
+     "Regenerate with `scripts/guix-env make machines`; "
+     "a test fails when this file differs.\n\n"
+     "A node starts `active`, and `purged` is the one end. `write` is a replace or a\n"
+     "revision's restore. A refusal and `allow` leave the state.\n\n"
+     "One function, `node-command`, answers a request from this table and the write\n"
+     "machine's. It looks first at what the job found:\n\n"
+     "- `none`: the write machine's answer. A state change is a 404.\n"
+     "- `differ`: a 412, whatever the state. Stale comes before the state.\n"
+     "- `match`: this table. Its refusal comes before the kind and before a missing\n"
+     "  snapshot. After `allow`, the write machine answers.\n\n"
+     "A purged node is found as `none`, so it never reaches this table.\n\n"
+     "```mermaid\n"
+     (machine->mermaid lifecycle-machine)
+     "```\n\n"
+     "## The answer each cell names\n\n"
+     (table-line (cons "State" (map symbol->string lifecycle-columns)))
+     (rule-line (cons 'state lifecycle-columns))
+     (apply string-append
+            (map (lambda (s)
+                   (table-line (cons (symbol->string s)
+                                     (map (lambda (e) (lifecycle-cell s e)) lifecycle-columns))))
+                 node-states))
+     "\n## Why a cell cannot happen\n\n"
+     (table-line '("State" "On" "Why"))
+     (rule-line '(state on why))
+     (apply string-append
+            (map (lambda (c) (table-line (list (symbol->string (car c))
+                                               (symbol->string (cadr c))
+                                               (caddr c))))
+                 lifecycle-cant-happen))))
 )

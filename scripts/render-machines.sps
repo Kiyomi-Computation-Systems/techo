@@ -6,14 +6,16 @@
 ;;; with `key`, (key-document) renders D5's table, for .plans/machines/key.md;
 ;;; with `login`, (login-document) renders L1's table, for
 ;;; .plans/machines/login.md; with `write`, (write-document) renders slice 4's
-;;; D5 table, for .plans/machines/write.md. `make machines` writes the five
-;;; files, and tests/test-migrations.sps, tests/test-transaction.sps,
+;;; D5 table, for .plans/machines/write.md; with `lifecycle`,
+;;; (lifecycle-document) renders slice 4b's table, for
+;;; .plans/machines/lifecycle.md. `make machines` writes the six files, and
+;;; tests/test-migrations.sps, tests/test-transaction.sps,
 ;;; tests/test-keys.sps, tests/test-login.sps and tests/test-nodes.sps hold
 ;;; each to its function.
 (import (rnrs)
         (techo keys)
         (only (techo login) login-document)
-        (only (techo nodes) write-document)
+        (only (techo nodes) write-document lifecycle-document)
         (techo migrations)
         (techo transaction))
 
@@ -25,6 +27,8 @@
                   ((string=? which "key") (key-document))
                   ((string=? which "login") (login-document))
                   ((string=? which "write") (write-document))
+                  ((string=? which "lifecycle") (lifecycle-document))
                   (else (assertion-violation 'render-machines
-                          "name `migrate`, `doorway`, `key`, `login` or `write`" which))))
+                          "name `migrate`, `doorway`, `key`, `login`, `write` or `lifecycle`"
+                          which))))
 (flush-output-port (current-output-port))

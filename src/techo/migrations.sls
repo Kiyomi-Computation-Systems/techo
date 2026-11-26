@@ -124,7 +124,9 @@
   op       TEXT    NOT NULL,
   created  INTEGER NOT NULL,
   PRIMARY KEY (owner, seq)
-) STRICT, WITHOUT ROWID"))))
+) STRICT, WITHOUT ROWID"))
+          (list 4 "a node's state"
+                (list "ALTER TABLE nodes ADD COLUMN state TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active','archived','trashed','purged'))"))))
 
   ;; latest-version : (Listof Migration) -> Natural
   (define (latest-version ms)

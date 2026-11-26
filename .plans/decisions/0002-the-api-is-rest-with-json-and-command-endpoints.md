@@ -63,3 +63,15 @@ A node's revisions are listed newest first. Their `after` and `next` are revisio
 numbers, not ids, and the page starts below `after`. Every other rule of paging
 holds. Three codes join the error format: `precondition_failed` (412),
 `precondition_required` (428) and `kind_fixed` (409).
+
+## Amendment, 2026-11-25: slice 4b's routes
+
+Status: accepted (owner, 2026-11-25, as slice 4b's L3, L6 and L9)
+Plan: [slice 4b](../2026-11-25-slice-4b-node-lifecycle.md)
+
+- **Archive, unarchive, trash and untrash are `POST` commands** on the node.
+  They answer the node without its body.
+- **A purge is `DELETE` on the node,** with `If-Match`. It answers 204.
+- **The nodes list shows active nodes,** or one other state with `?state=`.
+- **One code more:** `wrong_state` (409), when the node's state does not allow
+  the request.

@@ -2,8 +2,8 @@
 ;;; The errors suite: D7's table of codes, each one's status and message,
 ;;; the &refusal condition, and the answer in RFC 9457's format that
 ;;; problem-res and status-problem-res make (slice 3a, task 3); 3b's codes,
-;;; and slice 4's three (its D10). A body is parsed with jsonparse and
-;;; compared as a value, never as a string.
+;;; slice 4's three (its D10), and slice 4b's wrong_state (its L9). A body is
+;;; parsed with jsonparse and compared as a value, never as a string.
 ;;;
 ;;; Everything that can raise is computed under `attempt`, and a raise comes
 ;;; out as a value the expectation never is.
@@ -34,11 +34,11 @@
 
 (test-begin "errors")
 
-(test-equal "codes: the eighteen, in status order"
+(test-equal "codes: the nineteen, in status order"
   '(invalid_json invalid_request unauthorized invalid_credentials forbidden not_found
-    method_not_allowed too_many_keys kind_fixed precondition_failed payload_too_large
-    unsupported_media_type precondition_required rate_limited internal unavailable timeout
-    error)
+    method_not_allowed too_many_keys kind_fixed wrong_state precondition_failed
+    payload_too_large unsupported_media_type precondition_required rate_limited internal
+    unavailable timeout error)
   error-codes)
 
 (test-assert "codes: no two share a name"
@@ -51,7 +51,10 @@
 (define three-b '(invalid_credentials too_many_keys rate_limited))
 ;; Slice 4's three: kind_fixed shares 409 with too_many_keys; 412 and 428 are theirs alone.
 (define four '(kind_fixed precondition_failed precondition_required))
-(define old-fixed (filter (lambda (c) (not (or (memq c three-b) (memq c four)))) fixed))
+;; Slice 4b's one: wrong_state shares 409 too, so a bare 409 never gets it.
+(define four-b '(wrong_state))
+(define old-fixed
+  (filter (lambda (c) (not (or (memq c three-b) (memq c four) (memq c four-b)))) fixed))
 
 (test-assert "status: every fixed code has one in 400 to 599"
   (for-all (lambda (c) (let ((s (attempt (lambda () (error-status c)))))
@@ -59,7 +62,7 @@
            fixed))
 
 (test-equal "status: the table, code by code"
-  '(400 400 401 401 403 404 405 409 409 412 413 415 428 429 500 503 504)
+  '(400 400 401 401 403 404 405 409 409 409 412 413 415 428 429 500 503 504)
   (attempt (lambda () (map error-status fixed))))
 
 (test-equal "status: the fallback has none" #f (attempt (lambda () (error-status 'error))))
@@ -95,6 +98,10 @@
     "A write needs If-Match, or If-None-Match: * to create.")
   (attempt (lambda () (map error-message four))))
 
+(test-equal "slice 4b code: wrong_state is a 409, and says the state does not allow it"
+  '((409) ("The node's state does not allow this request."))
+  (attempt (lambda () (list (map error-status four-b) (map error-message four-b)))))
+
 (test-equal "status: unknown code raises" 'assertion
   (raised-kind (lambda () (error-status 'nope))))
 (test-equal "message: unknown code raises" 'assertion
@@ -110,7 +117,7 @@
     internal unavailable timeout)
   (attempt (lambda () (map (lambda (c) (status->code (error-status c))) old-fixed))))
 
-(test-equal "status->code: a bare 401, 409 and 429 are not 3b's codes"
+(test-equal "status->code: a bare 401, 409 and 429 are not 3b's codes, nor 4's or 4b's 409"
   '(unauthorized error error)
   (map status->code '(401 409 429)))
 
@@ -246,6 +253,13 @@
       ("code" . "precondition_required")
       ("detail" . "A write needs If-Match, or If-None-Match: * to create."))))
   (map (lambda (c) (problem-summary (lambda () (problem-res c)))) four))
+
+(test-equal "problem-res: wrong_state, in the format"
+  '(409 "application/problem+json"
+    (("type" . "about:blank") ("title" . "Conflict") ("status" . 409)
+     ("code" . "wrong_state")
+     ("detail" . "The node's state does not allow this request.")))
+  (problem-summary (lambda () (problem-res 'wrong_state))))
 
 (test-equal "status-problem-res: a bare 412 and 428 answer slice 4's codes"
   '("precondition_failed" "precondition_required")

@@ -199,8 +199,8 @@
                  (ok-of (r (lambda (tx) (list (count-of tx "nodes") (count-of tx "revisions") (count-of tx "changes")))))
                  (ok-of (r (lambda (tx) (changes-of tx acct-b)))))))))))
 
-(test-equal "insert: node-head is (revision . kind), from the node alone"
-  '(ok (1 . "task"))
+(test-equal "insert: node-head is (revision kind state), from the node alone"
+  '(ok (1 "task" "active"))
   (attempt
    (lambda ()
      (with-store "head.db"
@@ -219,7 +219,7 @@
                (r (lambda (tx) (node-of-owner tx acct-a A1)))
                (r (lambda (tx) (snapshot-of tx acct-a A1 1)))
                (r (lambda (tx) (node-in-use? tx A1)))
-               (r (lambda (tx) (nodes-page tx acct-a #f 10)))
+               (r (lambda (tx) (nodes-page tx acct-a "active" #f 10)))
                (r (lambda (tx) (snapshots-page tx acct-a A1 #f 10)))
                (r (lambda (tx) (node-in-use? tx (nid 99))))))))))
 
@@ -231,7 +231,7 @@
         (list A1 2 acct-a "T2" "B2" "text/plain" "{\"a\":1}" 200)
         #t
         (list A1 3 acct-a "T3" "B3" "text/html" "{}" 300)
-        '(3 . "project"))
+        '(3 "project" "active"))
   (attempt
    (lambda ()
      (with-store "write.db"
@@ -348,7 +348,7 @@
 ;;; Another account's node
 
 (test-equal "owner: account B sees nothing of A's node, yet the id is in use"
-  '((ok #f) (ok #f) (ok #f) (ok #f) (ok ()) (ok ()) (ok #t) (ok (3 . "note")))
+  '((ok #f) (ok #f) (ok #f) (ok #f) (ok ()) (ok ()) (ok #t) (ok (3 "note" "active")))
   (attempt
    (lambda ()
      (with-store "owner.db"
@@ -361,7 +361,7 @@
                (r (lambda (tx) (node-of-owner tx acct-b A1)))
                (r (lambda (tx) (snapshot-of tx acct-b A1 1)))
                (r (lambda (tx) (snapshot-of tx acct-b A1 3)))
-               (r (lambda (tx) (nodes-page tx acct-b #f 10)))
+               (r (lambda (tx) (nodes-page tx acct-b "active" #f 10)))
                (r (lambda (tx) (snapshots-page tx acct-b A1 #f 10)))
                (r (lambda (tx) (node-in-use? tx A1)))
                (r (lambda (tx) (node-head tx acct-a A1)))))))))
@@ -389,15 +389,15 @@
               (set-up! tx)
               (for-each (lambda (n) (insert-node! tx (nid n) acct-a "note" "t" "body" "a/a" "{}" n)) '(5 1 3 2 6))
               (insert-node! tx (nid 4) acct-b "note" "t" "body" "a/a" "{}" 9)))
-         (let* ((p1 (ok-of (r (lambda (tx) (nodes-page tx acct-a #f 2)))))
-                (p2 (ok-of (r (lambda (tx) (nodes-page tx acct-a (node-id (cadr p1)) 2)))))
-                (p3 (ok-of (r (lambda (tx) (nodes-page tx acct-a (node-id (cadr p2)) 2)))))
-                (p4 (ok-of (r (lambda (tx) (nodes-page tx acct-a (node-id (car p3)) 2)))))
+         (let* ((p1 (ok-of (r (lambda (tx) (nodes-page tx acct-a "active" #f 2)))))
+                (p2 (ok-of (r (lambda (tx) (nodes-page tx acct-a "active" (node-id (cadr p1)) 2)))))
+                (p3 (ok-of (r (lambda (tx) (nodes-page tx acct-a "active" (node-id (cadr p2)) 2)))))
+                (p4 (ok-of (r (lambda (tx) (nodes-page tx acct-a "active" (node-id (car p3)) 2)))))
                 (all (append p1 p2 p3)))
            (list (node-ids all)
                  (map node-body all)
                  (map node-ids (list p1 p2 p3))
-                 (node-ids (ok-of (r (lambda (tx) (nodes-page tx acct-b #f 10)))))
+                 (node-ids (ok-of (r (lambda (tx) (nodes-page tx acct-b "active" #f 10)))))
                  p4))))))
   )
 
@@ -408,7 +408,7 @@
      (with-store "page-fields.db"
        (lambda (w r p)
          (w (lambda (tx) (set-up! tx) (insert-node! tx A1 acct-a "journal" "T" "body" "a/a" "{}" 7)))
-         (node->list (car (ok-of (r (lambda (tx) (nodes-page tx acct-a #f 5)))))))))))
+         (node->list (car (ok-of (r (lambda (tx) (nodes-page tx acct-a "active" #f 5)))))))))))
 
 (test-equal "snapshots-page: newest first, strictly falling, BEFORE exclusive, body #f, the owner's only"
   (list '(5 4) '(3 2) '(1) '(#f #f) '(5 4 3 2 1) '(4 3 2 1) '())
@@ -529,6 +529,260 @@
          (let ((n (ok-of (r (lambda (tx) (node-of-owner tx acct-a A1))))))
            (list (node-title n) (node-body n) (node-content-type n) (node-props n))))))))
 
+;;; State
+
+;; changed-nothing? : Tx (-> Any) -> (List Any Boolean)
+;; What THUNK raised or answered (as `caught`), and whether the three tables
+;; are as they were afterwards.
+(define (nothing-changes tx thunk)
+  (let* ((before (all-rows tx))
+         (c (caught thunk)))
+    (list c (equal? before (all-rows tx)))))
+
+;; The raised part of a `caught`, without the text: its tag and irritants.
+(define (raised-with c) (and (eq? (car c) 'raised) (list (car c) (cadr c))))
+
+;; lifecycle fixture: A's nodes 1 active, 2 archived, 3 trashed, 4 purged,
+;; 5 and 6 active; B's node 7 active. Times 10 up.
+(define (lc-set-up! tx)
+  (set-up! tx)
+  (for-each (lambda (n) (insert-node! tx (nid n) acct-a "note" (string-append "T" (number->string n)) (string-append "B" (number->string n)) "a/a" "{}" 10))
+            '(1 2 3 4 5 6))
+  (insert-node! tx (nid 7) acct-b "note" "T7" "B7" "a/a" "{}" 10)
+  (set-node-state! tx (nid 2) acct-a 1 "archived" "archive" 20)
+  (set-node-state! tx (nid 3) acct-a 1 "trashed" "trash" 20)
+  (set-node-state! tx (nid 4) acct-a 1 "trashed" "trash" 20)
+  (purge-node! tx (nid 4) acct-a 2 30))
+
+(test-equal "state: the body is the newest snapshot's when the node's revision is ahead of it, after a state change; the state is read"
+  (list (list A1 acct-a acct-a "note" "T2" "B2" "text/plain" "{\"a\":1}" 3 100 300 "archived")
+        "archived"
+        '(3 "note" "archived")
+        '(2 1)
+        #f
+        #t)
+  (attempt
+   (lambda ()
+     (with-store "newest.db"
+       (lambda (w r p)
+         (w (lambda (tx) (set-up! tx) (insert-node! tx A1 acct-a "note" "T1" "B1" "text/markdown" "{}" 100)))
+         (w (lambda (tx) (write-node! tx A1 acct-a 1 "T2" "B2" "text/plain" "{\"a\":1}" "update" 200)))
+         (w (lambda (tx) (set-node-state! tx A1 acct-a 2 "archived" "archive" 300)))
+         (let ((n (ok-of (r (lambda (tx) (node-of-owner tx acct-a A1))))))
+           (list (append (node->list n) (list (node-state n)))
+                 (node-state n)
+                 (ok-of (r (lambda (tx) (node-head tx acct-a A1))))
+                 (map snapshot-revision (ok-of (r (lambda (tx) (snapshots-page tx acct-a A1 #f 10)))))
+                 (ok-of (r (lambda (tx) (snapshot-exists? tx acct-a A1 3))))
+                 (string? (node-body n)))))))))
+
+(test-equal "set-node-state!: revision up by one, updated set, one change row with the op, no snapshot; the answer has the new state and no body; the rest of the row untouched"
+  (list (list A1 acct-a acct-a "task" "T1" #f "text/markdown" "{\"k\":1}" 2 100 250 "trashed")
+        '(2 250)
+        (list (list 1 A1 1 "create" 100) (list 2 A1 2 "trash" 250))
+        '(1)
+        '(("T1" "text/markdown" "{\"k\":1}" "task" 100 #t))
+        '(2 "task" "trashed"))
+  (attempt
+   (lambda ()
+     (with-store "setstate.db"
+       (lambda (w r p)
+         (w (lambda (tx) (set-up! tx) (insert-node! tx A1 acct-a "task" "T1" "B1" "text/markdown" "{\"k\":1}" 100)))
+         (let* ((made (ok-of (w (lambda (tx) (let ((n (set-node-state! tx A1 acct-a 1 "trashed" "trash" 250)))
+                                               (append (node->list n) (list (node-state n))))))))
+                (nrows (ok-of (r (lambda (tx) (raw tx "SELECT revision, updated FROM nodes WHERE id = ?" A1)))))
+                )
+           (list made
+                 (car nrows)
+                 (ok-of (r (lambda (tx) (changes-of tx acct-a))))
+                 (ok-of (r (lambda (tx) (map car (raw tx "SELECT revision FROM revisions WHERE node = ?" A1)))))
+                 (ok-of (r (lambda (tx) (map (lambda (row) (append (list (list-ref row 0) (list-ref row 1) (list-ref row 2) (list-ref row 3) (list-ref row 4)) (list (equal? (list-ref row 5) acct-a)))) (raw tx "SELECT title, content_type, props, kind, created, author FROM nodes WHERE id = ?" A1)))))
+                 (ok-of (r (lambda (tx) (node-head tx acct-a A1)))))))))))
+
+(test-equal "set-node-state!: a stale revision, another owner and a purged row each raise with the id and the revision only, and change nothing"
+  (list (list (list 'raised (list (nid 1) 7)) #t)
+        (list (list 'raised (list (nid 1) 1)) #t)
+        (list (list 'raised (list (nid 4) 2)) #t)
+        (list (list 'raised (list (nid 4) 3)) #t))
+  (attempt
+   (lambda ()
+     (with-store "setstate-refused.db"
+       (lambda (w r p)
+         (w lc-set-up!)
+         (map (lambda (res) (list (raised-with (car res)) (cadr res)))
+              (ok-of (w (lambda (tx)
+                          (list (nothing-changes tx (lambda () (set-node-state! tx (nid 1) acct-a 7 "archived" "archive" 40)))
+                                (nothing-changes tx (lambda () (set-node-state! tx (nid 1) acct-b 1 "archived" "archive" 40)))
+                                (nothing-changes tx (lambda () (set-node-state! tx (nid 4) acct-a 2 "trashed" "trash" 40)))
+                                (nothing-changes tx (lambda () (set-node-state! tx (nid 4) acct-a 3 "trashed" "trash" 40)))))))))))))
+
+(test-equal "set-node-state!: what it raises names the id and revision, and no text of the node"
+  #f
+  (attempt
+   (lambda ()
+     (with-store "setstate-text.db"
+       (lambda (w r p)
+         (w lc-set-up!)
+         (let ((c (ok-of (w (lambda (tx) (caught (lambda () (set-node-state! tx (nid 1) acct-a 7 "archived" "archive" 40))))))))
+           (or (contains? (caddr c) "T1") (contains? (caddr c) "B1"))))))))
+
+(test-equal "write-node!: on a trashed row and on a purged row it raises with the id and revision only, and changes nothing"
+  (list (list (list 'raised (list (nid 3) 2)) #t) (list (list 'raised (list (nid 4) 3)) #t) #f #f)
+  (attempt
+   (lambda ()
+     (with-store "write-state.db"
+       (lambda (w r p)
+         (w lc-set-up!)
+         (let ((res (ok-of (w (lambda (tx)
+                                (list (nothing-changes tx (lambda () (write-node! tx (nid 3) acct-a 2 "SECRET-T" "SECRET-B" "a/a" "{}" "update" 50)))
+                                      (nothing-changes tx (lambda () (write-node! tx (nid 4) acct-a 3 "SECRET-T" "SECRET-B" "a/a" "{}" "update" 50)))))))))
+           (list (list (raised-with (car (car res))) (cadr (car res)))
+                 (list (raised-with (car (cadr res))) (cadr (cadr res)))
+                 (contains? (caddr (car (car res))) "SECRET")
+                 (contains? (caddr (car (cadr res))) "SECRET"))))))))
+
+(test-equal "write-node!: on an archived row it works, and the Node says archived; the state stays"
+  '("archived" 3 "archived" "B2b")
+  (attempt
+   (lambda ()
+     (with-store "write-archived.db"
+       (lambda (w r p)
+         (w lc-set-up!)
+         (let ((n (ok-of (w (lambda (tx) (write-node! tx (nid 2) acct-a 2 "T2b" "B2b" "a/a" "{}" "update" 60))))))
+           (list (node-state n) (node-revision n)
+                 (node-state (ok-of (r (lambda (tx) (node-of-owner tx acct-a (nid 2))))))
+                 (node-body (ok-of (r (lambda (tx) (node-of-owner tx acct-a (nid 2)))))))))))))
+
+(test-equal "write-node!: on an active row the Node says active"
+  "active"
+  (attempt
+   (lambda ()
+     (with-store "write-active.db"
+       (lambda (w r p)
+         (w lc-set-up!)
+         (node-state (ok-of (w (lambda (tx) (write-node! tx (nid 1) acct-a 1 "T" "B" "a/a" "{}" "update" 60))))))))))
+
+(test-equal "purge-node!: no snapshot left; the row emptied; kind, author, owner, created and num kept; one purge change row; still in use; found by nothing that answers"
+  (list '()
+        (list "" "{}" "application/octet-stream" "purged" 4 40)
+        (list "note" #t #t 10)
+        '(4 . "purge")
+        #t
+        (list #f #f #f #f '() '())
+        (list '() '() '() '()))
+  (attempt
+   (lambda ()
+     (with-store "purge.db"
+       (lambda (w r p)
+         (w (lambda (tx) (set-up! tx) (insert-node! tx A1 acct-a "note" "T1" "B1" "a/a" "{}" 10)
+                         (write-node! tx A1 acct-a 1 "T1" "B2" "a/a" "{}" "update" 15)
+                         (set-node-state! tx A1 acct-a 2 "trashed" "trash" 20)))
+         (let ((num-before (ok-of (r (lambda (tx) (raw tx "SELECT num FROM nodes WHERE id = ?" A1))))))
+           (w (lambda (tx) (purge-node! tx A1 acct-a 3 40)))
+           (list (ok-of (r (lambda (tx) (raw tx "SELECT revision FROM revisions WHERE node = ?" A1))))
+                 (car (ok-of (r (lambda (tx) (raw tx "SELECT title, props, content_type, state, revision, updated FROM nodes WHERE id = ?" A1)))))
+                 (let ((row (car (ok-of (r (lambda (tx) (raw tx "SELECT kind, author, owner, created, num FROM nodes WHERE id = ?" A1)))))))
+                   (list (car row) (equal? (cadr row) acct-a) (equal? (caddr row) acct-a) (cadddr row)))
+                 (let ((c (ok-of (r (lambda (tx) (changes-of tx acct-a))))))
+                   (cons (length c) (cadddr (car (reverse c)))))
+                 (and (equal? num-before (ok-of (r (lambda (tx) (raw tx "SELECT num FROM nodes WHERE id = ?" A1)))))
+                      (ok-of (r (lambda (tx) (node-in-use? tx A1)))))
+                 (list (ok-of (r (lambda (tx) (node-head tx acct-a A1))))
+                       (ok-of (r (lambda (tx) (node-of-owner tx acct-a A1))))
+                       (ok-of (r (lambda (tx) (snapshot-of tx acct-a A1 1))))
+                       (ok-of (r (lambda (tx) (snapshot-exists? tx acct-a A1 1))))
+                       (ok-of (r (lambda (tx) (snapshots-page tx acct-a A1 #f 10))))
+                       (ok-of (r (lambda (tx) (snapshots-page tx acct-a A1 5 10)))))
+                 (map (lambda (st) (ok-of (r (lambda (tx) (node-ids (nodes-page tx acct-a st #f 10))))))
+                      '("active" "archived" "trashed" "purged")))))))))
+
+(test-equal "purge-node!: a node that is not trashed, a stale revision and another owner's node each raise with the id and revision only; the job rolls back, the snapshots are still there; another owner's are not even deleted in the job"
+  (list (list (list 'raised (list (nid 1) 1)) #t)
+        (list (list 'raised (list (nid 3) 1)) #t)
+        (list (list 'raised (list (nid 3) 2)) #t)
+        (list (list 'raised (list (nid 4) 3)) #t)
+        #t)
+  (attempt
+   (lambda ()
+     (with-store "purge-refused.db"
+       (lambda (w r p)
+         (w lc-set-up!)
+         (let* ((seen #f)
+                ;; Runs THUNK in a job, keeps what it raised, then raises so
+                ;; the job rolls back; answers that, and whether the tables
+                ;; are as they were afterwards.
+                (rolled-back
+                 (lambda (thunk)
+                   (let* ((before (ok-of (r all-rows)))
+                          (res (w (lambda (tx)
+                                    (set! seen (raised-with (caught (lambda () (thunk tx)))))
+                                    (assertion-violation 'test "roll the job back")))))
+                     (list seen (and (eq? (car res) 'raised) (equal? before (ok-of (r all-rows))))))))
+                (a (rolled-back (lambda (tx) (purge-node! tx (nid 1) acct-a 1 40))))
+                (b (rolled-back (lambda (tx) (purge-node! tx (nid 3) acct-a 1 40))))
+                (c (rolled-back (lambda (tx) (purge-node! tx (nid 3) acct-b 2 40))))
+                (d (rolled-back (lambda (tx) (purge-node! tx (nid 4) acct-a 3 40))))
+                (e (ok-of (w (lambda (tx)
+                               (nothing-changes tx (lambda () (purge-node! tx (nid 3) acct-b 2 40))))))))
+           (list a b c d (and (eq? (car (car e)) 'raised) (cadr e)))))))))
+
+(test-equal "purge-node!: a refused purge through the doorway undoes the job: the snapshots return"
+  '(raised 1)
+  (attempt
+   (lambda ()
+     (with-store "purge-rollback.db"
+       (lambda (w r p)
+         (w lc-set-up!)
+         (let ((res (w (lambda (tx) (purge-node! tx (nid 1) acct-a 1 40)))))
+           (list (car res)
+                 (ok-of (r (lambda (tx) (length (raw tx "SELECT revision FROM revisions WHERE node = ?" (nid 1)))))))))))))
+
+(test-equal "nodes-page: every state lists its own nodes, a node is under exactly one state, a purged one under none, another owner's under none"
+  (list '(1 5 6) '(2) '(3) '() '(1 2 3 5 6)
+        '((1 5) (6) ())
+        '(7)
+        '((2) (3) ()))
+  (attempt
+   (lambda ()
+     (with-store "state-pages.db"
+       (lambda (w r p)
+         (w lc-set-up!)
+         (let* ((page (lambda (st after n)
+                        (ok-of (r (lambda (tx) (node-ids (nodes-page tx acct-a st after n)))))))
+                (states (map (lambda (st) (page st #f 10)) '("active" "archived" "trashed" "purged"))))
+           (append states
+                   (list (list-sort < (apply append states))
+                         (let* ((p1 (ok-of (r (lambda (tx) (nodes-page tx acct-a "active" #f 2)))))
+                                (p2 (ok-of (r (lambda (tx) (nodes-page tx acct-a "active" (node-id (cadr p1)) 2)))))
+                                (p3 (ok-of (r (lambda (tx) (nodes-page tx acct-a "active" (node-id (car p2)) 2))))))
+                           (map node-ids (list p1 p2 p3)))
+                         (ok-of (r (lambda (tx) (node-ids (nodes-page tx acct-b "active" #f 10)))))
+                         (list (page "archived" (nid 1) 10) (page "trashed" (nid 2) 10) (page "trashed" (nid 3) 10))))))))))
+
+(test-equal "nodes-page: a page's nodes carry their state, and no body"
+  '(("active" #f) ("archived" #f) ("trashed" #f))
+  (attempt
+   (lambda ()
+     (with-store "state-pages-fields.db"
+       (lambda (w r p)
+         (w lc-set-up!)
+         (map (lambda (st)
+                (let ((n (car (ok-of (r (lambda (tx) (nodes-page tx acct-a st #f 1)))))))
+                  (list (node-state n) (node-body n))))
+              '("active" "archived" "trashed")))))))
+
+(test-equal "state: a purged node is found by none of the reads of its own owner, and its siblings are"
+  '((#f #f #f #f ()) ((1 "note" "active") #t))
+  (attempt
+   (lambda ()
+     (with-store "purged-reads.db"
+       (lambda (w r p)
+         (w lc-set-up!)
+         (list (ok-of (r (lambda (tx) (list (node-head tx acct-a (nid 4)) (node-of-owner tx acct-a (nid 4))
+                                            (snapshot-of tx acct-a (nid 4) 1) (snapshot-exists? tx acct-a (nid 4) 1)
+                                            (snapshots-page tx acct-a (nid 4) #f 10)))))
+               (ok-of (r (lambda (tx) (list (node-head tx acct-a (nid 1)) (and (node-of-owner tx acct-a (nid 1)) #t)))))))))))
+
 ;;; The statements (H12, H19)
 ;;;
 ;;; node-store-statements is every statement (techo node-store) runs, by
@@ -602,8 +856,8 @@
               (list (and (pair? plan)
                          (for-all (lambda (d) (or (starts? d "SEARCH n ") (starts? d "SCAN n "))) plan))
                     (exists (lambda (d) (contains? d "revisions")) plan)))
-            (list (plan-of p (statement-of 'nodes-page) acct-a 5)
-                  (plan-of p (statement-of 'nodes-page-after) acct-a A1 5)))))))
+            (list (plan-of p (statement-of 'nodes-page) acct-a "active" 5)
+                  (plan-of p (statement-of 'nodes-page-after) acct-a "active" A1 5)))))))
 
 (for-each
  (lambda (name)
@@ -613,7 +867,8 @@
       (lambda ()
         (let ((s (statement-of name)))
           (list (string? s) (and (string? s) (contains? s "body"))))))))
- '(nodes-page nodes-page-after snapshots-page snapshots-page-before node-head node-in-use snapshot-exists))
+ '(nodes-page nodes-page-after snapshots-page snapshots-page-before node-head node-in-use snapshot-exists
+   set-node-state purge-snapshots purge-node))
 
 (test-equal "statements: node-in-use's plan is one search of a covering index: it reads the id alone (H19)"
   #t
@@ -624,13 +879,16 @@
             (starts? (car plan) "SEARCH ")
             (contains? (car plan) "USING COVERING INDEX"))))))
 
-(test-equal "statements: snapshot-exists's plan searches covering indexes alone: it reads no row of revisions, so never a body"
+(test-equal "statements: snapshot-exists's plan reads revisions by a covering index alone, so never a body; it reads the node's row for its state"
   #t
   (attempt
    (lambda ()
      (let ((plan (plan-of (fresh "plan-exists.db") (statement-of 'snapshot-exists) acct-a A1 1)))
        (and (pair? plan)
-            (for-all (lambda (d) (and (starts? d "SEARCH ") (contains? d "USING COVERING INDEX"))) plan))))))
+            (for-all (lambda (d) (and (starts? d "SEARCH ")
+                                      (or (starts? d "SEARCH n ") (contains? d "USING COVERING INDEX"))))
+                     plan)
+            (exists (lambda (d) (and (starts? d "SEARCH r ") (contains? d "USING COVERING INDEX"))) plan))))))
 
 ;; where-clause : String -> (U String #f)     SQL after its first " WHERE "
 (define (where-clause sql)
@@ -676,6 +934,34 @@
    (lambda ()
      (map car (filter (lambda (e) (let ((s (statement-of (car e)))) (not (and s (starts? s (cdr e))))))
                       owner-exempt)))))
+
+(test-equal "statements: set-node-state, purge-snapshots and purge-node are listed; the purge's DELETE has exactly the decided shape"
+  (list #t #t #t
+        "DELETE FROM revisions AS r WHERE r.node = ? AND EXISTS (SELECT 1 FROM nodes n WHERE n.id = r.node AND n.owner = ?)")
+  (attempt
+   (lambda ()
+     (list (and (statement-of 'set-node-state) #t) (and (statement-of 'purge-node) #t) (and (statement-of 'purge-snapshots) #t)
+           (statement-of 'purge-snapshots)))))
+
+(test-equal "statements: each read of a node a client can reach leaves out a purged one; each write that changes a node refuses a purged one"
+  '()
+  (attempt
+   (lambda ()
+     (filter (lambda (name)
+               (let ((s (statement-of name)))
+                 (not (and s (or (contains? s "state <> 'purged'") (contains? s "state = 'trashed'")
+                                 (contains? s "state IN ('active','archived')"))))))
+             '(node-head node-of-owner snapshot-exists snapshot-of snapshots-page snapshots-page-before
+               write-node set-node-state purge-node)))))
+
+(test-equal "statements: nodes-page and nodes-page-after filter by state, and node-of-owner reads the newest snapshot"
+  '(#t #t #t #f)
+  (attempt
+   (lambda ()
+     (list (contains? (statement-of 'nodes-page) "n.state = ?")
+           (contains? (statement-of 'nodes-page-after) "n.state = ?")
+           (contains? (statement-of 'node-of-owner) "SELECT max(revision) FROM revisions WHERE node = n.id")
+           (contains? (statement-of 'node-of-owner) "r.revision = n.revision")))))
 
 ;;; The tables' checks
 

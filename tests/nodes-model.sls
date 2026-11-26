@@ -1,64 +1,71 @@
 #!r6rs
-;;; (nodes-model): the model-based test of D5's versioned write, ADR-0007's
-;;; third layer, for tests/test-nodes-model.sps (slice 4, task 5a). Test-only:
-;;; it lives in tests/, which make test puts on Chez's library path.
+;;; (nodes-model): the model-based test of nodes, ADR-0007's third layer,
+;;; for tests/test-nodes-model.sps: D5's versioned write (slice 4, task 5a)
+;;; and the node lifecycle (slice 4b, task 4a). Test-only: it lives in
+;;; tests/, which make test puts on Chez's library path.
 ;;;
 ;;; The model (pure)
 ;;; ----------------
 ;;; A world is two accounts, a and b (fixed), each with two keys and each
-;;; key's last_used; every node made, with its owner, kind, created and its
-;;; snapshots, newest first, each (revision title body content-type props
-;;; created author); and each owner's change rows (seq node revision op
-;;; created). A node's row is its newest snapshot's by construction: its
-;;; revision, title, content type, props and updated are read from it.
+;;; key's last_used; every node made, with its owner, kind, created, state,
+;;; revision, updated and its snapshots, newest first, each (revision title
+;;; body content-type props created author); and each owner's change rows
+;;; (seq node revision op created). A live node's title, content type,
+;;; props and body are its newest snapshot's (H2'); its revision runs ahead
+;;; of that snapshot by each change of state since (L4). A purged node has
+;;; no snapshot, and its row is emptied (L7).
 ;;;
-;;; `expect` answers a request from the step it is handed (write-step, or a
-;;; stand-in of its shape) and the world alone, never the database: what the
-;;; write's job would find (none, match or differ), the event, the step's
-;;; command, and that command performed on the world. insert, write and copy
-;;; each add a snapshot and a change row with the owner's next number, and
-;;; set the asking key's last_used when it is due (D6); a refusal changes
-;;; nothing. A command that makes no sense for the request (a copy on a PUT,
-;;; a write at a revision the node is not at, an insert on an id in use) is a
-;;; step the model cannot take, and it says why. The step's next state is
-;;; held too: it is what the same request would find if sent again.
+;;; `expect` answers a request from the world alone: never the database,
+;;; and never (techo nodes), whose tables are what is under test. `decide`
+;;; is the plan's rules written again here, in the plan's order (D4, D5, D7,
+;;; D8, L1 to L10 and the review's answers): no precondition is 428, a bad
+;;; one 400; a create is 412 on an id any account has used, a purged one's
+;;; too; else the account's live node, or 404; stale is 412, whatever the
+;;; state; then the state's refusal, 409 wrong_state; then kind_fixed and a
+;;; missing snapshot's 404; else the change. The decision is performed on
+;;; the world: insert, write and copy add a snapshot; a state change bumps
+;;; the revision and adds none; a purge drops the snapshots and empties the
+;;; row. Each adds a change row with the owner's next number, and sets the
+;;; asking key's last_used when it is due (D6). A refusal changes nothing.
 ;;;
-;;; The event is named from the plan's words, as write-event documents it: a
-;;; restore is `restore` when the owner's node has the snapshot, whatever
-;;; revision If-Match gave. The route names it the same way: it asks
-;;; snapshot-exists? whenever it finds the node, at that revision or
-;;; another. So a cell counted here is the cell the handlers step, and a
-;;; stale restore of a snapshot the node has is differ x restore in both.
+;;; A Twist stands between the decision and its performance. The run uses
+;;; `as-planned`, which changes nothing; the suite's teeth pass a twisted
+;;; rule, and the model must then disagree with the handlers.
 ;;;
-;;; `plan-status` is D5 again in the plan's words (D5, D7, D8), with no
-;;; table: what a request must be answered whatever the table says, so a
-;;; table changed under both the handlers and the oracle is still caught.
+;;; Each write names the cell it would step, in node-command's terms
+;;; (Found State Event), by the model's own reading: what the job finds
+;;; (none, match, differ), the state of the node it finds (#f when none,
+;;; and for a create, whose job reads no state), and the event (D5's five,
+;;; or the lifecycle's five). The suite counts them.
 ;;;
 ;;; The run (the shell)
 ;;; -------------------
 ;;; `run-sequence` empties one migrated file, seeds the two accounts and
-;;; their four keys through the store, generates a seeded sequence of at
-;;; least 40 requests (xorshift32), and sends each as raw HTTP through
-;;; make-app inside wrap-server, in a test host, with a wall clock the
-;;; sequence steps. After every request it compares the status, the code of
-;;; a refusal, the ETag, Location and the JSON of a 2xx (every page of a
-;;; list) with the model's; holds the answer to plan-status; reads the three
-;;; tables and every key's last_used whole, and holds them to laws that need
-;;; no model (H1 to H6, H11, H15, H16, against the tables before the
-;;; request) and to the model's world. The first request with a difference
-;;; ends the sequence with a report that replays from its seed.
+;;; their four keys through the store, generates a seeded sequence of 45 to
+;;; 65 requests (xorshift32), and sends each as raw HTTP through make-app
+;;; inside wrap-server, in a test host, with a wall clock the sequence
+;;; steps. After every request it compares the status, the code of a
+;;; refusal, the ETag, Location and the body of a 2xx (every page of a
+;;; list, for the ?state= asked) with the model's; holds the answer to laws
+;;; that need no model (G14, H6, H14, H18'); reads the three tables and
+;;; every key's last_used whole, and holds them to laws that need no model
+;;; (H1 to H6, H11, H2', H3', H15', H16, G3, G6, G9, G11, G12, G16, against
+;;; the tables before the request) and to the model's world. The first
+;;; request with a difference ends the sequence with a report that replays
+;;; from its seed.
 (library (nodes-model)
   (export model-accounts start-keys model-start kinds
           make-event make-content node-id-of
+          as-planned lifecycle-events
           expect expectation-status expectation-code expectation-etag expectation-location
           expectation-json expectation-items expectation-world expectation-cells
-          expectation-problem expectation-touched
+          expectation-problem expectation-touched expectation-clause
           world-nodes world-changes-of world-key-last-used world-node
-          mnode-kind mnode-created mnode-snaps msnap-revision msnap-title msnap-body
-          msnap-type msnap-created mchange-seq mchange-node mchange-revision mchange-op mchange-created
-          plan-status
+          mnode-kind mnode-created mnode-state mnode-revision mnode-updated mnode-snaps
+          msnap-revision msnap-title msnap-body msnap-type msnap-created
+          mchange-seq mchange-node mchange-revision mchange-op mchange-created
           run-sequence verdict-seed verdict-steps verdict-requests verdict-cells
-          verdict-aims verdict-cant-happen verdict-report)
+          verdict-aims verdict-report)
   (import (rnrs)
           (only (chezscheme) format)
           (only (chez-sqlite3) sql-null?)
@@ -67,7 +74,6 @@
           (techo-testing)
           (http-support)
           (only (techo keys) key-secret)
-          (only (techo nodes) write-cant-happen)
           (only (techo store) insert-account! insert-key!)
           (only (techo doorway) tx-query tx-execute!)
           (only (techo app) make-app wrap-server))
@@ -207,11 +213,12 @@
   ;; msnap-title, msnap-body, msnap-type : MSnap -> String
   (define-record-type msnap (fields revision title body type props created author))
 
-  ;; MNode: id tag label kind created snaps (newest first)
+  ;; MNode: id tag label kind created state revision updated snaps (newest first)
   ;; mnode-kind : MNode -> String
-  ;; mnode-created : MNode -> Natural
+  ;; mnode-state : MNode -> Symbol      active, archived, trashed or purged
+  ;; mnode-created, mnode-revision, mnode-updated : MNode -> Natural
   ;; mnode-snaps : MNode -> (Listof MSnap)
-  (define-record-type mnode (fields id tag label kind created snaps))
+  (define-record-type mnode (fields id tag label kind created state revision updated snaps))
 
   ;; MChange: seq node revision op created
   ;; mchange-seq, mchange-revision, mchange-created : MChange -> Natural
@@ -227,13 +234,49 @@
   ;; model-start : World      no node, no change, no key used
   (define model-start (make-world '() start-keys '((a) (b))))
 
-  (define (node-top n) (car (mnode-snaps n)))
-  (define (node-rev n) (msnap-revision (node-top n)))
+  ;;; The plan's rules, in the model's own words (L1, L2, L5, L6, L8)
 
-  ;; world-node : World Bytevector -> (U MNode #f)     any account's
+  ;; live-states : (Listof Symbol)    the states a client sees (L1)
+  (define live-states '(active archived trashed))
+
+  ;; writable-states : (Listof Symbol)    where a replace or a restore is allowed (L5)
+  (define writable-states '(active archived))
+
+  ;; lifecycle-moves : (Listof (List Symbol (Listof Symbol) Symbol))
+  ;; Each state change, the states it is allowed from, and where it lands:
+  ;; L2 (archive and unarchive; trash and untrash, which always lands on
+  ;; active) and L8 (a purge only from trashed).
+  (define lifecycle-moves
+    '((archive (active) archived)
+      (unarchive (archived) active)
+      (trash (active archived) trashed)
+      (untrash (trashed) active)
+      (purge (trashed) purged)))
+
+  ;; lifecycle-events : (Listof Symbol)    the five, each its own route (L3)
+  (define lifecycle-events (map car lifecycle-moves))
+
+  (define write-kinds (append '(put restore) lifecycle-events))
+  (define (write-kind? k) (and (memq k write-kinds) #t))
+  (define (life-kind? k) (and (memq k lifecycle-events) #t))
+
+  ;; What a purge leaves in the row (L7, the review): no title, no props,
+  ;; and a content type that is not the client's.
+  (define purged-type "application/octet-stream")
+
+  (define (node-top n) (let ((ss (mnode-snaps n))) (and (pair? ss) (car ss))))
+  (define (node-rev n) (mnode-revision n))
+  (define (live? n) (not (eq? (mnode-state n) 'purged)))
+
+  ;; world-node : World Bytevector -> (U MNode #f)     any account's, purged or not
   (define (world-node w id) (find (lambda (n) (bytevector=? (mnode-id n) id)) (world-nodes w)))
-  (define (own-node w tag id) (let ((n (world-node w id))) (and n (eq? (mnode-tag n) tag) n)))
-  (define (nodes-of w tag) (filter (lambda (n) (eq? (mnode-tag n) tag)) (world-nodes w)))
+  ;; own-node : the account's node as its routes find it: a purged one is none (L7)
+  (define (own-node w tag id)
+    (let ((n (world-node w id))) (and n (eq? (mnode-tag n) tag) (live? n) n)))
+  (define (nodes-of w tag) (filter (lambda (n) (and (eq? (mnode-tag n) tag) (live? n))) (world-nodes w)))
+  (define (purged-of w tag)
+    (filter (lambda (n) (and (eq? (mnode-tag n) tag) (not (live? n)))) (world-nodes w)))
+  (define (live-nodes w) (filter live? (world-nodes w)))
   (define (by-id ns) (list-sort (lambda (x y) (bytevector<? (mnode-id x) (mnode-id y))) ns))
   (define (snap-of n k) (find (lambda (s) (= (msnap-revision s) k)) (mnode-snaps n)))
 
@@ -273,11 +316,25 @@
                 (world-changes w)))
 
   ;; with-snap : MNode String String String String Natural -> MNode
-  ;; N at its next revision, the content given, made NOW, by its owner.
+  ;; N at its next revision, the content given as its newest snapshot, made
+  ;; NOW, by its owner; its state kept (G12).
   (define (with-snap n title body type props now)
+    (let ((rev (+ 1 (node-rev n))))
+      (make-mnode (mnode-id n) (mnode-tag n) (mnode-label n) (mnode-kind n) (mnode-created n)
+                  (mnode-state n) rev now
+                  (cons (make-msnap rev title body type props now (mnode-tag n)) (mnode-snaps n)))))
+
+  ;; with-state : MNode Symbol Natural -> MNode
+  ;; N at its next revision in STATE, NOW, with no new snapshot (L4).
+  (define (with-state n state now)
     (make-mnode (mnode-id n) (mnode-tag n) (mnode-label n) (mnode-kind n) (mnode-created n)
-                (cons (make-msnap (+ 1 (node-rev n)) title body type props now (mnode-tag n))
-                      (mnode-snaps n))))
+                state (+ 1 (node-rev n)) now (mnode-snaps n)))
+
+  ;; emptied : MNode Natural -> MNode
+  ;; N purged (L7): its next revision, NOW, and no snapshot left.
+  (define (emptied n now)
+    (make-mnode (mnode-id n) (mnode-tag n) (mnode-label n) (mnode-kind n) (mnode-created n)
+                'purged (+ 1 (node-rev n)) now '()))
 
   ;;; Requests
 
@@ -285,8 +342,9 @@
   ;; is sent. make-content : (U String #f) String String String Boolean -> Content
   (define-record-type content (fields kind title body type props?))
 
-  ;; Event: kind now tag key id pre headers content snap limit upper? aims
-  ;;   kind      put, restore, get-node, list-nodes, list-revisions, get-snapshot
+  ;; Event: kind now tag key id pre headers content snap limit query upper? aims
+  ;;   kind      put, restore, archive, unarchive, trash, untrash, purge,
+  ;;             get-node, list-nodes, list-revisions, get-snapshot
   ;;   now       the wall clock for the request
   ;;   tag, key  the asking account and key's id
   ;;   id        the node's id (#f for list-nodes)
@@ -296,11 +354,14 @@
   ;;   content   a PUT's Content
   ;;   snap      the snapshot named by a restore or a snapshot read
   ;;   limit     a walk's page size, #f for the default
+  ;;   query     a list's ?state=: #f for none, a String, or 'twice (the
+  ;;             field twice, active both times)
   ;;   upper?    whether the path's id is written in capitals
   ;;   aims      what the generator aimed at, for counting
   ;; make-event : Symbol Natural Tag Bytevector (U Bytevector #f) Any (Listof Header)
-  ;;              (U Content #f) (U Natural #f) (U Natural #f) Boolean (Listof Symbol) -> Event
-  (define-record-type event (fields kind now tag key id pre headers content snap limit upper? aims))
+  ;;              (U Content #f) (U Natural #f) (U Natural #f) (U String 'twice #f)
+  ;;              Boolean (Listof Symbol) -> Event
+  (define-record-type event (fields kind now tag key id pre headers content snap limit query upper? aims))
 
   ;; node-id-of : Natural -> Bytevector
   ;; A v7 id for a hand-made world: N in its last bytes.
@@ -315,44 +376,48 @@
 
   ;;; The oracle
 
-  ;; Expectation: status code etag location json items world cells problem touched
+  ;; Expectation: status code etag location json items world cells problem touched clause
   ;;   status, code   the answer, and a refusal's code
   ;;   etag, location the headers a 2xx carries, or #f
-  ;;   json           a single 2xx's JSON, sorted; items, a walk's items
+  ;;   json           a single 2xx's JSON, sorted, or 'empty for a 204;
+  ;;                  items, a walk's items
   ;;   world          the world after
-  ;;   cells          the (Found EventKind) pairs stepped
+  ;;   cells          the (Found State Event) cell a write steps, or none
   ;;   problem        why the model cannot take this step, or #f
   ;;   touched        whether the asking key's last_used was set
+  ;;   clause         the rule that gives the answer, in the plan's words
   ;; expectation-status : Expectation -> (U Natural #f)
-  ;; expectation-code, expectation-etag, expectation-location, expectation-problem
-  ;;   : Expectation -> (U String #f)
-  ;; expectation-json : Expectation -> (U Alist #f)
+  ;; expectation-code, expectation-etag, expectation-location, expectation-problem,
+  ;;   expectation-clause : Expectation -> (U String #f)
+  ;; expectation-json : Expectation -> (U Alist 'empty #f)
   ;; expectation-items : Expectation -> (U (Listof Alist) #f)
   ;; expectation-world : Expectation -> World
-  ;; expectation-cells : Expectation -> (Listof (List Found EventKind))
+  ;; expectation-cells : Expectation -> (Listof Cell)
   ;; expectation-touched : Expectation -> Boolean
   (define-record-type expectation
-    (fields status code etag location json items world cells problem touched))
+    (fields status code etag location json items world cells problem touched clause))
 
-  (define (refused w cells status code) (make-expectation status code #f #f #f #f w cells #f #f))
-  (define (cannot w cells why) (make-expectation #f #f #f #f #f #f w cells why #f))
-  (define (read-answer w json items etag) (make-expectation 200 #f etag #f json items w '() #f #f))
-
-  (define refusal-answers
-    '((refuse-404 404 "not_found") (refuse-409 409 "kind_fixed") (refuse-412 412 "precondition_failed")))
+  (define (refused w cells status code clause)
+    (make-expectation status code #f #f #f #f w cells #f #f clause))
+  (define (cannot w cells why) (make-expectation #f #f #f #f #f #f w cells why #f #f))
+  (define (read-answer w json items etag clause)
+    (make-expectation 200 #f etag #f json items w '() #f #f clause))
 
   ;; props-json : String -> Any     the stored text "{}" is the empty object
   (define (props-json text) (if (string=? text "{}") '() (list 'props text)))
 
-  ;; node-json : MNode Boolean -> Alist     as the plan's smaller choices show a node
+  ;; node-json : MNode Boolean -> Alist
+  ;; A live node as the plan shows it: its title, content type, props and
+  ;; body its newest snapshot's (H2'), the body only when BODY?; its
+  ;; revision, updated and state its own.
   (define (node-json n body?)
     (let ((s (node-top n)))
       (sorted (append (list (cons "id" (id-text (mnode-id n))) (cons "kind" (mnode-kind n))
-                            (cons "title" (msnap-title s)))
+                            (cons "state" (symbol->string (mnode-state n))) (cons "title" (msnap-title s)))
                       (if body? (list (cons "body" (msnap-body s))) '())
                       (list (cons "content_type" (msnap-type s)) (cons "props" (props-json (msnap-props s)))
-                            (cons "revision" (msnap-revision s)) (cons "created" (mnode-created n))
-                            (cons "updated" (msnap-created s)))))))
+                            (cons "revision" (node-rev n)) (cons "created" (mnode-created n))
+                            (cons "updated" (mnode-updated n)))))))
 
   ;; snap-json : MSnap Boolean -> Alist
   (define (snap-json s body?)
@@ -361,177 +426,211 @@
                     (list (cons "content_type" (msnap-type s)) (cons "props" (props-json (msnap-props s)))
                           (cons "created" (msnap-created s))))))
 
-  ;; stepped : Step Found EventKind -> (U (List 'ok Found CommandKind) (List 'cannot String))
-  (define (stepped step found ev)
-    (if (exists (lambda (c) (and (eq? (car c) found) (eq? (cadr c) ev))) write-cant-happen)
-        (list 'cannot (format "asked ~a x ~a, which D5 says cannot happen" found ev))
-        (guard (e (#t (list 'cannot (format "the step raised for ~a x ~a: ~a" found ev (describe e)))))
-          (call-with-values (lambda () (step found ev))
-            (lambda (next command) (list 'ok next command))))))
+  ;; Cell = (List Found (U Symbol #f) Symbol)
+  ;; Decision = (List 'refuse Natural String) | (List 'insert) | (List 'write)
+  ;;          | (List 'copy) | (List 'set-state Symbol) | (List 'purge)
+  ;; Twist = (U Cell #f) Decision -> Decision
 
-  ;; found-in : World Event -> Found
-  ;; What a write's job finds. A create: differ when any account holds the
-  ;; id (D8), else none. Else the asking account's node: none when it has
-  ;; none, match at the revision given, else differ.
-  (define (found-in w e)
-    (let ((pre (event-pre e)) (id (event-id e)))
-      (if (eq? pre 'create)
-          (if (world-node w id) 'differ 'none)
-          (let ((own (own-node w (event-tag e) id)))
-            (cond ((not own) 'none) ((= (node-rev own) pre) 'match) (else 'differ))))))
+  ;; as-planned : Twist     the decision as the rules make it, unchanged
+  (define (as-planned cell decision) decision)
 
-  ;; event-in : World Event -> EventKind
-  ;; A PUT's create, or replace-other-kind when it names a kind and the
-  ;; account's node has another, else replace. A restore is restore when the
-  ;; account's node has the snapshot, else restore-unknown.
-  (define (event-in w e)
-    (let ((own (own-node w (event-tag e) (event-id e))))
-      (if (eq? (event-kind e) 'put)
-          (let ((kind (content-kind (event-content e))))
-            (cond ((eq? (event-pre e) 'create) 'create)
-                  ((and kind own (not (string=? kind (mnode-kind own)))) 'replace-other-kind)
-                  (else 'replace)))
-          (if (and own (snap-of own (event-snap e))) 'restore 'restore-unknown))))
+  (define (refusal status code) (list 'refuse status code))
+  (define not-found (refusal 404 "not_found"))
+  (define stale (refusal 412 "precondition_failed"))
+  (define wrong-state (refusal 409 "wrong_state"))
 
-  ;; expect : Step World Event -> Expectation
-  ;; STEP is write-step, or a stand-in of its shape.
-  (define (expect step w e)
-    (if (memq (event-kind e) '(put restore)) (expect-write step w e) (expect-read w e)))
+  (define (cell-text cell)
+    (if cell
+        (format "~a x ~a x ~a" (car cell) (or (cadr cell) "-") (caddr cell))
+        "no cell"))
 
-  (define (expect-write step w e)
-    (let ((pre (event-pre e)))
+  ;; write-event-of : Event (U MNode #f) -> Symbol
+  ;; The event a write names, as the plan words it: a PUT's create; a
+  ;; replace that names a kind its node has not, replace-other-kind; a
+  ;; replace; a restore of a snapshot its node has, restore, else
+  ;; restore-unknown (a gap, a revision past the node's, no node); or the
+  ;; state change itself.
+  (define (write-event-of e own)
+    (case (event-kind e)
+      ((put)
+       (let ((kind (content-kind (event-content e))))
+         (cond ((eq? (event-pre e) 'create) 'create)
+               ((and kind own (not (string=? kind (mnode-kind own)))) 'replace-other-kind)
+               (else 'replace))))
+      ((restore) (if (and own (snap-of own (event-snap e))) 'restore 'restore-unknown))
+      (else (event-kind e))))
+
+  ;; decide : World Event -> (values (U Cell #f) Decision String)
+  ;; A write's answer by the plan's rules, the first that applies, and the
+  ;; clause that gives it.
+  (define (decide w e)
+    (let* ((pre (event-pre e)) (id (event-id e)) (own (own-node w (event-tag e) id)))
       (cond
-       ((eq? pre 'missing) (refused w '() 428 "precondition_required"))
-       ((eq? pre 'invalid) (refused w '() 400 "invalid_request"))
+       ((eq? pre 'missing)
+        (values #f (refusal 428 "precondition_required") "a write with no precondition is 428, before its job"))
+       ((eq? pre 'invalid)
+        (values #f (refusal 400 "invalid_request")
+                "a precondition of any other shape, If-None-Match on any route but a PUT among them, is 400"))
+       ((eq? pre 'create)
+        (if (world-node w id)
+            (values (list 'differ #f 'create) stale
+                    "a create on an id in use, any account's, a purged one's too, is 412")
+            (values (list 'none #f 'create) '(insert) "a create of an id no account has used makes it, active, at 1")))
        (else
-        (let* ((found (found-in w e))
-               (ev (event-in w e))
-               (cells (list (list found ev)))
-               (s (stepped step found ev)))
-          (if (eq? (car s) 'cannot)
-              (cannot w cells (cadr s))
-              (let* ((next (cadr s))
-                     (x (perform w e found ev (caddr s) cells)))
-                (if (expectation-problem x)
-                    x
-                    (let ((again (found-in (expectation-world x) e)))
-                      (if (eq? again next)
-                          x
-                          (cannot w cells
-                                  (format "~a x ~a names next ~a, but the same request sent again finds ~a"
-                                          found ev next again))))))))))))
+        (let* ((ev (write-event-of e own))
+               (state (and own (mnode-state own)))
+               (found (cond ((not own) 'none) ((= (node-rev own) pre) 'match) (else 'differ)))
+               (cell (list found state ev))
+               (move (assq ev lifecycle-moves)))
+          (cond
+           ((not own) (values cell not-found "a node the account has not got, another's or a purged one, is 404"))
+           ((eq? found 'differ) (values cell stale "a request at a revision the node is not at is 412, whatever its state"))
+           (move
+            (cond ((not (memq state (cadr move)))
+                   (values cell wrong-state (format "~a from ~a is 409 wrong_state" ev state)))
+                  ((eq? ev 'purge)
+                   (values cell '(purge) "a purge of a trashed node at its revision empties it: 204"))
+                  (else
+                   (values cell (list 'set-state (caddr move))
+                           (format "~a moves ~a to ~a at the next revision, with no snapshot" ev state
+                                   (caddr move))))))
+           ((not (memq state writable-states))
+            (values cell wrong-state
+                    "a replace or a restore of a trashed node is 409 wrong_state, before the kind and the snapshot"))
+           ((eq? ev 'replace-other-kind)
+            (values cell (refusal 409 "kind_fixed") "a replace that names another kind is 409 kind_fixed"))
+           ((eq? ev 'restore-unknown)
+            (values cell not-found "a restore of a revision with no snapshot is 404"))
+           ((eq? ev 'replace)
+            (values cell '(write) "a replace at the node's revision is its next, in the same state"))
+           (else
+            (values cell '(copy) "a restore of a snapshot the node has, at its revision, is its next, in the same state"))))))))
 
-  ;; perform : World Event Found EventKind CommandKind Cells -> Expectation
-  (define (perform w e found ev command cells)
-    (let ((tag (event-tag e)) (id (event-id e)) (now (event-now e)) (pre (event-pre e))
-          (at (format "~a x ~a names ~a" found ev command)))
-      (case command
-        ((refuse-404 refuse-409 refuse-412)
-         (let ((a (assq command refusal-answers))) (refused w cells (cadr a) (caddr a))))
+  ;; expect : Twist World Event -> Expectation
+  ;; TWIST is as-planned, or a changed rule for the suite's teeth.
+  (define (expect twist w e)
+    (if (write-kind? (event-kind e))
+        (let-values (((cell decision clause) (decide w e)))
+          (perform w e cell (twist cell decision) clause))
+        (expect-read w e)))
+
+  ;; perform : World Event (U Cell #f) Decision String -> Expectation
+  ;; The decision done to the world. One that makes no sense for the
+  ;; request (a copy on a PUT, a change at a revision the node is not at,
+  ;; an insert on an id in use) is a step the model cannot take.
+  (define (perform w e cell decision clause)
+    (let* ((tag (event-tag e)) (id (event-id e)) (now (event-now e)) (pre (event-pre e))
+           (kind (event-kind e))
+           (own (own-node w tag id))
+           (cells (if cell (list cell) '()))
+           (at (format "~a names ~s" (cell-text cell) decision))
+           (at-pre? (and own (integer? pre) (= (node-rev own) pre))))
+      (case (car decision)
+        ((refuse) (refused w cells (cadr decision) (caddr decision) clause))
         ((insert)
-         (cond ((not (and (eq? (event-kind e) 'put) (eq? pre 'create)))
+         (cond ((not (and (eq? kind 'put) (eq? pre 'create)))
                 (cannot w cells (string-append at ", which only a create performs")))
                ((world-node w id) (cannot w cells (string-append at " on an id in use")))
                (else
                 (let ((c (event-content e)))
-                  (accepted w e (make-mnode id tag (next-label w) (content-kind c) now
+                  (accepted w e (make-mnode id tag (next-label w) (content-kind c) now 'active 1 now
                                             (list (make-msnap 1 (content-title c) (content-body c)
                                                               (content-type c) "{}" now tag)))
-                            "create" 201 cells)))))
+                            "create" 201 #t cells clause)))))
         ((write)
-         (let ((own (own-node w tag id)))
-           (cond ((not (eq? (event-kind e) 'put))
-                  (cannot w cells (string-append at ", which only a PUT performs")))
-                 ((not (and own (integer? pre) (= (node-rev own) pre)))
-                  (cannot w cells (string-append at ", but the account's node is not at the revision given")))
-                 (else
-                  (let ((c (event-content e)))
-                    (accepted w e (with-snap own (content-title c) (content-body c) (content-type c) "{}" now)
-                              "update" 200 cells))))))
+         (cond ((not (eq? kind 'put)) (cannot w cells (string-append at ", which only a PUT performs")))
+               ((not at-pre?)
+                (cannot w cells (string-append at ", but the account's node is not at the revision given")))
+               (else
+                (let ((c (event-content e)))
+                  (accepted w e (with-snap own (content-title c) (content-body c) (content-type c) "{}" now)
+                            "update" 200 #t cells clause)))))
         ((copy)
-         (let* ((own (own-node w tag id))
-                (s (and own (eq? (event-kind e) 'restore) (snap-of own (event-snap e)))))
-           (cond ((not (eq? (event-kind e) 'restore))
-                  (cannot w cells (string-append at ", which only a restore performs")))
-                 ((not (and own (= (node-rev own) pre)))
+         (let ((s (and own (eq? kind 'restore) (snap-of own (event-snap e)))))
+           (cond ((not (eq? kind 'restore)) (cannot w cells (string-append at ", which only a restore performs")))
+                 ((not at-pre?)
                   (cannot w cells (string-append at ", but the account's node is not at the revision given")))
                  ((not s) (cannot w cells (string-append at " of a snapshot the node does not have")))
                  (else
                   (accepted w e (with-snap own (msnap-title s) (msnap-body s) (msnap-type s) (msnap-props s) now)
-                            "restore" 200 cells)))))
+                            "restore" 200 #t cells clause)))))
+        ((set-state)
+         (cond ((not (and (life-kind? kind) (not (eq? kind 'purge))))
+                (cannot w cells (string-append at ", which only a state change performs")))
+               ((not at-pre?)
+                (cannot w cells (string-append at ", but the account's node is not at the revision given")))
+               ((not (memq (cadr decision) live-states))
+                (cannot w cells (string-append at ", a state no client sees")))
+               (else
+                (accepted w e (with-state own (cadr decision) now) (symbol->string kind) 200 #f cells clause))))
+        ((purge)
+         (cond ((not (eq? kind 'purge)) (cannot w cells (string-append at ", which only a DELETE performs")))
+               ((not at-pre?)
+                (cannot w cells (string-append at ", but the account's node is not at the revision given")))
+               (else (accepted w e (emptied own now) "purge" 204 #f cells clause))))
         (else (cannot w cells (string-append at ", which no write performs"))))))
 
-  ;; accepted : World Event MNode String Natural Cells -> Expectation
-  ;; N stored, the owner's next change row with OP, the asking key's
-  ;; last_used set when due; the node whole and its ETag, Location for a 201.
-  (define (accepted w e n op status cells)
+  ;; accepted : World Event MNode String Natural Boolean Cells String -> Expectation
+  ;; N stored, the owner's next change row with OP at N's revision, the
+  ;; asking key's last_used set when due. A 201 or a 200 answers N's JSON,
+  ;; with its body when BODY?, and its ETag, and Location for a 201; a 204
+  ;; answers neither body nor ETag.
+  (define (accepted w e n op status body? cells clause)
     (let* ((w1 (world-with-node w n))
            (w2 (world-with-change w1 (mnode-tag n) (mnode-id n) (node-rev n) op (event-now e)))
            (due (touch-due? (world-key-last-used w (event-key e)) (event-now e)))
            (w3 (if due (world-touched w2 (event-key e) (event-now e)) w2)))
-      (make-expectation status #f (etag-of (node-rev n))
-                        (and (= status 201) (string-append "/v1/nodes/" (id-text (mnode-id n))))
-                        (node-json n #t) #f w3 cells #f due)))
+      (if (= status 204)
+          (make-expectation 204 #f #f #f 'empty #f w3 cells #f due clause)
+          (make-expectation status #f (etag-of (node-rev n))
+                            (and (= status 201) (string-append "/v1/nodes/" (id-text (mnode-id n))))
+                            (node-json n body?) #f w3 cells #f due clause))))
+
+  ;; list-state : (U String 'twice #f) -> (U Symbol 'invalid)
+  ;; L6 and the review: no ?state= is active; a live state's name is that
+  ;; state; anything else, purged among them, or the field twice, is 400.
+  (define (list-state q)
+    (cond ((not q) 'active)
+          ((and (string? q) (find (lambda (s) (string=? (symbol->string s) q)) live-states)))
+          (else 'invalid)))
 
   (define (expect-read w e)
-    (let ((own (and (event-id e) (own-node w (event-tag e) (event-id e)))))
+    (let ((own (and (event-id e) (own-node w (event-tag e) (event-id e))))
+          (gone "a node the account has not got, another's or a purged one, is 404"))
       (case (event-kind e)
         ((get-node)
-         (if own (read-answer w (node-json own #t) #f (etag-of (node-rev own))) (refused w '() 404 "not_found")))
+         (if own
+             (read-answer w (node-json own #t) #f (etag-of (node-rev own))
+                          "the account's own node is shown, with its newest snapshot's body")
+             (refused w '() 404 "not_found" gone)))
         ((list-nodes)
-         (read-answer w #f (map (lambda (n) (node-json n #f)) (by-id (nodes-of w (event-tag e)))) #f))
+         (let ((s (list-state (event-query e))))
+           (if (eq? s 'invalid)
+               (refused w '() 400 "invalid_request" "a ?state= that names no live state is 400")
+               (read-answer w #f
+                            (map (lambda (n) (node-json n #f))
+                                 (by-id (filter (lambda (n) (eq? (mnode-state n) s)) (nodes-of w (event-tag e)))))
+                            #f (format "a list is the account's own ~a nodes, by id, with no bodies" s)))))
         ((list-revisions)
          (if own
-             (read-answer w #f (map (lambda (s) (snap-json s #f)) (mnode-snaps own)) #f)
-             (refused w '() 404 "not_found")))
+             (read-answer w #f (map (lambda (s) (snap-json s #f)) (mnode-snaps own)) #f
+                          "a node's snapshots, newest first, gaps where its state changed")
+             (refused w '() 404 "not_found" gone)))
         ((get-snapshot)
          (let ((s (and own (snap-of own (event-snap e)))))
-           (if s (read-answer w (snap-json s #t) #f #f) (refused w '() 404 "not_found"))))
+           (if s
+               (read-answer w (snap-json s #t) #f #f "a snapshot of the account's own node is shown")
+               (refused w '() 404 "not_found"
+                        "a snapshot no live node of the account's has, a gap's among them, is 404"))))
         (else (cannot w '() (format "no such request: ~a" (event-kind e)))))))
-
-  ;;; D5 in the plan's words, with no table
-
-  ;; plan-status : World Event -> (List (U Natural #f) String)
-  ;; The status the plan's words give (D3, D4, D5, D7, D8), and the clause
-  ;; that gives it. W is the world before the request, already held to the
-  ;; database.
-  (define (plan-status w e)
-    (let* ((pre (event-pre e))
-           (id (event-id e))
-           (own (and id (own-node w (event-tag e) id))))
-      (case (event-kind e)
-        ((put restore)
-         (cond ((eq? pre 'missing) '(428 "a write with neither header is 428"))
-               ((eq? pre 'invalid) '(400 "a precondition of any other shape is 400"))
-               ((eq? pre 'create)
-                (if (world-node w id)
-                    '(412 "a create on an id in use, any account's, is 412")
-                    '(201 "a create of an id no account holds makes the node")))
-               ((not own) '(404 "a write to a node the account does not hold is 404"))
-               ((not (= (node-rev own) pre)) '(412 "a stale write is 412 before anything else"))
-               ((eq? (event-kind e) 'put)
-                (let ((kind (content-kind (event-content e))))
-                  (if (and kind (not (string=? kind (mnode-kind own))))
-                      '(409 "a replace that names another kind is 409")
-                      '(200 "a replace at the node's revision is its next revision"))))
-               ((snap-of own (event-snap e))
-                '(200 "a restore of a snapshot the node has, at its revision, is its next revision"))
-               (else '(404 "a restore of a snapshot the node does not have is 404"))))
-        ((get-node list-revisions)
-         (if own '(200 "the account's own node is shown") '(404 "another account's node is a missing node")))
-        ((get-snapshot)
-         (if (and own (snap-of own (event-snap e)))
-             '(200 "a snapshot of the account's own node is shown")
-             '(404 "a snapshot of no node of the account's is missing")))
-        ((list-nodes) '(200 "a list is the account's own nodes"))
-        (else '(#f "no such request")))))
 
   ;;; Labels, for reports
 
   (define (node-label w id)
     (let ((n (world-node w id)))
       (if n
-          (format "~a's ~a (~a, at ~a)" (mnode-tag n) (mnode-label n) (mnode-kind n) (node-rev n))
+          (format "~a's ~a (~a, ~a, at ~a)" (mnode-tag n) (mnode-label n) (mnode-kind n) (mnode-state n)
+                  (node-rev n))
           (format "a fresh id ~a" (substring (id-text id) 24 36)))))
 
   (define (show w v)
@@ -561,8 +660,11 @@
       (case (event-kind e)
         ((put) (format "~a PUT ~a ~a~a" at target (headers-text (event-headers e)) (content-text (event-content e))))
         ((restore) (format "~a restore ~a snapshot ~a, ~a" at target (event-snap e) (headers-text (event-headers e))))
+        ((archive unarchive trash untrash)
+         (format "~a POST ~a /~a, ~a" at target (event-kind e) (headers-text (event-headers e))))
+        ((purge) (format "~a DELETE ~a, ~a" at target (headers-text (event-headers e))))
         ((get-node) (format "~a GET ~a" at target))
-        ((list-nodes) (format "~a GET /v1/nodes limit=~a" at (event-limit e)))
+        ((list-nodes) (format "~a GET /v1/nodes state=~a limit=~a" at (event-query e) (event-limit e)))
         ((list-revisions) (format "~a GET revisions of ~a limit=~a" at target (event-limit e)))
         ((get-snapshot) (format "~a GET ~a snapshot ~a" at target (event-snap e)))
         (else (format "~a ~a" at (event-kind e))))))
@@ -580,7 +682,7 @@
   (define type-pool
     '("text/plain" "text/markdown" "text/org; charset=utf-8" "application/x-techo" "text/x-org"))
 
-  ;; fresh-node-id : Rng World -> Bytevector     a v7 id, RFC variant, no node's
+  ;; fresh-node-id : Rng World -> Bytevector     a v7 id, RFC variant, no node's, purged or not
   (define (fresh-node-id rng w)
     (let ((bv (rng-bytes! rng 16)))
       (bytevector-u8-set! bv 6 (bitwise-ior #x70 (bitwise-and (bytevector-u8-ref bv 6) #x0f)))
@@ -611,38 +713,72 @@
            (props? (= 0 (rng-below! rng 2))))
       (make-content kind title body type props?)))
 
-  ;; choose-target : Rng World Tag -> (values Bytevector (U MNode #f) Symbol)
-  ;; The account's own node, the other account's, or an id of none.
-  (define (choose-target rng w tag)
+  ;; choose-target : Rng World Tag (MNode -> Natural) -> (values Bytevector (U MNode #f) Symbol)
+  ;; The account's own live node, its state chosen first among the states
+  ;; its nodes are in, archived and trashed three times as often as active, as
+  ;; they are rarer and pass sooner; the other account's live node; a
+  ;; purged node's id, either account's; or an id of none. DEPTH is what
+  ;; pick-node favours.
+  (define (choose-target rng w tag depth)
     (let* ((own (nodes-of w tag))
            (theirs (nodes-of w (other-tag tag)))
+           (gone (filter (lambda (n) (not (live? n))) (world-nodes w)))
            (aim (rng-weighted! rng (append (if (pair? own) '((65 . own)) '())
                                            (if (pair? theirs) '((23 . other)) '())
-                                           '((12 . missing))))))
+                                           (if (pair? gone) '((30 . purged)) '())
+                                           '((10 . missing))))))
       (case aim
-        ((own) (let ((n (pick-node rng own))) (values (mnode-id n) n aim)))
-        ((other) (let ((n (pick-node rng theirs))) (values (mnode-id n) n aim)))
+        ((own)
+         (let* ((states (filter (lambda (s) (exists (lambda (n) (eq? (mnode-state n) s)) own)) live-states))
+                (s (rng-weighted! rng (map (lambda (s) (cons (if (eq? s 'active) 1 3) s)) states)))
+                (n (pick-node rng (filter (lambda (n) (eq? (mnode-state n) s)) own) depth)))
+           (values (mnode-id n) n aim)))
+        ((other) (let ((n (pick-node rng theirs depth))) (values (mnode-id n) n aim)))
+        ((purged) (let ((n (rng-pick! rng gone))) (values (mnode-id n) n aim)))
         (else (values (fresh-node-id rng w) #f aim)))))
 
-  ;; pick-node : Rng (Listof MNode) -> MNode
-  ;; Half the time the node with the most revisions, so that history grows
-  ;; deep enough for stale and earlier revisions to be common; else any.
-  (define (pick-node rng ns)
+  ;; pick-node : Rng (Listof MNode) (MNode -> Natural) -> MNode
+  ;; Half the time the deepest node, by DEPTH, so that history grows deep
+  ;; enough for stale and earlier revisions to be common; else any. A write
+  ;; and a state change measure depth by revisions (by-revisions); a
+  ;; restore and a snapshot's read by snapshots (by-snapshots), which a
+  ;; change of state does not add.
+  (define (pick-node rng ns depth)
     (if (= 0 (rng-below! rng 2))
-        (fold-left (lambda (best n) (if (> (node-rev n) (node-rev best)) n best)) (car ns) (cdr ns))
+        (fold-left (lambda (best n) (if (> (depth n) (depth best)) n best)) (car ns) (cdr ns))
         (rng-pick! rng ns)))
 
+  (define (by-revisions n) (node-rev n))
+  (define (by-snapshots n) (length (mnode-snaps n)))
+
   ;; choose-revision : Rng (U MNode #f) Boolean -> (values Natural Symbol)
-  ;; If-Match's revision: the node's current one (most often for the other
-  ;; account's node: H6's aim), an earlier one, or one past it.
-  (define (choose-revision rng n other?)
+  ;; If-Match's revision: the node's current one (most often for another
+  ;; account's node, or a purged one: H6's and G7's aim), an earlier one,
+  ;; or one past it.
+  (define (choose-revision rng n far?)
     (if (not n)
         (values (+ 1 (rng-below! rng 4)) 'any)
         (let* ((rev (node-rev n))
                (r (rng-below! rng 100)))
-          (cond ((< r (if other? 65 60)) (values rev 'current))
-                ((and (> rev 1) (< r 88)) (values (+ 1 (rng-below! rng (- rev 1))) 'stale))
+          (cond ((< r (if far? 58 60)) (values rev 'current))
+                ((and (> rev 1) (< r (if far? 92 88))) (values (+ 1 (rng-below! rng (- rev 1))) 'stale))
                 (else (values (+ rev 1 (rng-below! rng 3)) 'ahead))))))
+
+  ;; choose-change : Rng (U MNode #f) Symbol -> Symbol
+  ;; A state change's event. At the account's own node, often one its
+  ;; state allows, so nodes move through the states and reach a purge: 60%
+  ;; from active, 25% from archived and trashed, which then stay a while
+  ;; for their refusals, a trashed node's a purge two times in three, for
+  ;; the purged ids; else, and at any other target, any of the five.
+  (define (choose-change rng n where)
+    (let ((allowed (and (eq? where 'own)
+                        (filter (lambda (ev) (memq (mnode-state n) (cadr (assq ev lifecycle-moves))))
+                                lifecycle-events))))
+      (if (and (pair? allowed) (< (rng-below! rng 100) (if (eq? (mnode-state n) 'active) 60 25)))
+          (if (eq? (mnode-state n) 'trashed)
+              (if (< (rng-below! rng 3) 2) 'purge 'untrash)
+              (rng-pick! rng allowed))
+          (rng-pick! rng lifecycle-events))))
 
   ;; choose-kind : Rng (U MNode #f) -> (values (U String #f) Symbol)
   ;; A replace's kind: left out, the node's own, or another.
@@ -655,15 +791,23 @@
                           'kind-other)))))
 
   ;; choose-snapshot : Rng (U MNode #f) -> (values Natural Symbol)
-  ;; The newest snapshot, an earlier one, or one the node does not have.
+  ;; The newest snapshot; an earlier one the node has; a gap, a revision a
+  ;; change of state made, which has none; or one past the node's revision.
+  ;; For a purged node any revision it reached; for no node, 1 to 3.
   (define (choose-snapshot rng n)
-    (if (not n)
-        (values (+ 1 (rng-below! rng 3)) 'snap-any)
-        (let* ((rev (node-rev n))
-               (r (rng-below! rng 100)))
-          (cond ((< r 35) (values rev 'snap-newest))
-                ((and (> rev 1) (< r 70)) (values (+ 1 (rng-below! rng (- rev 1))) 'snap-older))
-                (else (values (+ rev 1 (rng-below! rng 3)) 'snap-unknown))))))
+    (cond
+     ((not n) (values (+ 1 (rng-below! rng 3)) 'snap-any))
+     ((not (live? n)) (values (+ 1 (rng-below! rng (node-rev n))) 'snap-purged))
+     (else
+      (let* ((rev (node-rev n))
+             (have (map msnap-revision (mnode-snaps n)))
+             (older (cdr have))
+             (gaps (filter (lambda (k) (not (memv k have))) (from-to 1 rev)))
+             (r (rng-below! rng 100)))
+        (cond ((< r 20) (values (car have) 'snap-newest))
+              ((and (pair? older) (< r 65)) (values (rng-pick! rng older) 'snap-older))
+              ((and (pair? gaps) (< r 82)) (values (rng-pick! rng gaps) 'snap-gap))
+              (else (values (+ rev 1 (rng-below! rng 3)) 'snap-unknown)))))))
 
   ;; bad-headers : Rng Symbol Natural -> (values (Listof Header) Symbol)
   ;; A precondition of a shape D4 refuses, built round revision N, the
@@ -684,8 +828,21 @@
                                               (list (list 'none-match-tag (cons "If-None-Match" tag))
                                                     (list 'none-match-twice (cons "If-None-Match" "*")
                                                           (cons "If-None-Match" "*")))
-                                              (let ((c (list 'create-on-restore (cons "If-None-Match" "*")))) (list c c c)))))))
+                                              (let ((c (list (if (eq? route 'restore) 'create-on-restore
+                                                                 'create-on-lifecycle)
+                                                             (cons "If-None-Match" "*"))))
+                                                (list c c c)))))))
       (values (cdr choice) (sym "bad-" (car choice)))))
+
+  ;; The routes a write is sent to with no precondition, or a bad one: a
+  ;; PUT most, then a restore, then each state change.
+  (define bare-routes '(put put put put put restore restore archive unarchive trash untrash purge))
+
+  ;; list-aim : (U String 'twice #f) -> Symbol
+  (define (list-aim q)
+    (case (list-state q)
+      ((invalid) 'list-state-invalid)
+      (else (if q (sym "list-state-" q) 'list-state-default))))
 
   ;; next-event : Rng World Natural -> Event
   (define (next-event rng w now0)
@@ -693,67 +850,87 @@
                   ((key) (rng-pick! rng (key-ids-of tag)))
                   ((now wait) (next-time rng now0 (world-key-last-used w key))))
       (let* ((upper? (= 0 (rng-below! rng 5)))
-             (many (length (world-nodes w)))
-             (kind (rng-weighted! rng (list (cons (cond ((< many 4) 30) ((< many 8) 10) (else 5)) 'create) '(32 . replace)
-                                            '(18 . restore) '(3 . no-pre) '(7 . bad-pre)
-                                            '(6 . get-node) '(4 . list-nodes) '(5 . list-revisions)
-                                            '(5 . get-snapshot)))))
+             (many (length (live-nodes w)))
+             (kind (rng-weighted! rng (list (cons (cond ((< many 4) 30) ((< many 8) 10) (else 5)) 'create)
+                                            '(28 . replace) '(16 . restore) '(38 . lifecycle)
+                                            '(4 . no-pre) '(8 . bad-pre)
+                                            '(7 . get-node) '(7 . list-nodes) '(6 . list-revisions)
+                                            '(12 . get-snapshot)))))
         (case kind
           ((create)
            (let* ((own (nodes-of w tag))
                   (theirs (nodes-of w (other-tag tag)))
+                  (gone-own (purged-of w tag))
+                  (gone-theirs (purged-of w (other-tag tag)))
                   (aim (rng-weighted! rng (append '((55 . create-fresh))
                                                   (if (pair? own) '((20 . create-own)) '())
-                                                  (if (pair? theirs) '((25 . create-other)) '()))))
+                                                  (if (pair? theirs) '((25 . create-other)) '())
+                                                  (if (pair? gone-own) '((15 . create-purged-own)) '())
+                                                  (if (pair? gone-theirs) '((15 . create-purged-other)) '()))))
                   (id (case aim
                         ((create-own) (mnode-id (rng-pick! rng own)))
                         ((create-other) (mnode-id (rng-pick! rng theirs)))
+                        ((create-purged-own) (mnode-id (rng-pick! rng gone-own)))
+                        ((create-purged-other) (mnode-id (rng-pick! rng gone-theirs)))
                         (else (fresh-node-id rng w))))
                   (k (rng-pick! rng kinds))
                   (c (random-content rng k)))
-             (make-event 'put now tag key id 'create (list (cons "If-None-Match" "*")) c #f #f upper?
+             (make-event 'put now tag key id 'create (list (cons "If-None-Match" "*")) c #f #f #f upper?
                          (list aim wait))))
           ((replace)
-           (let*-values (((id n where) (choose-target rng w tag))
-                         ((rev rev-aim) (choose-revision rng n (eq? where 'other)))
+           (let*-values (((id n where) (choose-target rng w tag by-revisions))
+                         ((rev rev-aim) (choose-revision rng n (memq where '(other purged))))
                          ((k kind-aim) (choose-kind rng n)))
              (let ((c (random-content rng k)))
-               (make-event 'put now tag key id rev (list (cons "If-Match" (etag-of rev))) c #f #f upper?
-                           (list (sym "replace-" where "-" rev-aim) kind-aim wait)))))
+               (make-event 'put now tag key id rev (list (cons "If-Match" (etag-of rev))) c #f #f #f upper?
+                           (append (list (sym "replace-" where "-" rev-aim) kind-aim wait)
+                                   (if (eq? where 'own) (list (sym "replace-own-" (mnode-state n))) '()))))))
           ((restore)
-           (let*-values (((id n where) (choose-target rng w tag))
-                         ((rev rev-aim) (choose-revision rng n (eq? where 'other)))
+           (let*-values (((id n where) (choose-target rng w tag by-snapshots))
+                         ((rev rev-aim) (choose-revision rng n (memq where '(other purged))))
                          ((k snap-aim) (choose-snapshot rng n)))
-             (make-event 'restore now tag key id rev (list (cons "If-Match" (etag-of rev))) #f k #f upper?
-                         (list (sym "restore-" where "-" rev-aim) (sym "restore-" snap-aim) wait))))
+             (make-event 'restore now tag key id rev (list (cons "If-Match" (etag-of rev))) #f k #f #f upper?
+                         (append (list (sym "restore-" where "-" rev-aim) (sym "restore-" snap-aim) wait)
+                                 (if (eq? where 'own) (list (sym "restore-own-" (mnode-state n))) '())))))
+          ((lifecycle)
+           (let*-values (((id n where) (choose-target rng w tag by-revisions))
+                         ((ev) (choose-change rng n where))
+                         ((rev rev-aim) (choose-revision rng n (memq where '(other purged)))))
+             (make-event ev now tag key id rev (list (cons "If-Match" (etag-of rev))) #f #f #f #f upper?
+                         (append (list (sym ev "-" where "-" rev-aim) wait)
+                                 (if (eq? where 'own) (list (sym ev "-own-" (mnode-state n))) '())))))
           ((no-pre)
-           (let*-values (((id n where) (choose-target rng w tag)))
-             (let* ((route (rng-pick! rng '(put put restore)))
+           (let*-values (((id n where) (choose-target rng w tag by-revisions)))
+             (let* ((route (rng-pick! rng bare-routes))
                     (c (and (eq? route 'put) (random-content rng (rng-pick! rng kinds)))))
-               (make-event route now tag key id 'missing '() c (and (eq? route 'restore) 1) #f upper?
+               (make-event route now tag key id 'missing '() c (and (eq? route 'restore) 1) #f #f upper?
                            (list (sym "no-precondition-" route) wait)))))
           ((bad-pre)
-           (let*-values (((id n where) (choose-target rng w tag)))
-             (let* ((route (rng-pick! rng '(put put restore))))
+           (let*-values (((id n where) (choose-target rng w tag by-revisions)))
+             (let* ((route (rng-pick! rng bare-routes)))
                (let*-values (((hs aim) (bad-headers rng route (if n (node-rev n) 1))))
                  (let ((c (and (eq? route 'put) (random-content rng (rng-pick! rng kinds)))))
-                   (make-event route now tag key id 'invalid hs c (and (eq? route 'restore) 1) #f upper?
+                   (make-event route now tag key id 'invalid hs c (and (eq? route 'restore) 1) #f #f upper?
                                (list aim (sym "bad-precondition-" route) wait)))))))
           ((get-node)
-           (let*-values (((id n where) (choose-target rng w tag)))
-             (make-event 'get-node now tag key id #f '() #f #f #f upper? (list (sym "get-node-" where) wait))))
+           (let*-values (((id n where) (choose-target rng w tag by-revisions)))
+             (make-event 'get-node now tag key id #f '() #f #f #f #f upper? (list (sym "get-node-" where) wait))))
           ((list-nodes)
-           (let ((limit (rng-pick! rng '(1 2 3 #f))))
-             (make-event 'list-nodes now tag key #f #f '() #f #f limit #f (list 'list-nodes wait))))
+           (let* ((limit (rng-pick! rng '(1 2 3 #f)))
+                  (q (rng-weighted! rng '((28 . none) (18 . "active") (21 . "archived") (21 . "trashed")
+                                          (3 . "purged") (3 . "ARCHIVED") (3 . "deleted") (3 . twice))))
+                  (query (if (eq? q 'none) #f q)))
+             (make-event 'list-nodes now tag key #f #f '() #f #f limit query #f
+                         (list 'list-nodes (list-aim query) wait))))
           ((list-revisions)
-           (let*-values (((id n where) (choose-target rng w tag)))
+           (let*-values (((id n where) (choose-target rng w tag by-snapshots)))
              (let ((limit (rng-pick! rng '(1 2 3 #f))))
-               (make-event 'list-revisions now tag key id #f '() #f #f limit upper?
+               (make-event 'list-revisions now tag key id #f '() #f #f limit #f upper?
                            (list (sym "list-revisions-" where) wait)))))
           (else
-           (let*-values (((id n where) (choose-target rng w tag))
+           (let*-values (((id n where) (choose-target rng w tag by-snapshots))
                          ((k snap-aim) (choose-snapshot rng n)))
-             (make-event 'get-snapshot now tag key id #f '() #f k #f upper?
+             (make-event 'get-snapshot now tag key id #f '() #f k #f #f upper?
                          (list (sym "get-snapshot-" where) (sym "get-" snap-aim) wait))))))))
 
   ;;; The shell: one request through the stack
@@ -779,7 +956,7 @@
     (let ((t (id-text (event-id e)))) (if (event-upper? e) (string-upcase t) t)))
   (define (node-path e) (string-append "/v1/nodes/" (path-id e)))
 
-  ;; content-text : Content -> String     the PUT's JSON
+  ;; content->text : Content -> String     the PUT's JSON
   (define (content->text c)
     (json->string (append (if (content-kind c) (list (cons "kind" (content-kind c))) '())
                           (list (cons "title" (content-title c)) (cons "body" (content-body c))
@@ -788,13 +965,21 @@
 
   (define (cursor-text x) (if (number? x) (number->string x) (format "~a" x)))
 
-  ;; walk : Handler Header String (U Natural #f) (Alist -> Any) -> Obs
-  ;; A list page by page, each `next` followed as `after`, at most 60 pages.
-  ;; LAST-OF is what a full page's `next` must be, of its last item.
-  (define (walk h auth base limit last-of)
+  ;; state-query : (U String 'twice #f) -> (Listof String)     a list's ?state= fields
+  (define (state-query q)
+    (cond ((not q) '())
+          ((eq? q 'twice) '("state=active" "state=active"))
+          (else (list (string-append "state=" q)))))
+
+  ;; walk : Handler Header String (Listof String) (U Natural #f) (Alist -> Any) -> Obs
+  ;; A list page by page, each `next` followed as `after`, at most 60 pages,
+  ;; with the query fields EXTRA on every page. LAST-OF is what a full
+  ;; page's `next` must be, of its last item.
+  (define (walk h auth base extra limit last-of)
     (let ((cap (or limit 50)))
       (let loop ((after #f) (n 1) (items '()) (problems '()))
-        (let* ((q (append (if limit (list (string-append "limit=" (number->string limit))) '())
+        (let* ((q (append extra
+                          (if limit (list (string-append "limit=" (number->string limit))) '())
                           (if after (list (string-append "after=" (cursor-text after))) '())))
                (target (if (null? q) base (string-append base "?" (join q "&"))))
                (a (exchange h 'GET target (list auth))))
@@ -833,12 +1018,17 @@
          (single (exchange h 'POST (string-append (node-path e) "/revisions/" (number->string (event-snap e))
                                                   "/restore")
                            (cons auth (event-headers e)))))
+        ((archive unarchive trash untrash)
+         (single (exchange h 'POST (string-append (node-path e) "/" (symbol->string (event-kind e)))
+                           (cons auth (event-headers e)))))
+        ((purge) (single (exchange h 'DELETE (node-path e) (cons auth (event-headers e)))))
         ((get-node) (single (exchange h 'GET (node-path e) (list auth))))
         ((get-snapshot)
          (single (exchange h 'GET (string-append (node-path e) "/revisions/" (number->string (event-snap e)))
                            (list auth))))
-        ((list-nodes) (walk h auth "/v1/nodes" (event-limit e) (lambda (item) (field item "id"))))
-        (else (walk h auth (string-append (node-path e) "/revisions") (event-limit e)
+        ((list-nodes) (walk h auth "/v1/nodes" (state-query (event-query e)) (event-limit e)
+                            (lambda (item) (field item "id"))))
+        (else (walk h auth (string-append (node-path e) "/revisions") '() (event-limit e)
                     (lambda (item) (field item "revision")))))))
 
   ;;; Comparing an answer
@@ -857,33 +1047,64 @@
        (same "ETag" (expectation-etag x) (obs-etag o))
        (same "Location" (expectation-location x) (obs-location o))
        (obs-problems o)
-       (if (and (eqv? want got) (memv want '(200 201)))
-           (append (if (expectation-json x) (same "the JSON" (expectation-json x) (sorted-json (obs-json o))) '())
+       (if (and (eqv? want got) (memv want '(200 201 204)))
+           (append (let ((j (expectation-json x)))
+                     (cond ((not j) '())
+                           ((eq? j 'empty) (same "the body" 'empty (obs-json o)))
+                           (else (same "the JSON" j (sorted-json (obs-json o))))))
                    (if (expectation-items x)
                        (same "the items" (expectation-items x) (map sorted-json (obs-items o)))
                        '()))
            '()))))
 
+  ;; ids-rising? : (Listof Any) -> Boolean     strings, each greater than the one before
+  (define (ids-rising? ids)
+    (or (null? ids) (null? (cdr ids))
+        (and (string? (car ids)) (string? (cadr ids)) (string<? (car ids) (cadr ids)) (ids-rising? (cdr ids)))))
+
   ;; law-breaks : World Event Obs -> (Listof String)
-  ;; The answer held to plan-status; and a list shows only the account's own (H6).
+  ;; An answer held to laws that need no model. A node's answer shows a
+  ;; live state (G14) and its revision as its ETag (H14); a state change's
+  ;; answer has no body (the plan's choice); a purge's 204 has neither body
+  ;; nor ETag (G6); a list shows only the account's own live nodes (H6,
+  ;; G14), each in the state asked (G8), each once, by id (H18').
   (define (law-breaks w e o)
-    (let ((p (plan-status w e)))
+    (let ((status (obs-status o)) (kind (event-kind e)) (j (obs-json o)))
       (append
-       (if (eqv? (car p) (obs-status o))
-           '()
-           (list (format "D5 in the plan's words (~a): ~a, but the handlers answered ~a"
-                         (cadr p) (car p) (obs-status o))))
-       (if (and (eq? (event-kind e) 'list-nodes) (eqv? (obs-status o) 200))
-           (let* ((mine (map (lambda (n) (id-text (mnode-id n))) (nodes-of w (event-tag e))))
-                  (strays (filter (lambda (item) (not (member (guard (c (#t #f)) (field item "id")) mine)))
-                                  (obs-items o))))
-             (if (null? strays) '() (list (format "H6: the list shows ~a items that are not the account's" (length strays)))))
+       (if (and (memv status '(200 201)) (memq kind (cons 'get-node write-kinds)) (list? j))
+           (let ((s (guard (c (#t #f)) (field j "state")))
+                 (r (guard (c (#t #f)) (field j "revision"))))
+             (append
+              (if (member s '("active" "archived" "trashed")) '()
+                  (list (format "G14: a node's answer shows the state ~s" s)))
+              (if (and (integer? r) (equal? (obs-etag o) (etag-of r))) '()
+                  (list (format "H14: the ETag ~s is not the answer's revision ~s" (obs-etag o) r)))
+              (if (and (life-kind? kind) (assoc "body" j))
+                  (list "the plan: a state change's answer shows a body")
+                  '())))
+           '())
+       (if (and (eq? kind 'purge) (eqv? status 204))
+           (append (if (obs-etag o) (list (format "G6: a purge's 204 has the ETag ~s" (obs-etag o))) '())
+                   (if (eq? j 'empty) '() (list (format "G6: a purge's 204 has a body: ~s" j))))
+           '())
+       (if (and (eq? kind 'list-nodes) (eqv? status 200))
+           (let* ((asked (list-state (event-query e)))
+                  (ids (map (lambda (item) (guard (c (#t #f)) (field item "id"))) (obs-items o)))
+                  (states (map (lambda (item) (guard (c (#t #f)) (field item "state"))) (obs-items o)))
+                  (mine (map (lambda (n) (id-text (mnode-id n))) (nodes-of w (event-tag e))))
+                  (strays (filter (lambda (i) (not (member i mine))) ids)))
+             (append
+              (if (null? strays) '()
+                  (list (format "H6, G14: the list shows ~a items that are no live node of the account's" (length strays))))
+              (if (and (symbol? asked) (for-all (lambda (s) (equal? s (symbol->string asked))) states)) '()
+                  (list (format "G8: the list for ~a shows the states ~s" asked states)))
+              (if (ids-rising? ids) '() (list "H18': the list does not show each node once, by id"))))
            '()))))
 
   ;;; The database
 
   ;; Db = (List Nodes Snaps Changes Keys), each a list of rows, each row a list:
-  ;;   node     (id owner author kind title content_type props revision created updated)
+  ;;   node     (id owner author kind title content_type props revision created updated state)
   ;;   snapshot (node revision author title content_type props created body)
   ;;   change   (owner seq node revision op created)
   ;;   key      (id account last_used)
@@ -897,6 +1118,7 @@
   (define (n-rev r) (list-ref r 7))
   (define (n-created r) (list-ref r 8))
   (define (n-updated r) (list-ref r 9))
+  (define (n-state r) (list-ref r 10))
   (define (s-node r) (list-ref r 0))
   (define (s-rev r) (list-ref r 1))
   (define (s-author r) (list-ref r 2))
@@ -906,6 +1128,10 @@
   (define (s-created r) (list-ref r 6))
   (define (c-owner r) (list-ref r 0))
   (define (c-seq r) (list-ref r 1))
+  (define (c-node r) (list-ref r 2))
+  (define (c-rev r) (list-ref r 3))
+  (define (c-op r) (list-ref r 4))
+  (define (c-created r) (list-ref r 5))
   (define (k-account r) (list-ref r 1))
 
   (define (row->list v) (map (lambda (c) (if (sql-null? c) #f c)) (vector->list v)))
@@ -915,7 +1141,8 @@
     (run-read store
               (lambda (tx)
                 (let* ((nodes (tx-query tx (string-append "SELECT id, owner, author, kind, title, content_type,"
-                                                          " props, revision, created, updated FROM nodes ORDER BY id")))
+                                                          " props, revision, created, updated, state"
+                                                          " FROM nodes ORDER BY id")))
                        (snaps (tx-query tx (string-append "SELECT node, revision, author, title, content_type,"
                                                           " props, created, body FROM revisions"
                                                           " ORDER BY node, revision")))
@@ -929,44 +1156,93 @@
   (define (find-node rows id) (find (lambda (r) (bytevector=? (n-id r) id)) rows))
   (define (but-node rows id) (filter (lambda (r) (not (bytevector=? (n-id r) id))) rows))
 
-  ;; node-law-breaks : Row (Listof Row) -> (Listof String)
-  ;; H2, H3, H15 and H16 of one node's row and its snapshots.
-  (define (node-law-breaks r ss)
+  ;; The ops that write content, and so a snapshot.
+  (define content-ops '("create" "update" "restore"))
+
+  ;; feed-state : (Listof String) -> (U String #f)
+  ;; The state a node's change rows leave it in, oldest first: a create
+  ;; makes it active, an update or a restore keeps it, a change of state
+  ;; lands where lifecycle-moves says. #f for an op none of these is.
+  (define (feed-state ops)
+    (fold-left (lambda (state op)
+                 (cond ((not state) #f)
+                       ((string=? op "create") "active")
+                       ((member op '("update" "restore")) state)
+                       ((find (lambda (m) (string=? (symbol->string (car m)) op)) lifecycle-moves)
+                        => (lambda (m) (symbol->string (caddr m))))
+                       (else #f)))
+               "none" ops))
+
+  ;; node-law-breaks : Row (Listof Row) (Listof Row) -> (Listof String)
+  ;; One node's row, its snapshots (by revision) and its change rows (in
+  ;; the feed's order): G3, G6, G16, H2', H3', H15', H16.
+  (define (node-law-breaks r ss cs)
     (let* ((n (n-rev r))
            (revs (map s-rev ss))
-           (top (find (lambda (s) (= (s-rev s) n)) ss))
+           (crevs (map c-rev cs))
+           (ops (map c-op cs))
+           (state (n-state r))
+           (purged? (equal? state "purged"))
+           (top (and (pair? ss) (car (reverse ss))))
+           (newest (and (pair? cs) (car (reverse cs))))
            (name (id-text (n-id r))))
       (append
-       (if (equal? revs (from-to 1 n)) '()
-           (list (format "H3: node ~a is at revision ~a; its snapshots are ~a" name n revs)))
-       (if (not top)
-           (list (format "H2: node ~a has no snapshot at its revision ~a" name n))
-           (append
-            (if (and (equal? (n-title r) (s-title top)) (equal? (n-type r) (s-type top))
-                     (equal? (n-props r) (s-props top)))
-                '()
-                (list (format "H2: node ~a's title, content type and props are ~s; its newest snapshot's ~s" name
-                              (list (n-title r) (n-type r) (n-props r)) (list (s-title top) (s-type top) (s-props top)))))
-            (if (equal? (n-updated r) (s-created top)) '()
-                (list (format "H15: node ~a's updated is ~a; its newest snapshot's created ~a" name
-                              (n-updated r) (s-created top))))))
+       (if (equal? crevs (from-to 1 n)) '()
+           (list (format "G3: node ~a is at revision ~a; its change rows' revisions, in the feed's order, are ~a"
+                         name n crevs)))
+       (if (and (pair? ops) (string=? (car ops) "create")) '()
+           (list (format "H4: node ~a's first change row is ~s, not its create" name (if (pair? ops) (car ops) "none"))))
+       (let ((after (member "purge" ops)))
+         (if (or (not after) (null? (cdr after))) '()
+             (list (format "G16: node ~a has change rows after its purge: ~a" name (cdr after)))))
+       (let ((want (feed-state ops)))
+         (if (equal? want state) '()
+             (list (format "G3: node ~a is ~a, but its change rows ~a leave it ~a" name state ops want))))
+       (let ((want (if purged? '() (map c-rev (filter (lambda (c) (member (c-op c) content-ops)) cs)))))
+         (if (equal? revs want) '()
+             (list (format "H3': node ~a (~a, at ~a) has snapshots ~a; its content changes are at ~a"
+                           name state n revs want))))
+       (cond
+        (purged?
+         (if (and (equal? (n-title r) "") (equal? (n-type r) purged-type) (equal? (n-props r) "{}")) '()
+             (list (format "G6: purged node ~a's row is not emptied: ~s" name (list (n-title r) (n-type r) (n-props r))))))
+        ((not top) (list (format "H2': node ~a (~a) has no snapshot" name state)))
+        ((and (equal? (n-title r) (s-title top)) (equal? (n-type r) (s-type top)) (equal? (n-props r) (s-props top)))
+         '())
+        (else
+         (list (format "H2': node ~a's title, content type and props are ~s; its newest snapshot's ~s" name
+                       (list (n-title r) (n-type r) (n-props r)) (list (s-title top) (s-type top) (s-props top))))))
+       (if (and newest (equal? (n-updated r) (c-created newest))) '()
+           (list (format "H15': node ~a's updated is ~a; its newest change row's time ~a" name (n-updated r)
+                         (and newest (c-created newest)))))
+       (if (and (pair? cs) (equal? (n-created r) (c-created (car cs)))) '()
+           (list (format "H15': node ~a's created is ~a; its create's time ~a" name (n-created r)
+                         (and (pair? cs) (c-created (car cs))))))
        (if (bytevector=? (n-author r) (n-owner r)) '()
            (list (format "H16: node ~a's author is ~a, its owner ~a" name (account-label (n-author r))
                          (account-label (n-owner r)))))
        (let ((bad (filter (lambda (s) (not (bytevector=? (s-author s) (n-owner r)))) ss)))
          (if (null? bad) '()
              (list (format "H16: node ~a's snapshots ~a have an author that is not its owner ~a" name
-                           (map s-rev bad) (account-label (n-owner r)))))))))
+                           (map s-rev bad) (account-label (n-owner r))))))
+       (let ((bad (filter (lambda (c) (not (bytevector=? (c-owner c) (n-owner r)))) cs)))
+         (if (null? bad) '()
+             (list (format "H6: node ~a has change rows in another account's feed" name)))))))
 
   ;; always-breaks : Db -> (Listof String)
   (define (always-breaks db)
     (let ((nodes (car db)) (snaps (cadr db)) (changes (caddr db)))
       (append
        (fold-right (lambda (r acc)
-                     (append (node-law-breaks r (filter (lambda (s) (bytevector=? (s-node s) (n-id r))) snaps)) acc))
+                     (append (node-law-breaks r
+                                              (filter (lambda (s) (bytevector=? (s-node s) (n-id r))) snaps)
+                                              (filter (lambda (c) (bytevector=? (c-node c) (n-id r))) changes))
+                             acc))
                    '() nodes)
        (if (for-all (lambda (s) (find-node nodes (s-node s))) snaps) '()
-           (list "H3: a snapshot whose node has no row"))
+           (list "H3': a snapshot whose node has no row"))
+       (if (for-all (lambda (c) (find-node nodes (c-node c))) changes) '()
+           (list "H4: a change row whose node has no row"))
        (fold-right (lambda (a acc)
                      (let ((seqs (map c-seq (filter (lambda (c) (bytevector=? (c-owner c) (macct-id a))) changes))))
                        (if (equal? seqs (from-to 1 (length seqs))) acc
@@ -974,90 +1250,129 @@
                                  acc))))
                    '() model-accounts))))
 
-  ;; op-of : Event -> String     the change row's op an accepted write makes
+  ;; op-of : Event -> String     the change row's op an accepted write makes (L10)
   (define (op-of e)
-    (cond ((eq? (event-kind e) 'restore) "restore")
-          ((eq? (event-pre e) 'create) "create")
-          (else "update")))
+    (case (event-kind e)
+      ((put) (if (eq? (event-pre e) 'create) "create" "update"))
+      ((restore) "restore")
+      (else (symbol->string (event-kind e)))))
 
   ;; accepted-breaks : Event Db Db -> (Listof String)
-  ;; An accepted write: H1, H3, H4, H6, H11, H15, H16 between the tables
-  ;; before and after, and only the asking key's last_used may move, to now.
+  ;; An accepted write, between the tables before and after: H1, H3', H4,
+  ;; H6, H11, H15', H16, G3, G6, G9, G11, G12; and only the asking key's
+  ;; last_used may move, to now.
   (define (accepted-breaks e db0 db1)
     (let* ((id (event-id e))
            (now (event-now e))
            (asker (account-id-of (event-tag e)))
            (name (id-text id))
+           (op (op-of e))
            (r0 (find-node (car db0) id))
            (r1 (find-node (car db1) id)))
       (if (not r1)
-          (list (format "H1: an accepted write left node ~a with no row" name))
+          (list (format "H1: an accepted ~a left node ~a with no row" op name))
           (let* ((rev (n-rev r1))
-                 (new? (lambda (s) (and (bytevector=? (s-node s) id) (= (s-rev s) rev))))
-                 (added (filter new? (cadr db1)))
-                 (kept (filter (lambda (s) (not (new? s))) (cadr db1)))
+                 (mine? (lambda (s) (bytevector=? (s-node s) id)))
+                 (mine0 (filter mine? (cadr db0)))
+                 (mine1 (filter mine? (cadr db1)))
                  (m0 (length (filter (lambda (c) (bytevector=? (c-owner c) asker)) (caddr db0))))
-                 (want-change (list asker (+ m0 1) id rev (op-of e) now))
+                 (want-change (list asker (+ m0 1) id rev op now))
                  (changes1 (caddr db1)))
             (append
              (if (= rev (+ 1 (if r0 (n-rev r0) 0))) '()
-                 (list (format "H1: an accepted write moved node ~a from revision ~a to ~a" name
+                 (list (format "H1: an accepted ~a moved node ~a from revision ~a to ~a" op name
                                (if r0 (n-rev r0) "none") rev)))
              (if (bytevector=? (n-owner r1) asker) '()
                  (list (format "H6: an accepted write by ~a leaves node ~a owned by ~a" (event-tag e) name
                                (account-label (n-owner r1)))))
              (if r0
                  (append (if (equal? (n-kind r1) (n-kind r0)) '()
-                             (list (format "H11: node ~a's kind went from ~s to ~s" name (n-kind r0) (n-kind r1))))
+                             (list (format "H11, G9: node ~a's kind went from ~s to ~s" name (n-kind r0) (n-kind r1))))
                          (if (equal? (n-created r1) (n-created r0)) '()
-                             (list (format "H15: node ~a's created went from ~a to ~a" name (n-created r0) (n-created r1)))))
+                             (list (format "H15', G9: node ~a's created went from ~a to ~a" name (n-created r0)
+                                           (n-created r1))))
+                         (if (equal? (n-author r1) (n-author r0)) '()
+                             (list (format "G9: node ~a's author went from ~a to ~a" name (account-label (n-author r0))
+                                           (account-label (n-author r1))))))
                  (append (if (equal? (n-kind r1) (content-kind (event-content e))) '()
                              (list (format "H11: node ~a was made of kind ~s, the create's ~s" name (n-kind r1)
                                            (content-kind (event-content e)))))
                          (if (equal? (n-created r1) now) '()
-                             (list (format "H15: node ~a was made with created ~a, the time ~a" name (n-created r1) now)))))
+                             (list (format "H15': node ~a was made with created ~a, the time ~a" name (n-created r1) now)))))
              (if (equal? (n-updated r1) now) '()
-                 (list (format "H15: node ~a's updated is ~a, not the write's time ~a" name (n-updated r1) now)))
+                 (list (format "H15': node ~a's updated is ~a, not the ~a's time ~a" name (n-updated r1) op now)))
              (if (equal? (but-node (car db1) id) (but-node (car db0) id)) '()
-                 (list (format "H1: an accepted write to ~a changed another node's row" name)))
-             (if (equal? kept (cadr db0)) '()
-                 (list (format "H3: an accepted write to ~a changed, added or removed an earlier snapshot" name)))
-             (if (not (= (length added) 1))
-                 (list (format "H3: an accepted write to ~a left no snapshot at its revision ~a" name rev))
-                 (append (if (equal? (s-created (car added)) now) '()
-                             (list (format "H15: the new snapshot's created is ~a, not the write's time ~a"
-                                           (s-created (car added)) now)))
-                         (if (bytevector=? (s-author (car added)) asker) '()
-                             (list (format "H16: the new snapshot's author is ~a, not ~a"
-                                           (account-label (s-author (car added))) (event-tag e))))))
+                 (list (format "H1: an accepted ~a of ~a changed another node's row" op name)))
+             (if (equal? (filter (lambda (s) (not (mine? s))) (cadr db1)) (filter (lambda (s) (not (mine? s))) (cadr db0)))
+                 '()
+                 (list (format "H3': an accepted ~a of ~a changed another node's snapshots" op name)))
+             (cond
+              ((member op content-ops)
+               (let ((added (filter (lambda (s) (= (s-rev s) rev)) mine1))
+                     (kept (filter (lambda (s) (not (= (s-rev s) rev))) mine1))
+                     (want-state (if r0 (n-state r0) "active")))
+                 (append
+                  (if (equal? kept mine0) '()
+                      (list (format "H3': an accepted ~a of ~a changed, added or removed an earlier snapshot" op name)))
+                  (if (not (= (length added) 1))
+                      (list (format "H3': an accepted ~a of ~a left no snapshot at its revision ~a" op name rev))
+                      (append (if (equal? (s-created (car added)) now) '()
+                                  (list (format "H15': the new snapshot's created is ~a, not the write's time ~a"
+                                                (s-created (car added)) now)))
+                              (if (bytevector=? (s-author (car added)) asker) '()
+                                  (list (format "H16: the new snapshot's author is ~a, not ~a"
+                                                (account-label (s-author (car added))) (event-tag e))))))
+                  (if (equal? (n-state r1) want-state) '()
+                      (list (format "G12: an accepted ~a of ~a moved its state from ~a to ~a" op name want-state
+                                    (n-state r1)))))))
+              ((string=? op "purge")
+               (append
+                (if (null? mine1) '()
+                    (list (format "G6: a purge of ~a left its snapshots ~a" name (map s-rev mine1))))
+                (if (and (equal? (n-title r1) "") (equal? (n-props r1) "{}") (equal? (n-type r1) purged-type)
+                         (equal? (n-state r1) "purged"))
+                    '()
+                    (list (format "G6: a purge of ~a left its row ~s" name
+                                  (list (n-title r1) (n-type r1) (n-props r1) (n-state r1)))))))
+              (else
+               (let ((lands (symbol->string (caddr (assq (event-kind e) lifecycle-moves)))))
+                 (append
+                  (if (equal? mine1 mine0) '()
+                      (list (format "G3: an accepted ~a of ~a wrote, changed or removed a snapshot: ~a before, ~a after"
+                                    op name (map s-rev mine0) (map s-rev mine1))))
+                  (if (and r0 (equal? (list (n-title r1) (n-type r1) (n-props r1)) (list (n-title r0) (n-type r0) (n-props r0))))
+                      '()
+                      (list (format "G11: an accepted ~a of ~a changed its content" op name)))
+                  (if (equal? (n-state r1) lands) '()
+                      (list (format "G3: an accepted ~a left ~a ~a, not ~a" op name (n-state r1) lands)))))))
              (if (and (= (length changes1) (+ 1 (length (caddr db0))))
                       (member want-change changes1)
                       (for-all (lambda (c) (member c changes1)) (caddr db0)))
                  '()
                  (list (format "H4: an accepted ~a adds one change row, (~a ~a ~a ~a ~s ~a); the rows before were ~a, after ~a"
-                               (op-of e) (event-tag e) (+ m0 1) name rev (op-of e) now
+                               op (event-tag e) (+ m0 1) name rev op now
                                (length (caddr db0)) (length changes1))))
              (let ((asking (event-key e)))
                (fold-right (lambda (k0 k1 acc)
                              (cond ((equal? k0 k1) acc)
                                    ((and (bytevector=? (car k1) asking) (eqv? (caddr k1) now)) acc)
-                                   (else (cons (format "H5: an accepted write moved key ~a's last_used from ~a to ~a"
-                                                       (key-label (car k0)) (caddr k0) (caddr k1))
+                                   (else (cons (format "H5: an accepted ~a moved key ~a's last_used from ~a to ~a"
+                                                       op (key-label (car k0)) (caddr k0) (caddr k1))
                                                acc))))
                            '() (cadddr db0) (cadddr db1))))))))
 
   ;; unchanged-breaks : Event Natural Db Db -> (Listof String)
-  ;; H5: a refused write, and any read, change nothing at all.
+  ;; H5, G4, G13: a refused write, and any read, change nothing at all.
   (define (unchanged-breaks e status db0 db1)
-    (let ((what (if (memq (event-kind e) '(put restore))
-                    (format "a refused write (~a)" status)
+    (let ((what (if (write-kind? (event-kind e))
+                    (format "a refused ~a (~a)" (event-kind e) status)
                     (format "a read (~a)" status))))
       (fold-right (lambda (name t0 t1 acc)
-                    (if (equal? t0 t1) acc (cons (format "H5: ~a changed ~a" what name) acc)))
+                    (if (equal? t0 t1) acc (cons (format "H5, G13: ~a changed ~a" what name) acc)))
                   '() '("nodes" "revisions" "changes" "api_keys' last_used") db0 db1)))
 
   ;; other-breaks : Event Db Db -> (Listof String)
-  ;; H6: no request changes a row of the other account's.
+  ;; H6, G7: no request changes a row of the other account's.
   (define (other-breaks e db0 db1)
     (let* ((other (account-id-of (other-tag (event-tag e))))
            (theirs (lambda (db)
@@ -1068,12 +1383,12 @@
                              (filter (lambda (c) (bytevector=? (c-owner c) other)) (caddr db))
                              (filter (lambda (k) (bytevector=? (k-account k) other)) (cadddr db)))))))
       (if (equal? (theirs db0) (theirs db1)) '()
-          (list (format "H6: a request by ~a changed the rows of ~a" (event-tag e) (other-tag (event-tag e)))))))
+          (list (format "H6, G7: a request by ~a changed the rows of ~a" (event-tag e) (other-tag (event-tag e)))))))
 
   ;; db-law-breaks : Event Obs Db Db -> (Listof String)
   (define (db-law-breaks e o db0 db1)
     (let* ((status (obs-status o))
-           (accepted? (and (memq (event-kind e) '(put restore)) (memv status '(200 201)) #t)))
+           (accepted? (and (write-kind? (event-kind e)) (memv status '(200 201 204)) #t)))
       (append (always-breaks db1)
               (if accepted? (accepted-breaks e db0 db1) (unchanged-breaks e status db0 db1))
               (other-breaks e db0 db1))))
@@ -1082,9 +1397,13 @@
 
   (define (model-node-rows w)
     (map (lambda (n)
-           (let ((s (node-top n)) (owner (account-id-of (mnode-tag n))))
-             (list (mnode-id n) owner owner (mnode-kind n) (msnap-title s) (msnap-type s) (msnap-props s)
-                   (msnap-revision s) (mnode-created n) (msnap-created s))))
+           (let ((owner (account-id-of (mnode-tag n)))
+                 (content (if (live? n)
+                              (let ((s (node-top n))) (list (msnap-title s) (msnap-type s) (msnap-props s)))
+                              (list "" purged-type "{}"))))
+             (append (list (mnode-id n) owner owner (mnode-kind n))
+                     content
+                     (list (node-rev n) (mnode-created n) (mnode-updated n) (symbol->string (mnode-state n))))))
          (by-id (world-nodes w))))
 
   (define (model-snap-rows w)
@@ -1108,15 +1427,16 @@
   (define (model-key-rows w)
     (map (lambda (k) (list (mkey-id k) (account-id-of (mkey-tag k)) (mkey-last-used k))) (world-keys w)))
 
-  ;; Column labels: which H a difference in that column breaks.
+  ;; Column labels: which H or G a difference in that column breaks.
   (define node-columns
-    '(("id" . "H1") ("owner" . "H6") ("author" . "H16") ("kind" . "H11") ("title" . "H2")
-      ("content_type" . "H2") ("props" . "H2") ("revision" . "H1") ("created" . "H15") ("updated" . "H15")))
+    '(("id" . "H1") ("owner" . "H6") ("author" . "H16") ("kind" . "H11") ("title" . "H2'")
+      ("content_type" . "H2'") ("props" . "H2'") ("revision" . "H1, G3") ("created" . "H15', G9")
+      ("updated" . "H15'") ("state" . "G3, G12")))
   (define snap-columns
-    '(("node" . "H3") ("revision" . "H3") ("author" . "H16") ("title" . "H3") ("content_type" . "H3")
-      ("props" . "H3") ("created" . "H15") ("body" . "H3")))
+    '(("node" . "H3'") ("revision" . "H3'") ("author" . "H16") ("title" . "H3'") ("content_type" . "H3'")
+      ("props" . "H3'") ("created" . "H15'") ("body" . "H3'")))
   (define change-columns
-    '(("owner" . "H4") ("seq" . "H4") ("node" . "H4") ("revision" . "H4") ("op" . "H4") ("created" . "H4")))
+    '(("owner" . "H4") ("seq" . "H4") ("node" . "H4") ("revision" . "H4") ("op" . "H4, L10") ("created" . "H4")))
   (define key-columns '(("id" . "H5") ("account" . "H5") ("last_used" . "H5")))
 
   ;; rows-breaks : World String (Listof Row) (Listof Row) (Row -> Any) Columns String -> (Listof String)
@@ -1150,26 +1470,28 @@
     (append
      (rows-breaks w "nodes" (model-node-rows w) (car db) (lambda (r) (list (n-id r))) node-columns "H1/H5")
      (rows-breaks w "revisions" (model-snap-rows w) (cadr db) (lambda (r) (list (s-node r) (s-rev r)))
-                  snap-columns "H3/H5")
+                  snap-columns "H3'/H5")
      (rows-breaks w "changes" (model-change-rows w) (caddr db) (lambda (r) (list (c-owner r) (c-seq r)))
                   change-columns "H4")
      (rows-breaks w "api_keys" (model-key-rows w) (cadddr db) (lambda (r) (list (car r))) key-columns "H5")))
 
   ;;; One sequence
 
-  ;; Verdict: seed steps requests cells aims cant-happen report
+  ;; Verdict: seed steps requests cells aims report
   ;;   steps        requests the generator made
   ;;   requests     HTTP requests sent (a walk is several)
-  ;;   cells, aims  (Listof (Pair Key Natural)): D5's (Found EventKind)
-  ;;                pairs the model stepped, and what the generator aimed at
-  ;;                and what came of it, with counts
-  ;;   cant-happen  how many pairs of write-cant-happen the model was asked
+  ;;   cells, aims  (Listof (Pair Key Natural)): the (Found State Event)
+  ;;                cells the model stepped, and what the generator aimed
+  ;;                at and what came of it, with counts. An aim
+  ;;                purged-<route>-own (or -other) counts a request that
+  ;;                named a purged node's id, its owner's (or the other
+  ;;                account's), and reached its job.
   ;;   report       #f when every request agreed; else the first difference
-  ;; verdict-seed, verdict-steps, verdict-requests, verdict-cant-happen : Verdict -> Natural
-  ;; verdict-cells : Verdict -> (Listof (Pair (List Found EventKind) Natural))
+  ;; verdict-seed, verdict-steps, verdict-requests : Verdict -> Natural
+  ;; verdict-cells : Verdict -> (Listof (Pair Cell Natural))
   ;; verdict-aims : Verdict -> (Listof (Pair Symbol Natural))
   ;; verdict-report : Verdict -> (U String #f)
-  (define-record-type verdict (fields seed steps requests cells aims cant-happen report))
+  (define-record-type verdict (fields seed steps requests cells aims report))
 
   (define (reset! store)
     (run-write store
@@ -1201,16 +1523,32 @@
     (let-values (((ks vs) (hashtable-entries t)))
       (map cons (vector->list ks) (vector->list vs))))
 
-  (define (cells-text cells) (join (map (lambda (c) (format "~a x ~a" (car c) (cadr c))) cells) ", "))
+  (define (cells-text cells) (join (map cell-text cells) ", "))
 
-  ;; run-sequence : Store Step Natural Boolean -> Verdict
+  ;; route-name : Event -> Symbol     a PUT is a create or a replace; the rest their own
+  (define (route-name e)
+    (case (event-kind e)
+      ((put) (if (eq? (event-pre e) 'create) 'create 'replace))
+      (else (event-kind e))))
+
+  ;; purged-aim : World Event -> (U Symbol #f)
+  ;; purged-<route>-own or -other, when the request names a purged node's
+  ;; id, its owner's or the other account's, and reaches its job: a
+  ;; precondition of the right shape, or a read.
+  (define (purged-aim w e)
+    (let ((n (and (event-id e) (world-node w (event-id e)))))
+      (and n (not (live? n))
+           (not (memq (event-pre e) '(missing invalid)))
+           (sym "purged-" (route-name e) "-" (if (eq? (mnode-tag n) (event-tag e)) "own" "other")))))
+
+  ;; run-sequence : Store Twist Natural Boolean -> Verdict
   ;; The sequence SEED makes, on STORE, emptied first: a fresh app on it
-  ;; (wrap-server around make-app, its wall clock set by the sequence), 40
-  ;; to 60 generated requests. STEP is the oracle's step (write-step, or a
-  ;; stand-in). TRACE? prints each request and its answer as it goes.
-  (define (run-sequence store step seed trace?)
+  ;; (wrap-server around make-app, its wall clock set by the sequence), 45
+  ;; to 65 generated requests. TWIST is as-planned, or a changed rule.
+  ;; TRACE? prints each request and its answer as it goes.
+  (define (run-sequence store twist seed trace?)
     (let* ((rng (make-rng seed))
-           (n (+ 40 (rng-below! rng 21)))
+           (n (+ 45 (rng-below! rng 21)))
            (t0 (+ 1795515226123 (rng-below! rng 100000)))
            (now-cell (vector t0))
            (clock (step-clock 0 1))
@@ -1221,13 +1559,12 @@
            (cells (make-hashtable equal-hash equal?))
            (aims (make-hashtable symbol-hash eq?))
            (requests 0)
-           (cant 0)
            (log '()))
 
       (define (count! t k) (hashtable-update! t k (lambda (c) (+ c 1)) 0))
 
       (define (verdict steps report)
-        (make-verdict seed steps requests (hashtable->alist cells) (hashtable->alist aims) cant report))
+        (make-verdict seed steps requests (hashtable->alist cells) (hashtable->alist aims) report))
 
       (define (report i desc x o breaks)
         (string-append
@@ -1235,9 +1572,10 @@
          (apply string-append (map (lambda (l) (string-append "    " l "\n")) (reverse log)))
          (format "  this step: ~a\n" desc)
          (if x
-             (format "  the model expects: ~a ~s, ETag ~s, stepping ~a~a\n"
+             (format "  the model expects: ~a ~s, ETag ~s, stepping ~a~a~a\n"
                      (expectation-status x) (expectation-code x) (expectation-etag x)
                      (cells-text (expectation-cells x))
+                     (if (expectation-clause x) (string-append " (" (expectation-clause x) ")") "")
                      (if (expectation-problem x) (string-append "; " (expectation-problem x)) ""))
              "")
          (if o
@@ -1250,12 +1588,7 @@
       ;; step! : World Natural Event Db -> (U (Pair World Db) String)
       (define (step! w i e db0)
         (let* ((desc (describe-event w e t0))
-               (x (expect step w e)))
-          (for-each (lambda (c)
-                      (when (exists (lambda (k) (and (eq? (car k) (car c)) (eq? (cadr k) (cadr c))))
-                                    write-cant-happen)
-                        (set! cant (+ cant 1))))
-                    (expectation-cells x))
+               (x (expect twist w e)))
           (if (expectation-problem x)
               (report i desc x #f (list "the model cannot take this step"))
               (begin
@@ -1268,7 +1601,7 @@
                              (db (attempt (lambda () (db-now store))))
                              (breaks
                               (append (guarded "comparing the answer" (lambda () (answer-breaks x o)))
-                                      (guarded "the plan's words" (lambda () (law-breaks w e o)))
+                                      (guarded "the answer's laws" (lambda () (law-breaks w e o)))
                                       (if (eq? (car db) 'raised)
                                           (list (string-append "reading the database raised: " (cadr db)))
                                           (append (guarded "the laws" (lambda () (db-law-breaks e o db0 (cadr db))))
@@ -1277,8 +1610,9 @@
                         (set! requests (+ requests (obs-requests o)))
                         (for-each (lambda (c) (count! cells c)) (expectation-cells x))
                         (for-each (lambda (a) (count! aims a)) (event-aims e))
+                        (let ((p (purged-aim w e))) (when p (count! aims p)))
                         (when (expectation-touched x) (count! aims 'last-used-set))
-                        (when (and (memq (event-kind e) '(put restore))
+                        (when (and (write-kind? (event-kind e))
                                    (memv (expectation-status x) '(404 409 412))
                                    (touch-due? (world-key-last-used w (event-key e)) (event-now e)))
                           (count! aims 'refused-while-due))

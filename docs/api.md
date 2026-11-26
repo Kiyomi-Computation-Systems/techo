@@ -134,11 +134,11 @@ curl -X POST -H "Authorization: Bearer $KEY" \
 ## Nodes
 
 A node is one note: a title, a body of text, and what kind of note it is. Every
-write is checked against the node's revision, and every write is kept.
+write is checked against the node's revision, and every write is kept until the node is deleted.
 
 ```json
-{"id":"0193a5c0-9000-7000-8000-000000000001","kind":"note","title":"Shopping",
- "body":"* apples\n* pears","content_type":"text/org","props":{},
+{"id":"0193a5c0-9000-7000-8000-000000000001","kind":"note","state":"active",
+ "title":"Shopping","body":"* apples\n* pears","content_type":"text/org","props":{},
  "revision":1,"created":1795515226123,"updated":1795515226123}
 ```
 
@@ -146,11 +146,12 @@ write is checked against the node's revision, and every write is kept.
 |---|---|
 | `id` | A UUID of **version 7**, which you make. Anything else is a `400`. |
 | `kind` | `project`, `journal`, `note`, `task` or `contact`. Set when the node is made; it never changes. |
+| `state` | `active`, `archived` or `trashed`. See [putting a node away](#putting-a-node-away). You never send it. |
 | `title` | Up to 1,000 characters. May be empty. |
 | `body` | Text, up to 1 MiB (1,048,576 bytes of UTF-8). Techo never reads it. |
 | `content_type` | What the body is, such as `text/org`: 1 to 255 printable ASCII characters (a space is fine, a tab is not) with a `/`. Techo stores it and does nothing with it. |
 | `props` | Must be `{}` for now. You may leave it out. |
-| `revision` | 1 when made, one more after every write. |
+| `revision` | 1 when made, one more after every write and every change of state. |
 | `created`, `updated` | [Times](#times). |
 
 Neither the title nor the body may hold the character U+0000.
@@ -207,13 +208,20 @@ The node, with its `ETag`.
 
 ### `GET /v1/nodes`
 
-Your nodes, in id order, **without their bodies**. [Paged](#paging).
+Your **active** nodes, in id order, **without their bodies**. [Paged](#paging).
+
+- `?state=archived` or `?state=trashed` lists those instead. One state a call.
+- `?state=active` is the default. Any other value is a `400`.
 
 ### `GET /v1/nodes/{id}/revisions`
 
-Every write the node has had, newest first, without bodies: `revision`, `title`,
-`content_type`, `props`, `created`. [Paged](#paging), but `after` and `next` are
-revision numbers here.
+Every write of content the node has had, newest first, without bodies:
+`revision`, `title`, `content_type`, `props`, `created`. [Paged](#paging), but
+`after` and `next` are revision numbers here.
+
+**The numbers can skip.** A change of state takes a revision number and keeps no
+copy. A node at revision 2 that is archived is at revision 3 and still lists
+2, 1. Write it again and it lists 4, 2, 1. Revision 3 is a `404`.
 
 ### `GET /v1/nodes/{id}/revisions/{n}`
 
@@ -222,7 +230,7 @@ One old revision, whole, with its `body`.
 ### `POST /v1/nodes/{id}/revisions/{n}/restore`
 
 Makes a **new** revision with revision `n`'s title, body, content type and props.
-History is never rewritten. It needs `If-Match`, takes no body, and answers `200`,
+Nothing old is changed. It needs `If-Match`, takes no body, and answers `200`,
 the node, and the new `ETag`.
 
 ```sh
@@ -230,14 +238,61 @@ curl -X POST -H "Authorization: Bearer $KEY" -H 'If-Match: "2"' \
   http://127.0.0.1:8080/v1/nodes/0193a5c0-9000-7000-8000-000000000001/revisions/1/restore
 ```
 
+### Putting a node away
+
+A node is `active`, `archived` or `trashed`.
+
+| Route | From | To |
+|---|---|---|
+| `POST /v1/nodes/{id}/archive` | active | archived |
+| `POST /v1/nodes/{id}/unarchive` | archived | active |
+| `POST /v1/nodes/{id}/trash` | active or archived | trashed |
+| `POST /v1/nodes/{id}/untrash` | trashed | active |
+| `DELETE /v1/nodes/{id}` | trashed | gone, for good |
+
+```sh
+curl -X POST -H "Authorization: Bearer $KEY" -H 'If-Match: "3"' \
+  http://127.0.0.1:8080/v1/nodes/0193a5c0-9000-7000-8000-000000000001/trash
+```
+
+- **All five need `If-Match`** and take no body.
+- The four `POST`s answer `200`, the node **without its body**, and the new
+  `ETag`. The revision goes up by one, so your next write needs the new one.
+  `updated` changes too.
+- Any other move is a `409` `wrong_state`: archiving a trashed node, deleting one
+  that is not trashed.
+- **An archived node is an ordinary node** that the default list leaves out. You
+  can still read and write it, and it stays archived.
+- **A trashed node cannot be written.** A replace or a restore is a `409`. Untrash
+  it first. Untrash always gives an active node, even if it was archived before.
+- If your revision is stale you get the `412` first. Read the node: its `state`
+  tells you the rest.
+
+**`DELETE` removes the node and every revision of it.** It answers `204` and
+nothing else. It cannot be undone.
+
+- Afterwards every route answers `404` for that id, and making a node with it
+  is a `412`, for everyone. Use a new id.
+- A node with a very large history takes a moment to delete: about half a
+  second for 200 MiB. Other writes wait meanwhile.
+- It does not reach your backups. Its times, and the fact that it existed, stay
+  in the database.
+- The text is wiped from the database file at once. A copy can stay in the
+  `-wal` file beside it until the next write.
+
+**If an answer never arrives,** send it again. For the four `POST`s a `412` then
+means the first try may have got through: read the node. For the `DELETE` a
+`404` means it is done.
+
 ### What can go wrong with a node
 
 | Status | `code` | When |
 |---|---|---|
 | 400 | `invalid_json` | The body is there and is not JSON. |
 | 400 | `invalid_request` | Anything else wrong with the request. The list is below. |
-| 404 | `not_found` | No such node or revision. **Another account's node looks the same.** |
+| 404 | `not_found` | No such node or revision. **Another account's node looks the same,** and so does a deleted one. |
 | 409 | `kind_fixed` | A replace named another kind. |
+| 409 | `wrong_state` | The node's state does not allow this. See [putting a node away](#putting-a-node-away). |
 | 412 | `precondition_failed` | The node is not at the revision you gave, or the id you want to make is in use. |
 | 413 | `payload_too_large` | The body is over 1 MiB, or the whole request is over 2 MiB. |
 | 415 | `unsupported_media_type` | `Content-Type` is not `application/json`. |
@@ -245,9 +300,9 @@ curl -X POST -H "Authorization: Bearer $KEY" -H 'If-Match: "2"' \
 
 A `400` `invalid_request` is one of:
 
-- a bad id, revision, `limit` or `after`;
+- a bad id, revision, `limit`, `after` or `state`;
 - a bad `If-Match` or `If-None-Match`: both at once, `If-None-Match` that is not
-  `*`, or `If-None-Match` on a restore;
+  `*`, or `If-None-Match` on a restore, a change of state or a `DELETE`;
 - no body, or a body that is not one JSON object;
 - a field missing, unknown, given twice or of the wrong type;
 - a `kind` that is not one of the five, or `props` that is not `{}`;
@@ -332,6 +387,7 @@ An error is [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) problem details,
 | `method_not_allowed` | 405 | That method is not allowed here. Has `Allow`. |
 | `too_many_keys` | 409 | The account has 100 active keys; revoke one first. Login only. |
 | `kind_fixed` | 409 | A node's kind cannot be changed. |
+| `wrong_state` | 409 | The node's state does not allow this request. |
 | `precondition_failed` | 412 | The node has changed, or already exists; read it again. |
 | `payload_too_large` | 413 | The request body is too large. |
 | `unsupported_media_type` | 415 | The request body must be `application/json`. |
