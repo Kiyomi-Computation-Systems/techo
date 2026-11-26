@@ -95,6 +95,13 @@ a real server: a login, then a node made (201, `ETag: "1"`), replaced (200,
 `"2"`), a stale replace refused (412), revision 1 restored (200, `"3"`), and the
 node, the list and the revisions read back as the docs say.
 
+**And for slice 4b, 2026-11-26, on its branch before the merge:** `make test`
+passed 35 of 35 suites. Against a real server: a node archived (200, `"2"`, no
+body), absent from the default list and present under `?state=archived`,
+trashed, refused a replace (409 `wrong_state`) and a stale untrash (412),
+untrashed, refused a `DELETE` while active (409), trashed again, purged (204, no
+body, no `ETag`), and then a 404.
+
 ## Slices
 
 | # | Slice | State | Waits on |
@@ -174,7 +181,8 @@ From [outline.md](outline.md) §14, each for the slice named:
   store (Sonnet, 151k, 11 min); 2, the table (Opus, 192k, 14 min); 3, the routes
   (Opus, 278k, 31 min); 4a, the model (Opus, 349k, 48 min); 4b, integration
   (Sonnet, 99k, 23 min); the build's review (Opus, 324k, 43 min).
-- **Not run:** macOS, by hand.
+- **Run on the owner's Mac, by hand, before the merge:** see "Run on the owner's
+  Mac" above.
 
 ### Slice 4: nodes, revisions and `If-Match` (merged 2026-11-25, #15)
 
