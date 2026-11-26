@@ -118,3 +118,17 @@ Status: accepted (owner, 2026-11-24: "do the pin move", for slice 3b)
   slice 3b's login needs. It still has no release, so the pin is a commit.
 - It still names nothing in the Akku index, and asks for the same libsodium (1.0.18
   or later). `Akku.manifest`, `Akku.lock`, `manifest.scm` and CI do not change.
+
+## Amendment, 2026-11-25: chez-sodium's pin moves to its first release
+
+Status: accepted (owner, 2026-11-25: "in a subagent move the chez-sodium pin")
+
+- **chez-sodium's pin moves to `981ba2e`,** its v0.1.0. The pin was `d53e83c`,
+  its M3. The pin is still a full commit, which the tag names.
+- No export changed since `d53e83c`: every changed line under its `src/` is a
+  comment. It asks for the same libsodium (1.0.18 or later) and names nothing
+  in the Akku index under `depends`. `Akku.manifest`, `Akku.lock`,
+  `manifest.scm` and CI do not change.
+- Its docs say to bound a password before verifying it: its own cap is 64 KiB
+  of UTF-8. Techo's bound is 1024 bytes, so that cap is never reached.
+- No test was added: chez-sodium exports nothing that names its release.

@@ -68,14 +68,14 @@ GOAL = $(strip $(if $(MAKECMDGOALS),$(MAKECMDGOALS),$@))
 #   chez-sqlite3      v0.1.1
 #   chez-curl         v0.1.2
 #   chez-http-server  v0.12.0, until the index has it (ADR-0011, amended)
-#   chez-sodium       d53e83c (no release yet): its M3, the password verbs
+#   chez-sodium       v0.1.0
 #   unique-id         v0.1.0
 SUBMODULE_PINS := \
   circuit:a39346c31d4242df4a261b6945c411992ee7a504 \
   chez-sqlite3:960d9f0028ce09b51019cd7050d5833af30f98e0 \
   chez-curl:15197e8a699c4b2d6c12e2b62c7dc76be7729780 \
   chez-http-server:bba2ba6fea252996d31bffc6255d8be36e9bdfd2 \
-  chez-sodium:d53e83c3b467da99c49a70f823a8e5baf140cbda \
+  chez-sodium:981ba2e9e6a41b305d645db8ded4bd49c2c5b341 \
   unique-id:e0ed1284e9262141d87df4144edba114d44eb5e7
 SUBMODULE_NAMES := $(foreach p,$(SUBMODULE_PINS),$(firstword $(subst :, ,$(p))))
 CIRCUIT_DIR := vendor/circuit
