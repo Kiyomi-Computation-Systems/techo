@@ -48,7 +48,7 @@ close-out under **Close-outs**, newest first.
   ([the plan](2026-11-24-slice-3b-login.md); ADR-0006, ADR-0009 and ADR-0013,
   amended 2026-11-25). A real server can now be used: make an account, log in, use
   the key.
-- **Slice 4 is built**, on `slice-4-nodes`, not merged: migration 3, seven routes
+- **Slice 4 is merged** (#15, `f195ea2`): migration 3, seven routes
   under `/v1/nodes`, the versioned write as a table, and the key checked before a
   write's body is read ([the plan](2026-11-25-slice-4-nodes.md); ADR-0002,
   ADR-0003, ADR-0004 and ADR-0006, amended 2026-11-25). A person can now store
@@ -86,6 +86,11 @@ branch of `scripts/mv-no-follow-flag` ran there on 2026-11-24. The same day's ru
 met a submodule left behind by a pull, which is why `make deps` now checks each
 pin.
 
+**And at slice 4's merge, 2026-11-25:** `make test` passed 35 of 35 suites. Against
+a real server: a login, then a node made (201, `ETag: "1"`), replaced (200,
+`"2"`), a stale replace refused (412), revision 1 restored (200, `"3"`), and the
+node, the list and the revisions read back as the docs say.
+
 ## Slices
 
 | # | Slice | State | Waits on |
@@ -95,7 +100,7 @@ pin.
 | 2b | The database doorway: write and read workers | merged (PR #7) | |
 | 3a | The tables, the key check, the key routes, the error format, the request log | merged (PR #9) | |
 | 3b | `techo user add`, login, the rate limit, the hashing worker | merged (PR #12) | |
-| 4 | Node create, read, update; revisions; `If-Match` | built, on `slice-4-nodes` | |
+| 4 | Node create, read, update; revisions; `If-Match` | merged, #15 | |
 | 4b | The node lifecycle: archive, trash, purge | not planned | |
 | 5 | The tree and move; links | not planned | |
 | 6 | Kinds and props; task transitions | not planned | |
@@ -131,7 +136,7 @@ From [outline.md](outline.md) §14, each for the slice named:
 
 ## Close-outs
 
-### Slice 4: nodes, revisions and `If-Match` (built 2026-11-25, not merged)
+### Slice 4: nodes, revisions and `If-Match` (merged 2026-11-25, #15)
 
 - **Built:** `(techo nodes)`, `(techo node-store)`, `(techo node-routes)`,
   `(techo requests)`; `db-write-with-body-as` in `(techo auth)`; migration 3;
@@ -160,7 +165,8 @@ From [outline.md](outline.md) §14, each for the slice named:
   12 min), 5a (Opus, 330k, 34 min), 5b (Sonnet, 130k, 19 min); the build's review
   (Opus, 362k, 28 min); task 9, its fixes (Opus, 262k, 31 min); task 10, the key
   before the body (Opus, 360k, 43 min).
-- **Not run:** macOS, by hand.
+- **Run on the owner's Mac, by hand, after the merge:** see "Run on the owner's
+  Mac" above.
 
 ### The clause 11 flake (2026-11-25)
 
