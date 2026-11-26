@@ -104,3 +104,16 @@ Plan: [slice 4b](../2026-11-25-slice-4b-node-lifecycle.md)
   write. The file does not shrink.
 - Reads are not held: 3 ms at worst during a 200 MiB purge.
 - A purge leaves the row's times, the earlier change rows, and backups.
+
+## Amendment, 2026-11-26: a move
+
+Status: accepted (owner, 2026-11-26, as slice 5a's T4 and T7)
+Plan: [slice 5a](../2026-11-26-slice-5a-tree.md)
+
+1. **A move bumps the revision and writes no snapshot,** as a state change. A
+   snapshot holds no parent, so a restore never undoes a move. This replaces
+   "the parent joins it" in the first amendment's point 6.
+2. **A bulk move moves a node's children without their own `If-Match`.** It is
+   the one write that is: the request carries the node's revision, which the
+   move does not change. It loses no content. A moved child's pending write
+   meets a 412.

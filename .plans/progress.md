@@ -53,7 +53,7 @@ close-out under **Close-outs**, newest first.
   write's body is read ([the plan](2026-11-25-slice-4-nodes.md); ADR-0002,
   ADR-0003, ADR-0004 and ADR-0006, amended 2026-11-25). A person can now store
   notes and read their history.
-- **Slice 4b is built**, on `slice-4b-lifecycle`, not merged: migration 4, the
+- **Slice 4b is merged** (#18, `77398a8`): migration 4, the
   lifecycle as a table, five routes to archive, trash and purge a node
   ([the plan](2026-11-25-slice-4b-node-lifecycle.md); ADR-0002, ADR-0004,
   ADR-0007 and ADR-0008, amended 2026-11-25 and 26). A person can now put a note
@@ -112,7 +112,7 @@ body, no `ETag`), and then a 404.
 | 3a | The tables, the key check, the key routes, the error format, the request log | merged (PR #9) | |
 | 3b | `techo user add`, login, the rate limit, the hashing worker | merged (PR #12) | |
 | 4 | Node create, read, update; revisions; `If-Match` | merged, #15 | |
-| 4b | The node lifecycle: archive, trash, purge | built, on `slice-4b-lifecycle` | |
+| 4b | The node lifecycle: archive, trash, purge | merged, #18 | |
 | 5 | The tree and move; links | not planned | |
 | 6 | Kinds and props; task transitions | not planned | |
 | 7 | Tags and search | not planned | |
@@ -150,7 +150,7 @@ From [outline.md](outline.md) §14, each for the slice named:
 
 ## Close-outs
 
-### Slice 4b: the node lifecycle (built 2026-11-26)
+### Slice 4b: the node lifecycle (merged 2026-11-26, #18)
 
 - **Built:** migration 4 (`nodes.state`); the lifecycle's table and
   `node-command` in `(techo nodes)`; `set-node-state!` and `purge-node!`; five

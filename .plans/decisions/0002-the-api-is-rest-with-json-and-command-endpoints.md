@@ -75,3 +75,15 @@ Plan: [slice 4b](../2026-11-25-slice-4b-node-lifecycle.md)
 - **The nodes list shows active nodes,** or one other state with `?state=`.
 - **One code more:** `wrong_state` (409), when the node's state does not allow
   the request.
+
+## Amendment, 2026-11-26: slice 5a's routes
+
+Status: accepted (owner, 2026-11-26, as slice 5a's T3, T7, T9 and T10)
+Plan: [slice 5a](../2026-11-26-slice-5a-tree.md)
+
+- **A move is `POST /v1/nodes/{id}/move`,** and a bulk move of a node's children
+  `POST /v1/nodes/{id}/move-children`. Each takes `{"parent": id or null}`.
+- **The nodes list takes `?parent=`,** an id or `null` for the top level.
+- **Three codes more,** all 409: `invalid_parent`, `would_loop`, `has_children`.
+- **A command is one event of a table, and may need facts beside the state:**
+  a move's answer also takes what was found of the new parent.

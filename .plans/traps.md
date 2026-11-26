@@ -314,6 +314,20 @@ it.
 - **Rule:** measure a write on a file opened by `open-techo-db`, at the largest
   size the limits allow.
 
+## A recursive query can be driven from the wrong table
+
+- **Seen:** all descendants of 11,111 nodes took 57 s written `FROM nodes n JOIN
+  down ON n.parent = down.id`, and 5 ms written `FROM down CROSS JOIN nodes n
+  WHERE n.parent = down.id` (slice 5a's probe). The walk up took 375 ms a walk
+  written `FROM up JOIN nodes n ON n.id = up.id WHERE n.owner = ?`, and 0 ms
+  with `CROSS JOIN` (its plan review). SQLite read every node of the owner at
+  each step.
+- **A probe can miss it:** one extra term (`n.parent IS NOT NULL`) made my first
+  walk fast by luck. And a cap on the depth hides nothing: the slow one answers
+  the same rows.
+- **Rule:** put the recursive table first with `CROSS JOIN`, and hold the plan
+  with a test.
+
 The siblings' traps apply wherever Techo touches the same ground. Read them there:
 
 - chez-sqlite3: `.plans/traps.md`

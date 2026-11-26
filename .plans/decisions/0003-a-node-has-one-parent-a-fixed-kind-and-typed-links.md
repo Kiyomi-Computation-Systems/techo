@@ -50,3 +50,25 @@ Plan: [slice 4](../2026-11-25-slice-4-nodes.md)
 4. **An id is unique across accounts.** So one query has no owner: whether an id is
    in use, which reads the id alone. A create on an id another account holds is
    412. Someone who already knows an id learns it is in use. Accepted.
+
+## Amendment, 2026-11-26: the tree
+
+Status: accepted (owner, 2026-11-26, as slice 5a's T2, T5, T6, T7 and T8)
+Plan: [slice 5a](../2026-11-26-slice-5a-tree.md)
+
+1. **Only a Project or a Journal has children.** A Project holds any kind,
+   Projects too. A Journal holds only Notes. A Note holds nothing: a Contact
+   joins a Note by a link.
+2. **A parent is set when a node is made, and changed only by a move.**
+3. **A move under itself or a descendant is refused.** A parent may have at most
+   63 ancestors. The cap is on the new parent, so a moved subtree can reach
+   deeper; every walk has its own cap.
+4. **Trashing or archiving a node touches that node only.** Its children keep
+   their state. "In the trash if any ancestor is" can be computed on read later,
+   with no migration.
+5. **A purge is refused while the node has children.** A purged row has no
+   parent.
+6. **Nothing is made in or moved into a trashed node,** and a trashed node is
+   not moved. An archived node is as an active one here.
+7. **A parent that is missing and one that is another account's get one
+   answer.**
