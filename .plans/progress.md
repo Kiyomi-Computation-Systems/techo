@@ -37,7 +37,7 @@ close-out under **Close-outs**, newest first.
   and `api_keys` tables, the key check, four routes under `/v1`, RFC 9457 errors and
   the request log ([the plan](2026-11-24-slice-3-accounts.md); ADR-0002 and ADR-0006,
   amended). No account can be made until 3b, so a real server answers 401.
-- **chez-sodium (d53e83c, its M3) and unique-id (v0.1.0) are pinned submodules,** and
+- **chez-sodium (v0.1.0, 981ba2e, since 2026-11-25) and unique-id (v0.1.0) are pinned submodules,** and
   circuit's pin is at a39346c (ADR-0011, amended 2026-11-24). The move to M3 was
   [PR #11](https://github.com/Kiyomi-Computation-Systems/techo/pull/11), rebased on
   2026-11-25.
@@ -64,10 +64,9 @@ close-out under **Close-outs**, newest first.
 yet. Its plan decides the states, which can be undone, and what a write to a
 trashed node gets.
 
-**chez-sodium v0.1.0 is released** (981ba2e, told by its session on 2026-11-25).
-Techo pins d53e83c, its M3: no export changed since. Moving the pin is its own
-pull request, after slice 4 merges. Its docs say to bound a password before
-verify: compare Techo's limit with theirs then.
+**chez-sodium is pinned at its v0.1.0** (981ba2e, moved 2026-11-25): no export
+changed since d53e83c. Its docs say to bound a password before verify: Techo's
+bound, 1024 bytes, is under its 64 KiB cap, so nothing changes.
 
 **Watch for:** the Akku index gaining chez-http-server 0.12.0 and a chez-websocket
 that admits it. That ends the server's submodule (ADR-0011, amended 2026-11-23).
@@ -116,7 +115,7 @@ own `.plans/` is the truth from then on.**
 
 | Project | Where | State on 2026-11-22 |
 |---|---|---|
-| chez-sodium | `../chez-sodium` | M3, the password verbs, on `main` (d53e83c, pinned here). Asked on 2026-11-24 whether `password-verify` can tell "could not check" from "wrong" ([brief](briefs/chez-sodium-verify-out-of-memory.md)): no, settled in its M3 plan |
+| chez-sodium | `../chez-sodium` | v0.1.0 (981ba2e, pinned here). Asked on 2026-11-24 whether `password-verify` can tell "could not check" from "wrong" ([brief](briefs/chez-sodium-verify-out-of-memory.md)): no, settled in its M3 plan |
 | unique-id | `../unique-id` | v0.1.0 released (2026-11-23, e0ed128), pinned here since slice 3a |
 | chez-http-server: `await-outside` | `../chez-http-server` | Released in v0.12.0 (bba2ba6); not on the Akku index yet |
 | circuit: the worker | `../circuit` | Issue 53 done: W2, the shell (b7e6f95, pinned here); W3, the docs (a39346c, 2026-11-24) |
