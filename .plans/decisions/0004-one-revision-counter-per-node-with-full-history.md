@@ -95,6 +95,12 @@ Plan: [slice 4b](../2026-11-25-slice-4b-node-lifecycle.md)
 - A node's revisions list has gaps where its state changed. The feed has every
   number.
 - A purge writes every freed page as zeros: about 2 ms a MiB of history, with
-  the writer held. Probed at 200 MiB: 0.4 s. Accepted (L11). Nothing caps a
-  node's history.
+  the writer held. Through the real route: 0.45 s for 200 MiB and 0.73 s for
+  400 MiB on a quiet disk, 1.4 s for 200 MiB on a busy one. Accepted (L11).
+  Nothing caps a node's history: past the 10 s deadline (about 4.5 GiB quiet,
+  1.5 GiB busy) the purge answers 504 while its job runs on.
+- `open-techo-db` turns `secure_delete` on itself, so the zeros do not depend on
+  how SQLite was built. The purged text can stay in the `-wal` until the next
+  write. The file does not shrink.
+- Reads are not held: 3 ms at worst during a 200 MiB purge.
 - A purge leaves the row's times, the earlier change rows, and backups.

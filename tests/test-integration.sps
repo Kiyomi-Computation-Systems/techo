@@ -1181,6 +1181,140 @@
                  (map (lambda (r) (vector-ref r 0))
                       (query c "SELECT revision FROM nodes ORDER BY revision")))))))))
 
+;; --- the node lifecycle over the wire (slice 4b) ---------------------------
+;;
+;; A second server on a fresh file, two accounts. One node (lc-n1) lives the
+;; whole story: archive, replace while archived, unarchive, trash, the
+;; refusals, untrash, a purge. A second node stays live for the other
+;; account's attempts; a third is trashed and purged with bodies on the
+;; requests. Each call is filed under a name, and the log line it should
+;; leave is remembered in lc-calls.
+
+(define lc-n1 "0190b3a4-5c6d-7e8f-9a0b-0000000000a1")
+(define lc-n2 "0190b3a4-5c6d-7e8f-9a0b-0000000000a2")
+(define lc-n3 "0190b3a4-5c6d-7e8f-9a0b-0000000000a3")
+(define lc-title-word "narwhaltitle")
+(define lc-body-word "pangolinbody")
+(define lc-calls '())
+
+;; lc-path-of : String -> String    the target without its query
+(define (lc-path-of target)
+  (let loop ((i 0))
+    (cond ((= i (string-length target)) target)
+          ((char=? (string-ref target i) #\?) (substring target 0 i))
+          (else (loop (+ i 1))))))
+
+;; lc-call! : Nat String Symbol String String Headers (U String #f) Symbol -> Void
+;; One request with KEY, filed under NAME; its expected log line is kept.
+(define (lc-call! port name method target key headers body who)
+  (let ((r (attempt (lambda ()
+                      (hcall port method target (and body "application/json") (or body "")
+                             (append (bearer key) headers))))))
+    (obs-set! name r)
+    (when (and (pair? r) (not (eq? (car r) 'raised)))
+      (set! lc-calls (cons (list (string-upcase (symbol->string method)) (lc-path-of target)
+                                 (number->string (lg-status r)) who)
+                           lc-calls)))))
+
+;; observe-lifecycle! : String -> Void
+(define (observe-lifecycle! dir)
+  (define db (string-append dir "/lifecycle.db"))
+  (define env (list (string-append "TECHO_DB_PATH=" db)))
+  (define (add! name pw user)
+    (id-of-added (run-cli-in dir name (string-append pw "\n") '() env
+                             (list "user" "add" "--username" user "--email" (string-append user "@example.com")))))
+  (set! lc-calls '())
+  (obs-set! "lc:migrate" (car (run-cli-in dir "lcmigrate" "" '() env '("migrate"))))
+  (obs-set! "lc:a-id" (add! "lc-add-a" nd-pw-a "lifea"))
+  (obs-set! "lc:b-id" (add! "lc-add-b" nd-pw-b "lifeb"))
+  (with-server dir "lcsrv" db #f
+    (lambda (port)
+      (define (key-of email pw)
+        (let* ((r (hcall port 'post "/v1/login" "application/json" (login-json email pw "life") '()))
+               (k (jget (lg-json r) "key")))
+          (if (string? k) k "techo_missing")))
+      (let* ((ka (key-of "lifea@example.com" nd-pw-a))
+             (kb (key-of "lifeb@example.com" nd-pw-b))
+             (p1 (string-append "/v1/nodes/" lc-n1))
+             (p2 (string-append "/v1/nodes/" lc-n2))
+             (p3 (string-append "/v1/nodes/" lc-n3))
+             (doc (lambda (n) (nd-json (string-append lc-title-word " " n) (string-append lc-body-word " " n)))))
+        (define (a! name method path headers body) (lc-call! port name method path ka headers body 'a))
+        (define (b! name method path headers body) (lc-call! port name method path kb headers body 'b))
+        ;; the story of the first node: revisions 1 (create), 2 (archive),
+        ;; 3 (replace), 4 (unarchive), 5 (trash), 6 (untrash), 7 (trash), 8 (purge)
+        (a! "lc:create" 'put p1 nd-create (doc "one"))
+        (a! "lc:unarchive-active" 'post (string-append p1 "/unarchive") (nd-match 1) #f)
+        (a! "lc:archive" 'post (string-append p1 "/archive") (nd-match 1) #f)
+        (a! "lc:list-active-1" 'get "/v1/nodes" '() #f)
+        (a! "lc:list-archived" 'get "/v1/nodes?state=archived" '() #f)
+        (a! "lc:get-archived" 'get p1 '() #f)
+        (a! "lc:replace-archived" 'put p1 (nd-match 2) (doc "three"))
+        (a! "lc:unarchive" 'post (string-append p1 "/unarchive") (nd-match 3) #f)
+        (a! "lc:get-active" 'get p1 '() #f)
+        (a! "lc:trash" 'post (string-append p1 "/trash") (nd-match 4) #f)
+        (a! "lc:replace-trashed" 'put p1 (nd-match 5) (doc "x"))
+        (a! "lc:restore-trashed" 'post (string-append p1 "/revisions/1/restore") (nd-match 5) #f)
+        (a! "lc:archive-trashed" 'post (string-append p1 "/archive") (nd-match 5) #f)
+        (a! "lc:list-active-2" 'get "/v1/nodes" '() #f)
+        (a! "lc:list-archived-2" 'get "/v1/nodes?state=archived" '() #f)
+        (a! "lc:list-trashed" 'get "/v1/nodes?state=trashed" '() #f)
+        (a! "lc:get-trashed" 'get p1 '() #f)
+        (a! "lc:stale-trash" 'post (string-append p1 "/trash") (nd-match 4) #f)
+        (a! "lc:stale-untrash" 'post (string-append p1 "/untrash") (nd-match 4) #f)
+        (a! "lc:untrash-bare" 'post (string-append p1 "/untrash") '() #f)
+        (a! "lc:untrash-none-match" 'post (string-append p1 "/untrash") (list (cons "If-None-Match" "*")) #f)
+        (a! "lc:list-purged" 'get "/v1/nodes?state=purged" '() #f)
+        (a! "lc:list-nonsense" 'get "/v1/nodes?state=nonsense" '() #f)
+        (a! "lc:untrash" 'post (string-append p1 "/untrash") (nd-match 5) #f)
+        (a! "lc:revisions" 'get (string-append p1 "/revisions") '() #f)
+        (a! "lc:revision-gap" 'get (string-append p1 "/revisions/2") '() #f)
+        (a! "lc:revision-3" 'get (string-append p1 "/revisions/3") '() #f)
+        (a! "lc:delete-active" 'delete p1 (nd-match 6) #f)
+        (a! "lc:trash-again" 'post (string-append p1 "/trash") (nd-match 6) #f)
+        (a! "lc:delete-bare" 'delete p1 '() #f)
+        (a! "lc:delete" 'delete p1 (nd-match 7) #f)
+        ;; after the purge
+        (a! "lc:p-get" 'get p1 '() #f)
+        (a! "lc:p-revisions" 'get (string-append p1 "/revisions") '() #f)
+        (a! "lc:p-revision" 'get (string-append p1 "/revisions/1") '() #f)
+        (a! "lc:p-replace" 'put p1 (nd-match 8) (doc "y"))
+        (a! "lc:p-delete" 'delete p1 (nd-match 8) #f)
+        (a! "lc:p-trash" 'post (string-append p1 "/trash") (nd-match 8) #f)
+        (a! "lc:p-create" 'put p1 nd-create (doc "z"))
+        (b! "lc:p-b-create" 'put p1 nd-create (doc "z"))
+        ;; the second node stays live; the other account tries every new route on it
+        (a! "lc:n2-create" 'put p2 nd-create (doc "two"))
+        (b! "lc:b-archive" 'post (string-append p2 "/archive") (nd-match 1) #f)
+        (b! "lc:b-unarchive" 'post (string-append p2 "/unarchive") (nd-match 1) #f)
+        (b! "lc:b-trash" 'post (string-append p2 "/trash") (nd-match 1) #f)
+        (b! "lc:b-untrash" 'post (string-append p2 "/untrash") (nd-match 1) #f)
+        (b! "lc:b-delete" 'delete p2 (nd-match 1) #f)
+        (a! "lc:n2-get" 'get p2 '() #f)
+        (a! "lc:list-active-3" 'get "/v1/nodes" '() #f)
+        (a! "lc:list-archived-3" 'get "/v1/nodes?state=archived" '() #f)
+        (a! "lc:list-trashed-3" 'get "/v1/nodes?state=trashed" '() #f)
+        ;; a body on a state change is not read
+        (a! "lc:n3-create" 'put p3 nd-create (doc "three"))
+        (a! "lc:n3-trash-body" 'post (string-append p3 "/trash") (nd-match 1) "{\"not\": json")
+        (a! "lc:n3-delete-body" 'delete p3 (nd-match 2) "[1, 2, oops")
+        (a! "lc:n3-after" 'get "/v1/nodes" '() #f))))
+  (obs-set! "lc:expect" (reverse lc-calls))
+  (obs-set! "lc:db"
+    (attempt
+     (lambda ()
+       (with-db (open-techo-db db 'read-only)
+         (lambda (c)
+           (define (n sql) (vector-ref (query-row c sql) 0))
+           (define (col sql) (map (lambda (r) (vector-ref r 0)) (query c sql)))
+           (list (col "SELECT state FROM nodes ORDER BY num")
+                 (col "SELECT revision FROM nodes ORDER BY num")
+                 (col "SELECT title FROM nodes ORDER BY num")
+                 (col "SELECT revision FROM revisions WHERE node = (SELECT id FROM nodes ORDER BY num LIMIT 1) ORDER BY revision")
+                 (n "SELECT count(*) FROM revisions WHERE node = (SELECT id FROM nodes ORDER BY num DESC LIMIT 1)")
+                 (col "SELECT op FROM changes ORDER BY seq")
+                 (col "SELECT seq FROM changes ORDER BY seq"))))))))
+
 ;; leftovers : String -> (Listof Boolean)
 ;; Whether DB's `-wal` and `-shm` exist.
 (define (leftovers db)
@@ -1223,6 +1357,7 @@
     (observe "api-run" (observe-api! dir))
     (observe "login-run" (observe-login! dir))
     (observe "nodes-run" (observe-nodes! dir))
+    (observe "lifecycle-run" (observe-lifecycle! dir))
     ;; The command line.
     (set! cli-version (attempt (lambda () (run-cli dir "version" '() '() '("version")))))
     (set! cli-none (attempt (lambda () (run-cli dir "none" '() '() '()))))
@@ -2055,7 +2190,7 @@
 
 (define (nd-j k) (if (lg-ok? k) (lg-json (obs k)) (obs k)))
 (define (nd-h k name) (if (lg-ok? k) (lg-header (obs k) name) (obs k)))
-(define node-members '("id" "kind" "title" "body" "content_type" "props" "revision" "created" "updated"))
+(define node-members '("id" "kind" "state" "title" "body" "content_type" "props" "revision" "created" "updated"))
 (define nd-problem "application/problem+json")
 
 (test-equal "nodes: the run's setup worked: migrated, two accounts, the server stopped with 0 and raised nothing"
@@ -2126,7 +2261,7 @@
   (list (lg-st "nd:b-list") (jitems (nd-j "nd:b-list")) (lg-st "nd:b-create") (lg-code "nd:b-create")))
 
 (test-equal "nodes: the first account's list holds the node at revision 3, with no body member"
-  (list 200 (list nd-n1) '("id" "kind" "title" "content_type" "props" "revision" "created" "updated") '(3))
+  (list 200 (list nd-n1) '("id" "kind" "state" "title" "content_type" "props" "revision" "created" "updated") '(3))
   (let ((is (jitems (nd-j "nd:a-list"))))
     (list (lg-st "nd:a-list")
           (if (list? is) (map (lambda (i) (jget i "id")) is) is)
@@ -2209,6 +2344,176 @@
 (test-equal "nodes: the file after the server stops: 3 nodes, 5 revisions, 5 changes; account one's seq is 1..5 and account two has none; the ops and the nodes' revisions"
   (list 3 5 5 '(1 2 3 4 5) '() '("create" "update" "restore" "create" "create") '(1 1 3))
   (obs "nd:db"))
+
+;; --- the node lifecycle over the wire (slice 4b) ---------------------------
+
+(define state-less-members '("id" "kind" "state" "title" "content_type" "props" "revision" "created" "updated"))
+(define (lc-ids k)
+  (let ((is (jitems (nd-j k)))) (if (list? is) (map (lambda (i) (jget i "id")) is) is)))
+(define (lc-problem status code)
+  (list status nd-problem code))
+(define (lc-got k) (list (lg-st k) (nd-h k "content-type") (lg-code k)))
+;; lc-change : String -> (List Status ETag State Revision (Listof String))
+;; A state change's answer: its status, ETag, state, revision and members.
+(define (lc-change k)
+  (let ((j (nd-j k)))
+    (list (lg-st k) (nd-h k "etag") (jget j "state") (jget j "revision") (members j))))
+
+(test-equal "lifecycle: the run's setup worked: migrated, two accounts, the server stopped with 0 and raised nothing"
+  '(0 #t #t 0 unobserved)
+  (list (obs "lc:migrate")
+        (and (string? (obs "lc:a-id")) (= 36 (string-length (obs "lc:a-id"))))
+        (and (string? (obs "lc:b-id")) (not (equal? (obs "lc:a-id") (obs "lc:b-id"))))
+        (obs "lcsrv:exit") (obs "lcsrv:raised")))
+
+(test-equal "lifecycle: a new node is 201, state active"
+  (list 201 "\"1\"" "active")
+  (list (lg-st "lc:create") (nd-h "lc:create" "etag") (jget (nd-j "lc:create") "state")))
+
+(test-equal "lifecycle: unarchive of an active node is 409 wrong_state"
+  (lc-problem 409 "wrong_state")
+  (lc-got "lc:unarchive-active"))
+
+(test-equal "lifecycle: archive with If-Match \"1\" is 200, ETag \"2\", state archived, revision 2, and no body member"
+  (list 200 "\"2\"" "archived" 2 state-less-members)
+  (lc-change "lc:archive"))
+
+(test-equal "lifecycle: an archived node is not in the default list, and is under ?state=archived"
+  (list 200 '() 200 (list lc-n1))
+  (list (lg-st "lc:list-active-1") (lc-ids "lc:list-active-1")
+        (lg-st "lc:list-archived") (lc-ids "lc:list-archived")))
+
+(test-equal "lifecycle: GET of an archived node shows its state and its body"
+  (list 200 "\"2\"" "archived" "pangolinbody one" "narwhaltitle one")
+  (let ((j (nd-j "lc:get-archived")))
+    (list (lg-st "lc:get-archived") (nd-h "lc:get-archived" "etag") (jget j "state") (jget j "body") (jget j "title"))))
+
+(test-equal "lifecycle: a replace of an archived node is 200, revision 3, and the node stays archived"
+  (list 200 "\"3\"" "archived" 3 "pangolinbody three")
+  (let ((j (nd-j "lc:replace-archived")))
+    (list (lg-st "lc:replace-archived") (nd-h "lc:replace-archived" "etag") (jget j "state")
+          (jget j "revision") (jget j "body"))))
+
+(test-equal "lifecycle: unarchive is 200, ETag \"4\", active again, and the body is the replace's"
+  (list (list 200 "\"4\"" "active" 4 state-less-members) 200 "active" "pangolinbody three")
+  (list (lc-change "lc:unarchive") (lg-st "lc:get-active")
+        (jget (nd-j "lc:get-active") "state") (jget (nd-j "lc:get-active") "body")))
+
+(test-equal "lifecycle: trash with If-Match \"4\" is 200, ETag \"5\", state trashed"
+  (list 200 "\"5\"" "trashed" 5 state-less-members)
+  (lc-change "lc:trash"))
+
+(test-equal "lifecycle: on a trashed node a replace, a revision restore and an archive are each 409 wrong_state"
+  (list (lc-problem 409 "wrong_state") (lc-problem 409 "wrong_state") (lc-problem 409 "wrong_state"))
+  (map lc-got '("lc:replace-trashed" "lc:restore-trashed" "lc:archive-trashed")))
+
+(test-equal "lifecycle: a trashed node is in no list but ?state=trashed, and GET still shows it with its body"
+  (list '() '() (list lc-n1) 200 "trashed" 5 "pangolinbody three")
+  (list (lc-ids "lc:list-active-2") (lc-ids "lc:list-archived-2") (lc-ids "lc:list-trashed")
+        (lg-st "lc:get-trashed") (jget (nd-j "lc:get-trashed") "state")
+        (jget (nd-j "lc:get-trashed") "revision") (jget (nd-j "lc:get-trashed") "body")))
+
+(test-equal "lifecycle: a stale trash and a stale untrash are 412 precondition_failed, not 409"
+  (list (lc-problem 412 "precondition_failed") (lc-problem 412 "precondition_failed"))
+  (map lc-got '("lc:stale-trash" "lc:stale-untrash")))
+
+(test-equal "lifecycle: a state change with no If-Match is 428, with If-None-Match: * is 400"
+  (list (lc-problem 428 "precondition_required") (lc-problem 400 "invalid_request"))
+  (map lc-got '("lc:untrash-bare" "lc:untrash-none-match")))
+
+(test-equal "lifecycle: ?state=purged and ?state=nonsense are 400 invalid_request"
+  (list (lc-problem 400 "invalid_request") (lc-problem 400 "invalid_request"))
+  (map lc-got '("lc:list-purged" "lc:list-nonsense")))
+
+(test-equal "lifecycle: untrash is 200, ETag \"6\", active"
+  (list 200 "\"6\"" "active" 6 state-less-members)
+  (lc-change "lc:untrash"))
+
+(test-equal "lifecycle: the revisions list shows only the revisions that wrote content (3, 1), and a gap's revision is 404 not_found"
+  (list 200 '(3 1) (lc-problem 404 "not_found") 200 "narwhaltitle three")
+  (list (lg-st "lc:revisions")
+        (let ((is (jitems (nd-j "lc:revisions")))) (if (list? is) (map (lambda (i) (jget i "revision")) is) is))
+        (lc-got "lc:revision-gap")
+        (lg-st "lc:revision-3") (jget (nd-j "lc:revision-3") "title")))
+
+(test-equal "lifecycle: DELETE of an active node is 409 wrong_state; with no If-Match it is 428"
+  (list (lc-problem 409 "wrong_state") (lc-problem 428 "precondition_required"))
+  (map lc-got '("lc:delete-active" "lc:delete-bare")))
+
+(test-equal "lifecycle: trash again is 200, ETag \"7\"; the DELETE is 204 with an empty body and no ETag"
+  (list (list 200 "\"7\"" "trashed" 7 state-less-members) 204 "" #f)
+  (list (lc-change "lc:trash-again") (lg-st "lc:delete") (lg-text (obs "lc:delete")) (nd-h "lc:delete" "etag")))
+
+(test-equal "lifecycle: after the purge a GET, the revisions list, a revision and every write are 404 not_found"
+  (map (lambda (k) (lc-problem 404 "not_found"))
+       '("lc:p-get" "lc:p-revisions" "lc:p-revision" "lc:p-replace" "lc:p-delete" "lc:p-trash"))
+  (map lc-got '("lc:p-get" "lc:p-revisions" "lc:p-revision" "lc:p-replace" "lc:p-delete" "lc:p-trash")))
+
+(test-equal "lifecycle: after the purge a create on the id is 412 precondition_failed, for the owner and for another account"
+  (list (lc-problem 412 "precondition_failed") (lc-problem 412 "precondition_failed"))
+  (map lc-got '("lc:p-create" "lc:p-b-create")))
+
+(test-equal "lifecycle: the other account's archive, unarchive, trash, untrash and DELETE of a live node, each at its revision, are 404 not_found"
+  (map (lambda (k) (lc-problem 404 "not_found")) '(1 2 3 4 5))
+  (map lc-got '("lc:b-archive" "lc:b-unarchive" "lc:b-trash" "lc:b-untrash" "lc:b-delete")))
+
+(test-equal "lifecycle: the node they tried is unchanged: active, revision 1, ETag \"1\", its body"
+  (list 200 "\"1\"" "active" 1 "pangolinbody two")
+  (let ((j (nd-j "lc:n2-get")))
+    (list (lg-st "lc:n2-get") (nd-h "lc:n2-get" "etag") (jget j "state") (jget j "revision") (jget j "body"))))
+
+(test-equal "lifecycle: after the purge no list shows the purged node: active shows the live one, archived and trashed are empty"
+  (list (list lc-n2) '() '())
+  (list (lc-ids "lc:list-active-3") (lc-ids "lc:list-archived-3") (lc-ids "lc:list-trashed-3")))
+
+(test-equal "lifecycle: a trash and a DELETE sent with a body (invalid JSON too) answer as with none, and the next request works"
+  (list 201 (list 200 "\"2\"" "trashed" 2 state-less-members) 204 "" #f 200 (list lc-n2))
+  (list (lg-st "lc:n3-create") (lc-change "lc:n3-trash-body")
+        (lg-st "lc:n3-delete-body") (lg-text (obs "lc:n3-delete-body")) (nd-h "lc:n3-delete-body" "etag")
+        (lg-st "lc:n3-after") (lc-ids "lc:n3-after")))
+
+(define (lc-log-lines)
+  (let ((o (obs "lcsrv:out")))
+    (if (string? o)
+        (filter (lambda (l) (starts-with? (or (field-of l "path") "") "/v1/nodes")) (request-lines o))
+        '())))
+
+(test-equal "lifecycle log: one line a request, in order, each with its method, path (no query), status and account (`-` for a 400 or a 428, answered before the key)"
+  (map (lambda (e)
+         (list (car e) (cadr e) (caddr e)
+               (cond ((member (caddr e) '("400" "428")) "-")
+                     ((eq? (cadddr e) 'a) (obs "lc:a-id"))
+                     ((eq? (cadddr e) 'b) (obs "lc:b-id"))
+                     (else "-"))))
+       (obs "lc:expect"))
+  (map line-key (lc-log-lines)))
+
+(test-equal "lifecycle log: the run made 53 requests, and the log has a line for each"
+  '(53 53)
+  (list (length (obs "lc:expect")) (length (lc-log-lines))))
+
+(test-equal "lifecycle log: each new route has a line: archive, unarchive, trash, untrash and DELETE, with a 200 or a 204 among them"
+  '(#t #t #t #t #t)
+  (let ((lines (map line-key (lc-log-lines))))
+    (map (lambda (m path-end status)
+           (and (member (list m (string-append "/v1/nodes/" (car path-end) (cdr path-end)) status (obs "lc:a-id")) lines) #t))
+         '("POST" "POST" "POST" "POST" "DELETE")
+         (list (cons lc-n1 "/archive") (cons lc-n1 "/unarchive") (cons lc-n1 "/trash") (cons lc-n1 "/untrash") (cons lc-n1 ""))
+         '("200" "200" "200" "200" "204"))))
+
+(test-equal "lifecycle log: no title word and no body word anywhere in the server's output or error stream"
+  '(#t #t #f #f #f #f)
+  (let ((o (obs "lcsrv:out")) (e (obs "lcsrv:err")))
+    (list (and (string? o) (contains? o "path=/v1/nodes/")) (string? e)
+          (and (string? o) (contains? o lc-title-word)) (and (string? o) (contains? o lc-body-word))
+          (and (string? e) (contains? e lc-title-word)) (and (string? e) (contains? e lc-body-word)))))
+
+(test-equal "lifecycle: the file after the server stops: states (purged, active, purged), revisions (8, 1, 3), the purged titles emptied, no snapshot of either purged node left, the ops in order, seq 1..12"
+  (list '("purged" "active" "purged") '(8 1 3) '("" "narwhaltitle two" "") '() 0
+        '("create" "archive" "update" "unarchive" "trash" "untrash" "trash" "purge"
+          "create" "create" "trash" "purge")
+        '(1 2 3 4 5 6 7 8 9 10 11 12))
+  (obs "lc:db"))
 
 (test-end "integration")
 

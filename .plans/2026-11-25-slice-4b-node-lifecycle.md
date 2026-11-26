@@ -5,7 +5,8 @@ Status: the owner accepted L1 to L10 on 2026-11-25 ("i approve L1 - 10"), each a
 recommended. Reviewed (the review section, at the end): where it and the text
 above it disagree, the review wins. L11, which the review raised, is decided: A ("L11 got with A", 2026-11-26). The
 two choices of mine (no body in a state change's answer; 412 before 409) are
-accepted too ("your choices are fine"). The records are amended. Not built.
+accepted too ("your choices are fine"). The records are amended. Built, and the
+build reviewed (the last section).
 Records: ADR-0002 (the API), ADR-0004 (revisions), ADR-0007 (machines), ADR-0012
 (migrations), ADR-0013 (the doorway). Read
 [global-constraints.md](global-constraints.md) first, and
@@ -275,9 +276,11 @@ My probe ran in `:memory:`. On a real file in WAL, as the server runs
 - **A state is a symbol in `(techo nodes)` and a string in the store.** The
   routes convert. A test holds the names equal to migration 4's `CHECK`.
 - **`(techo nodes)` parses `?state=`** and maps an event to its op.
-- `set-node-state! : Tx Id Id Natural String String Natural -> Boolean` (owner,
-  id, expected revision, state, op, now) and `purge-node!` with the same but the
-  state. Each answers whether it changed a row.
+- `set-node-state! : Tx Id Id Natural String String Natural -> Node` (id, owner,
+  expected revision, state, op, now), the node without its body, and
+  `purge-node!` with the same but the state and the op, answering nothing. Each
+  raises, as `write-node!` does, when no row changed. *(Corrected at the build:
+  the route answers the node, so a yes or no was not enough.)*
 - The purge's `DELETE` is `DELETE FROM revisions AS r WHERE r.node = ? AND EXISTS
   (SELECT 1 FROM nodes n WHERE n.id = r.node AND n.owner = ?)`: the owner test
   reads for that shape.
@@ -340,3 +343,40 @@ limit set, the `-wal` was 211 MB after the purge and at the limit after the next
 checkpoint and write. The limit is 16 MiB, a few of the largest writes. Task 1
 owns it: `open-techo-db` in `db.sls`, with a test in `test-db.sps` that the
 setting is read back on a connection that writes.
+
+## The review of the build (Opus, 2026-11-26)
+
+Read-only, with probes and 30 mutants of its own under
+`build/review-4b-build/`. **No wrong answer, wrong write, leak or 500 found,
+and no mutant survived.** It raced real requests (a purge against a replace, an
+archive against a trash, a slow `PUT` purged between its two jobs): one winner
+each, and the file whole afterwards. Migration 4 was run on a file made by the
+code before it.
+
+**What it found, and what was done**
+
+| Finding | Done |
+|---|---|
+| "Gone for good" rested on how SQLite was built: nothing set or tested `secure_delete` | `open-techo-db` sets it on, with a test in `test-db.sps`, seen failing against a copy that turns it off. On this build a copy that only leaves the line out passes: the default is already on |
+| The purge's 0.4 s holds on a quiet disk only: 1.4 s under load, and the `-wal` reaches the history's size before it shrinks | ADR-0004's numbers corrected; `docs/running.md` has a "Disk" section |
+| Purged text can stay in the `-wal` until the next write | documented, in both guides. Not fixed |
+| "Every write is kept", in the changelog and the API guide | corrected |
+| The API guide: `?state=active` is allowed; the gap example was wrong; `updated` changes on a state change | corrected |
+| The integration tests not seen failing | each failed under one of the review's mutants |
+
+**Left as they are**
+
+- A parameter the list does not know (`?states=`) is ignored, as every list's
+  is.
+- Past the deadline a purge answers 504 and still finishes.
+
+**Handed on**
+
+- **Slice 5:** what a purge or a trash does to a node's children.
+- **Slice 6:** `state` sits behind `props`. If props grow large, the list's
+  filter and the write's check read past them (traps.md).
+- **Slice 7:** the search index must forget a purged node's words: FTS5 keeps
+  deleted tokens unless told otherwise. Not verified.
+- **Slice 8:** a purged node's earlier change rows stay and name revisions that
+  are a 404, and so is every state change's revision.
+

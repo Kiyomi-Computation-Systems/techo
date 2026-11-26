@@ -686,12 +686,29 @@
   '(404 "application/problem+json" "not_found")
   (shape (ask w1 'GET "/v1/nodes/a/b/c/d" (list node-key))))
 
-(test-equal "nodes: DELETE on a node is 405 in the format, with allow"
-  '(405 "application/problem+json" #t)
-  (let ((a (ask w1 'DELETE node-path (list node-key))))
+(test-equal "nodes: PATCH on a node is 405 in the format, its allow naming GET, HEAD, PUT and DELETE"
+  '(405 "application/problem+json" "method_not_allowed" "GET, HEAD, PUT, DELETE")
+  (let ((a (ask w1 'PATCH node-path (list node-key))))
     (if (answer? a)
-        (list (answer-status a) (answer-header a "content-type") (and (answer-header a "allow") #t))
+        (list (answer-status a) (answer-header a "content-type") (code-of a) (answer-header a "allow"))
         a)))
+
+(test-equal "nodes: DELETE on a node, and a POST to its archive, unarchive, trash and untrash, reach their routes: with no If-Match, 428 precondition_required"
+  '((428 "application/problem+json" "precondition_required")
+    (428 "application/problem+json" "precondition_required")
+    (428 "application/problem+json" "precondition_required")
+    (428 "application/problem+json" "precondition_required")
+    (428 "application/problem+json" "precondition_required"))
+  (list (shape (ask w1 'DELETE node-path (list node-key)))
+        (shape (ask w1 'POST (string-append node-path "/archive") (list node-key)))
+        (shape (ask w1 'POST (string-append node-path "/unarchive") (list node-key)))
+        (shape (ask w1 'POST (string-append node-path "/trash") (list node-key)))
+        (shape (ask w1 'POST (string-append node-path "/untrash") (list node-key)))))
+
+(test-equal "nodes: GET on a node's archive is 405, its allow POST"
+  '(405 "method_not_allowed" "POST")
+  (let ((a (ask w1 'GET (string-append node-path "/archive") (list node-key))))
+    (if (answer? a) (list (answer-status a) (code-of a) (answer-header a "allow")) a)))
 
 (test-equal "nodes: a stale If-Match is 412 precondition_failed, application/problem+json"
   '(412 "application/problem+json" "precondition_failed")

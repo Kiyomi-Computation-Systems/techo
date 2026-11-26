@@ -53,6 +53,11 @@ close-out under **Close-outs**, newest first.
   write's body is read ([the plan](2026-11-25-slice-4-nodes.md); ADR-0002,
   ADR-0003, ADR-0004 and ADR-0006, amended 2026-11-25). A person can now store
   notes and read their history.
+- **Slice 4b is built**, on `slice-4b-lifecycle`, not merged: migration 4, the
+  lifecycle as a table, five routes to archive, trash and purge a node
+  ([the plan](2026-11-25-slice-4b-node-lifecycle.md); ADR-0002, ADR-0004,
+  ADR-0007 and ADR-0008, amended 2026-11-25 and 26). A person can now put a note
+  away, and delete it for good.
 - **ADR-0006's amendment is accepted** (owner, 2026-11-23): a key is looked up by its
   BLAKE2b hash.
 - **T5 is restated** (owner, 2026-11-23; ADR-0008's second amendment), since circuit's
@@ -60,9 +65,9 @@ close-out under **Close-outs**, newest first.
 
 ## Next
 
-**Slice 4b: the node lifecycle** (archive, trash, purge, tombstones). Not planned
-yet. Its plan decides the states, which can be undone, and what a write to a
-trashed node gets.
+**Slice 5: the tree and move; links.** Not planned yet. Its plan decides how a
+move is kept from making a loop, whether a snapshot holds the parent, and what
+a trash or a purge does to a node's children.
 
 **chez-sodium is pinned at its v0.1.0** (981ba2e, moved 2026-11-25): no export
 changed since d53e83c. Its docs say to bound a password before verify: Techo's
@@ -100,7 +105,7 @@ node, the list and the revisions read back as the docs say.
 | 3a | The tables, the key check, the key routes, the error format, the request log | merged (PR #9) | |
 | 3b | `techo user add`, login, the rate limit, the hashing worker | merged (PR #12) | |
 | 4 | Node create, read, update; revisions; `If-Match` | merged, #15 | |
-| 4b | The node lifecycle: archive, trash, purge | not planned | |
+| 4b | The node lifecycle: archive, trash, purge | built, on `slice-4b-lifecycle` | |
 | 5 | The tree and move; links | not planned | |
 | 6 | Kinds and props; task transitions | not planned | |
 | 7 | Tags and search | not planned | |
@@ -126,7 +131,10 @@ From [outline.md](outline.md) §14, each for the slice named:
 
 | Question | Slice |
 |---|---|
-| The node lifecycle's states, and which transitions can be undone | 4b |
+| What a trash or a purge does to a node's children | 5 |
+| Whether `state` behind a large `props` costs the list and the write's check | 6 |
+| How the search index forgets a purged node's words | 7 |
+| What the feed says of a revision that has no snapshot, or whose node is purged | 8 |
 | Whether a snapshot holds the parent, so a restore can undo a move | 5 |
 | Search over a join of each node and its newest snapshot, measured at size | 7 |
 | Whether `VACUUM INTO` keeps a search index true (it did in a small probe) | 9 |
@@ -134,6 +142,39 @@ From [outline.md](outline.md) §14, each for the slice named:
 | The container's stop grace (30 s) and a check that asks more than `/health` | 9 |
 
 ## Close-outs
+
+### Slice 4b: the node lifecycle (built 2026-11-26)
+
+- **Built:** migration 4 (`nodes.state`); the lifecycle's table and
+  `node-command` in `(techo nodes)`; `set-node-state!` and `purge-node!`; five
+  routes; `wrong_state`; `journal_size_limit` and `secure_delete` set by
+  `open-techo-db`. No new suite: 35, with the route suite at 378 tests and the
+  model at about 16,400 requests a run.
+- **Answered:** the states are active, archived and trashed; archive and trash
+  can be undone and a purge cannot; a state change bumps the revision and writes
+  no snapshot, so a node's body is its newest snapshot's; a purge empties the
+  row and keeps it, so the id is never used again (L1 to L11).
+- **Moved on:** children of a trashed node, to slice 5.
+- **What the reviews caught that the builders could not:**
+  - the plan's: my purge figure came from `:memory:` (1 ms; the file's is 390 ms
+    and a 211 MB `-wal`); the records forbade the slice until amended; no
+    interface gave a state change its 404 or 412; `node-head` would have found a
+    purged row; three of slice 4's invariants were false under L4;
+  - the build's: nothing set `secure_delete`, on which "gone for good" rested;
+    the docs still said every write is kept. No bug, and none of its 30 mutants
+    survived.
+- **What I got wrong:** the `:memory:` measurement, the second of its kind after
+  slice 4's body cap. It is a trap now.
+- **Changed from slice 4:** the model no longer asks `(techo nodes)` what to
+  expect. It states the rules itself.
+- **Left as they are:** a purge past the deadline answers 504 and finishes;
+  purged text can stay in the `-wal` until the next write; a list of a rare
+  state reads the account's rows.
+- **The agents:** the plan's review (Opus, 249k tokens, 16 min); task 1, the
+  store (Sonnet, 151k, 11 min); 2, the table (Opus, 192k, 14 min); 3, the routes
+  (Opus, 278k, 31 min); 4a, the model (Opus, 349k, 48 min); 4b, integration
+  (Sonnet, 99k, 23 min); the build's review (Opus, 324k, 43 min).
+- **Not run:** macOS, by hand.
 
 ### Slice 4: nodes, revisions and `If-Match` (merged 2026-11-25, #15)
 

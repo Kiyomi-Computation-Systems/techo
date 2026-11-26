@@ -8,7 +8,10 @@
 ;;;   content           the body's members, types and limits (D6, D7, H8)
 ;;;   the linear rule   a request at the cap, whatever its members, is quick (H13)
 ;;;   the table         D5's table, checked exhaustively, every cell stepped (H7)
-;;;   the diagram       .plans/machines/write.md is what the table renders
+;;;   the lifecycle     slice 4b's table, checked exhaustively, every cell stepped (G1)
+;;;   node-command      the two tables answer one request, every cell (G5, G15)
+;;;   states and events the store's names, ?state= and the feed's ops
+;;;   the diagrams      .plans/machines/write.md and lifecycle.md are what the tables render
 ;;;
 ;;; Everything that can raise is computed under `attempt`, and a raise comes
 ;;; out as a value the expectation never is.
@@ -723,6 +726,296 @@
         (command 'restore '("\"3\"") '() 3 #f #f "note" #f)
         (command 'restore '("\"3\"") '() #f #f #f #f #f)))
 
+;;; The lifecycle's table (slice 4b, G1)
+
+(define life-states '(active archived trashed purged))
+(define life-events '(archive unarchive trash untrash purge write))
+
+;; The table the owner approved, written out here, not read from
+;; lifecycle-rows: (state event next command) for a row, (state event) for a
+;; cell that cannot happen. In the table's order.
+(define lifecycle-table
+  '((active archive archived set-state)
+    (active unarchive active refuse-wrong-state)
+    (active trash trashed set-state)
+    (active untrash active refuse-wrong-state)
+    (active purge active refuse-wrong-state)
+    (active write active allow)
+    (archived archive archived refuse-wrong-state)
+    (archived unarchive active set-state)
+    (archived trash trashed set-state)
+    (archived untrash archived refuse-wrong-state)
+    (archived purge archived refuse-wrong-state)
+    (archived write archived allow)
+    (trashed archive trashed refuse-wrong-state)
+    (trashed unarchive trashed refuse-wrong-state)
+    (trashed trash trashed refuse-wrong-state)
+    (trashed untrash active set-state)
+    (trashed purge purged purge)
+    (trashed write trashed refuse-wrong-state)
+    (purged archive)
+    (purged unarchive)
+    (purged trash)
+    (purged untrash)
+    (purged purge)
+    (purged write)))
+
+(define (lifecycle-problems rows)
+  (attempt (lambda () (machine-problems (make-machine rows) '(active) '(purged)
+                                        lifecycle-cant-happen))))
+
+(test-equal "lifecycle: machine-problems, start active and end purged, answers ()"
+  '()
+  (lifecycle-problems lifecycle-rows))
+
+(test-equal "lifecycle: eighteen rows"
+  18
+  (attempt (lambda () (length lifecycle-rows))))
+
+(test-equal "lifecycle: the rows are exactly the table's, in its order"
+  (filter (lambda (c) (= (length c) 4)) lifecycle-table)
+  (attempt (lambda () (map (lambda (r) (list (car r) (cadr r) (caddr r) (cadddr r)))
+                           lifecycle-rows))))
+
+(test-equal "lifecycle: the can't-happen pairs are purged's six, in the table's order"
+  (filter (lambda (c) (= (length c) 2)) lifecycle-table)
+  (attempt (lambda () (map (lambda (c) (list (car c) (cadr c))) lifecycle-cant-happen))))
+
+(test-equal "lifecycle: every can't-happen pair has a reason, a non-empty string"
+  '(#t #t #t #t #t #t)
+  (attempt (lambda ()
+             (map (lambda (c) (and (string? (caddr c)) (> (string-length (caddr c)) 0)))
+                  lifecycle-cant-happen))))
+
+(test-equal "lifecycle: dropping archived + untrash is reported"
+  '((unlisted-gap archived untrash))
+  (lifecycle-problems
+   (filter (lambda (r) (not (and (eq? (car r) 'archived) (eq? (cadr r) 'untrash))))
+           lifecycle-rows)))
+
+(test-equal "lifecycle: a row for purged, the end, is reported"
+  '((listed-but-has-row purged write) (terminal-has-row purged))
+  (lifecycle-problems
+   (append lifecycle-rows (list (list 'purged 'write 'purged 'allow (lambda (d e) d))))))
+
+(test-equal "lifecycle: only set-state and purge move a node, each from its own cell"
+  '((active archive archived set-state) (active trash trashed set-state)
+    (archived unarchive active set-state) (archived trash trashed set-state)
+    (trashed untrash active set-state) (trashed purge purged purge))
+  (attempt (lambda ()
+             (map (lambda (r) (list (car r) (cadr r) (caddr r) (cadddr r)))
+                  (filter (lambda (r) (not (eq? (car r) (caddr r)))) lifecycle-rows)))))
+
+(test-equal "lifecycle: what leaves the state is a refusal or allow, and nothing else"
+  '(refuse-wrong-state allow)
+  (attempt (lambda ()
+             (fold-left (lambda (acc r) (if (memq (cadddr r) acc) acc (append acc (list (cadddr r)))))
+                        '()
+                        (filter (lambda (r) (eq? (car r) (caddr r))) lifecycle-rows)))))
+
+;; life-stepped : Symbol Symbol -> (U (List Symbol Symbol) 'cannot-happen (List 'raised String))
+;; The next state and the command; 'cannot-happen for an assertion violation
+;; whose irritants are the cell, the state and the event; any other raise as
+;; itself.
+(define (life-stepped s e)
+  (guard (x ((and (assertion-violation? x) (irritants-condition? x)
+                  (equal? (condition-irritants x) (list s e)))
+             'cannot-happen)
+            (#t (list 'raised (describe x))))
+    (call-with-values (lambda () (lifecycle-step s e)) list)))
+
+;; Every one of the 24 cells, by construction: a cell the table above lacks
+;; expects what no step answers.
+(for-each
+ (lambda (s)
+   (for-each
+    (lambda (e)
+      (let ((c (find (lambda (c) (and (eq? (car c) s) (eq? (cadr c) e))) lifecycle-table)))
+        (test-equal (string-append "lifecycle step: " (symbol->string s) " + " (symbol->string e))
+          (cond ((not c) 'missing-from-the-suites-table)
+                ((= (length c) 4) (list (caddr c) (cadddr c)))
+                (else 'cannot-happen))
+          (life-stepped s e))))
+    life-events))
+ life-states)
+
+(test-equal "lifecycle step: an unknown state, an unknown event and a request's own event raise"
+  '(assertion assertion assertion)
+  (list (raised-kind (lambda () (lifecycle-step 'gone 'archive)))
+        (raised-kind (lambda () (lifecycle-step 'active 'delete)))
+        (raised-kind (lambda () (lifecycle-step 'active 'replace)))))
+
+;;; node-command: the two tables answer one request (slice 4b, G5, G15)
+
+(define request-events '(create replace replace-other-kind restore restore-unknown
+                         archive unarchive trash untrash purge))
+(define request-states '(#f active archived trashed purged))
+
+;; What node-command answers, written out: under each Found, a row per state
+;; in request-states' order, an entry per event in request-events' order. X is
+;; an assertion violation (the cell cannot happen); a symbol is that command
+;; and #f; (set-state S) is set-state and the state S to store.
+(define node-command-table
+  '((none
+     (#f       insert refuse-404 X X refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404)
+     (active   insert refuse-404 X X refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404)
+     (archived insert refuse-404 X X refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404)
+     (trashed  insert refuse-404 X X refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404)
+     (purged   insert refuse-404 X X refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404))
+    (match
+     (#f       X X X X X X X X X X)
+     (active   X write refuse-409 copy refuse-404
+               (set-state archived) refuse-wrong-state (set-state trashed)
+               refuse-wrong-state refuse-wrong-state)
+     (archived X write refuse-409 copy refuse-404
+               refuse-wrong-state (set-state active) (set-state trashed)
+               refuse-wrong-state refuse-wrong-state)
+     (trashed  X refuse-wrong-state refuse-wrong-state refuse-wrong-state refuse-wrong-state
+               refuse-wrong-state refuse-wrong-state refuse-wrong-state
+               (set-state active) purge)
+     (purged   X X X X X X X X X X))
+    (differ
+     (#f       refuse-412 refuse-412 refuse-412 refuse-412 refuse-412
+               refuse-412 refuse-412 refuse-412 refuse-412 refuse-412)
+     (active   refuse-412 refuse-412 refuse-412 refuse-412 refuse-412
+               refuse-412 refuse-412 refuse-412 refuse-412 refuse-412)
+     (archived refuse-412 refuse-412 refuse-412 refuse-412 refuse-412
+               refuse-412 refuse-412 refuse-412 refuse-412 refuse-412)
+     (trashed  refuse-412 refuse-412 refuse-412 refuse-412 refuse-412
+               refuse-412 refuse-412 refuse-412 refuse-412 refuse-412)
+     (purged   refuse-412 refuse-412 refuse-412 refuse-412 refuse-412
+               refuse-412 refuse-412 refuse-412 refuse-412 refuse-412))))
+
+;; expected-command : Found (U Symbol #f) Symbol -> Any
+;; The table's entry for the cell, as commanded answers it; a cell the table
+;; lacks expects what node-command never answers.
+(define (expected-command f s e)
+  (let* ((rows (cond ((assq f node-command-table) => cdr) (else '())))
+         (row (assq s rows))
+         (tail (memq e request-events))
+         (entries (and row (cdr row))))
+    (if (and entries tail (= (length entries) (length request-events)))
+        (let ((entry (list-ref entries (- (length request-events) (length tail)))))
+          (cond ((eq? entry 'X) 'cannot-happen)
+                ((symbol? entry) (list entry #f))
+                (else entry)))
+        'missing-from-the-suites-table)))
+
+;; commanded : Any Any Any -> (U (List Symbol (U Symbol #f)) 'cannot-happen (List 'raised String))
+;; The command and the state to store; 'cannot-happen for an assertion
+;; violation from node-command whose irritants are the cell, the Found, the
+;; state and the event; any other raise as itself.
+(define (commanded f s e)
+  (guard (x ((and (assertion-violation? x)
+                  (who-condition? x) (eq? (condition-who x) 'node-command)
+                  (irritants-condition? x) (equal? (condition-irritants x) (list f s e)))
+             'cannot-happen)
+            (#t (list 'raised (describe x))))
+    (call-with-values (lambda () (node-command f s e)) list)))
+
+;; Every one of the 150 cells, by construction.
+(for-each
+ (lambda (f)
+   (for-each
+    (lambda (s)
+      (for-each
+       (lambda (e)
+         (test-equal (string-append "command: " (written f) ", " (written s) ", " (written e))
+           (expected-command f s e)
+           (commanded f s e)))
+       request-events))
+    request-states))
+ '(none match differ))
+
+(test-equal "command: the nine commands it answers, in the order the cells first give them"
+  '(insert refuse-404 write refuse-409 copy set-state refuse-wrong-state purge refuse-412)
+  (attempt
+   (lambda ()
+     (fold-left
+      (lambda (acc f)
+        (fold-left
+         (lambda (acc s)
+           (fold-left
+            (lambda (acc e)
+              (let ((a (commanded f s e)))
+                (if (and (pair? a) (symbol? (car a)) (not (eq? (car a) 'raised))
+                         (not (memq (car a) acc)))
+                    (append acc (list (car a)))
+                    acc)))
+            acc request-events))
+         acc request-states))
+      '() '(none match differ)))))
+
+(test-equal "command: an event no request sends raises, whatever was found"
+  '(cannot-happen cannot-happen cannot-happen cannot-happen cannot-happen cannot-happen)
+  (list (commanded 'none #f 'write) (commanded 'match 'active 'write)
+        (commanded 'differ 'active 'write) (commanded 'none #f 'delete)
+        (commanded 'match 'active 'delete) (commanded 'differ 'trashed 'delete)))
+
+(test-equal "command: a Found the write machine has not raises"
+  '(cannot-happen cannot-happen)
+  (list (commanded 'gone 'active 'replace) (commanded #f 'active 'archive)))
+
+(test-equal "command: with match the state must be a live one; with none and differ it is not looked at"
+  '(cannot-happen cannot-happen (refuse-412 #f) (refuse-412 #f) (insert #f) (refuse-404 #f))
+  (list (commanded 'match 'gone 'replace) (commanded 'match "active" 'archive)
+        (commanded 'differ 'gone 'replace) (commanded 'differ "trashed" 'untrash)
+        (commanded 'none 'gone 'create) (commanded 'none "active" 'archive)))
+
+;;; The states and the events, as the store and the feed name them
+
+(test-equal "states: the four, in the table's order"
+  '(active archived trashed purged)
+  (attempt (lambda () node-states)))
+
+(test-equal "state->string: each state's name"
+  '("active" "archived" "trashed" "purged")
+  (attempt (lambda () (map node-state->string '(active archived trashed purged)))))
+
+(test-equal "string->state: each name's state"
+  '(active archived trashed purged)
+  (attempt (lambda () (map string->node-state '("active" "archived" "trashed" "purged")))))
+
+(test-equal "state: a round trip through the string is the state"
+  '(active archived trashed purged)
+  (attempt (lambda () (map (lambda (s) (string->node-state (node-state->string s)))
+                           node-states))))
+
+(test-equal "state->string: what is no state raises"
+  '(assertion assertion assertion assertion)
+  (map (lambda (x) (raised-kind (lambda () (node-state->string x))))
+       (list 'gone "active" #f 'Active)))
+
+(test-equal "string->state: what is no state's name raises"
+  '(assertion assertion assertion assertion assertion assertion)
+  (map (lambda (x) (raised-kind (lambda () (string->node-state x))))
+       (list "gone" "Active" "" " active" 'active #f)))
+
+(test-equal "?state=: none given is active; each listable state is itself"
+  '(active active archived trashed)
+  (attempt (lambda () (map parse-state-param (list #f "active" "archived" "trashed")))))
+
+(for-each
+ (lambda (x)
+   (test-equal (string-append "?state=: refused, " (written x))
+     'invalid
+     (attempt (lambda () (parse-state-param x)))))
+ (list "purged" "" "Active" "ARCHIVED" "Trashed" " active" "active " "trash" "archive"
+       "deleted" "active,archived" 7 'active))
+
+(test-equal "events: the five a state change sends, in the table's order"
+  '(archive unarchive trash untrash purge)
+  (attempt (lambda () lifecycle-events)))
+
+(test-equal "event-op: each event's op in the feed is its own name"
+  '("archive" "unarchive" "trash" "untrash" "purge")
+  (attempt (lambda () (map event-op '(archive unarchive trash untrash purge)))))
+
+(test-equal "event-op: a write's events, the table's write and what is no event raise"
+  '(assertion assertion assertion assertion assertion)
+  (map (lambda (x) (raised-kind (lambda () (event-op x))))
+       (list 'create 'replace 'write "archive" #f)))
+
 ;;; The diagram, held to its file
 
 (test-equal ".plans/machines/write.md is what the table renders"
@@ -751,6 +1044,35 @@
                                                        " | " (caddr c) " |"))
                    #t))
             write-cant-happen)))))
+
+(test-equal ".plans/machines/lifecycle.md is what the table renders"
+  (attempt (lambda () (lifecycle-document)))
+  (read-file ".plans/machines/lifecycle.md"))
+
+(test-equal "the lifecycle document shows the diagram and every cell's answer"
+  '(#t #t #t #t #t #t #t #t)
+  (let ((doc (attempt (lambda () (lifecycle-document)))))
+    (map (lambda (needle) (and (string? doc) (string-index-of doc needle) #t))
+         (list "stateDiagram-v2"
+               "trashed --> purged: purge"
+               "| State | archive | unarchive | trash | untrash | purge | write |"
+               "| active | -> archived, set-state | refuse-wrong-state | -> trashed, set-state | refuse-wrong-state | refuse-wrong-state | allow |"
+               "| archived | refuse-wrong-state | -> active, set-state | -> trashed, set-state | refuse-wrong-state | refuse-wrong-state | allow |"
+               "| trashed | refuse-wrong-state | refuse-wrong-state | refuse-wrong-state | -> active, set-state | -> purged, purge | refuse-wrong-state |"
+               "| purged | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen |"
+               "`node-command`"))))
+
+(test-equal "the lifecycle document gives each can't-happen pair its reason"
+  '(#t #t #t #t #t #t)
+  (attempt
+   (lambda ()
+     (let ((doc (lifecycle-document)))
+       (map (lambda (c)
+              (and (string-index-of doc (string-append "| " (symbol->string (car c))
+                                                       " | " (symbol->string (cadr c))
+                                                       " | " (caddr c) " |"))
+                   #t))
+            lifecycle-cant-happen)))))
 
 (test-end "nodes")
 

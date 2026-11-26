@@ -296,6 +296,24 @@ it.
 - **Rule:** a large column is the table's last, and a table that will grow has
   none.
 
+## A variable set on the host does not reach the Guix container
+
+- **Seen:** `TECHO_NODES_MODEL_SEED=17 scripts/guix-env make test ...` ran the
+  whole model suite, not the replay (slice 4b's model task). Reproduced:
+  `FOO=17 scripts/guix-env sh -c 'echo ${FOO:-unset}'` prints `unset`.
+- **A probe can miss it:** nothing fails. The suite runs with its defaults and
+  passes.
+- **Rule:** set it inside: `scripts/guix-env sh -c 'FOO=17 make test ...'`.
+
+## A measurement in `:memory:` is not one of the server
+
+- **Seen:** a purge of 3 MiB of snapshots took 1 ms in `:memory:`; of 200 MiB on
+  a file in WAL, 390 ms, and it left a `-wal` of 211 MB (slice 4b's plan
+  review). This SQLite is built with `SECURE_DELETE`, and a commit to a file is
+  synced.
+- **Rule:** measure a write on a file opened by `open-techo-db`, at the largest
+  size the limits allow.
+
 The siblings' traps apply wherever Techo touches the same ground. Read them there:
 
 - chez-sqlite3: `.plans/traps.md`

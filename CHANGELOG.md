@@ -49,13 +49,25 @@ Each release's changes. Dates are UTC.
 - Every write is checked against the node's revision, which is its `ETag`: a
   stale write is a 412 and a write with no precondition a 428. New codes:
   `precondition_failed`, `precondition_required`, `kind_fixed`.
-- Every write is kept. `GET /v1/nodes/{id}/revisions` lists a node's history,
+- Every write is kept, until the node is deleted. `GET /v1/nodes/{id}/revisions` lists a node's history,
   `.../revisions/{n}` reads one, and `POST .../revisions/{n}/restore` makes a new
   revision from an old one.
 - A node's body may be 1 MiB, its title 1,000 characters, a request 2 MiB. A
   write's body is read only after its key has been checked.
 - The third migration: the `nodes`, `revisions` and `changes` tables. Run
   `techo migrate` with the server stopped.
+- A node can be put away: `POST /v1/nodes/{id}/archive`, `/unarchive`, `/trash`
+  and `/untrash`, and `DELETE /v1/nodes/{id}`, which removes a trashed node and
+  its history for good. All need `If-Match`. A wrong move is a `409`
+  `wrong_state`.
+- Every node shows its `state`. `GET /v1/nodes` lists active nodes, or another
+  state with `?state=`.
+- A trashed node cannot be written.
+- The fourth migration: a node's `state`. Run `techo migrate` with the server
+  stopped.
+- The write-ahead log file shrinks back to 16 MiB after a large write. It can
+  grow by the size of a deleted node's history meanwhile.
+- A deleted node's text is overwritten with zeros in the database file.
 
 ### Changed
 

@@ -111,8 +111,8 @@ disagree, the record wins and this file gets fixed.
   (ADR-0008, ADR-0013).
 - **Readers stop before the writer** (ADR-0013).
 - **WAL mode, foreign keys on, a busy timeout set** (ADR-0008, ADR-0009). A
-  connection that writes limits the `-wal` to 16 MiB (ADR-0008, amended
-  2026-11-26). `migrate`'s
+  connection that writes limits the `-wal` to 16 MiB and has `secure_delete` on
+  (ADR-0008 and ADR-0004, amended 2026-11-26). `migrate`'s
   connection alone has foreign keys off, and checks them before each commit
   (ADR-0012).
 - **A connection is opened with `open-techo-db`,** where the settings live once
