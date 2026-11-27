@@ -58,7 +58,7 @@ close-out under **Close-outs**, newest first.
   ([the plan](2026-11-25-slice-4b-node-lifecycle.md); ADR-0002, ADR-0004,
   ADR-0007 and ADR-0008, amended 2026-11-25 and 26). A person can now put a note
   away, and delete it for good.
-- **Slice 5a is built**, on `slice-5a-tree`, not merged: migration 5, folders,
+- **Slice 5a is merged** (#19, `93bb42a`): migration 5, folders,
   a move and a bulk move of children, the list by parent
   ([the plan](2026-11-26-slice-5a-tree.md); ADR-0002, ADR-0003, ADR-0004 and
   ADR-0007, amended 2026-11-26). A person can now keep notes in Projects and
@@ -70,9 +70,8 @@ close-out under **Close-outs**, newest first.
 
 ## Next
 
-**Slice 5b: links.** Not planned yet. Its plan decides the link types, whether
-a link bumps either node's revision, what a trash or a purge does to a node's
-links, and whether links block a purge as children do.
+**Slice 5b: links.** [Planned](2026-11-26-slice-5b-links.md): the owner
+decided K1 to K8 on 2026-11-26. Not built.
 
 **Kept ready, from slice 5a (owner, 2026-11-26):**
 
@@ -136,8 +135,8 @@ by a Journal (409 `invalid_parent`), a Project refused under its own child (409
 | 3b | `techo user add`, login, the rate limit, the hashing worker | merged (PR #12) | |
 | 4 | Node create, read, update; revisions; `If-Match` | merged, #15 | |
 | 4b | The node lifecycle: archive, trash, purge | merged, #18 | |
-| 5a | The tree and move | built, on `slice-5a-tree` | |
-| 5b | Links | not planned | |
+| 5a | The tree and move | merged, #19 | |
+| 5b | Links | planned, on `slice-5b-links` | |
 | 6 | Kinds and props; task transitions | not planned | |
 | 7 | Tags and search | not planned | |
 | 8 | The change feed | not planned | |
@@ -177,7 +176,7 @@ From [outline.md](outline.md) §14, each for the slice named:
 
 ## Close-outs
 
-### Slice 5a: the tree and move (built 2026-11-26)
+### Slice 5a: the tree and move (merged 2026-11-26, #19)
 
 - **Built:** migration 5 (`nodes.parent`, `nodes_parent`); `may-hold?`,
   `parent-verdict` and two more events in `(techo nodes)`; `ancestors`,

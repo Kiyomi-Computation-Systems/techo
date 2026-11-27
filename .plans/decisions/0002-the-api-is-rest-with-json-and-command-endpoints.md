@@ -87,3 +87,16 @@ Plan: [slice 5a](../2026-11-26-slice-5a-tree.md)
 - **Three codes more,** all 409: `invalid_parent`, `would_loop`, `has_children`.
 - **A command is one event of a table, and may need facts beside the state:**
   a move's answer also takes what was found of the new parent.
+
+## Amendment, 2026-11-26: slice 5b's routes
+
+Status: accepted (owner, 2026-11-26, as slice 5b's K3 and K8)
+Plan: [slice 5b](../2026-11-26-slice-5b-links.md)
+
+- **A link is `PUT` and `DELETE /v1/nodes/{id}/links/{type}/{target}`,** with
+  no request body and no precondition. The `PUT` answers 201 when it makes the
+  link and 200 when it was there; the `DELETE` 204.
+- **A node's links are `GET /v1/nodes/{id}/links`,** with `direction` (`out` or
+  `in`) and `type`, paged. An item carries the node at the other end, without
+  its body.
+- **No new code.** A missing end, and a link that is not there, are 404.

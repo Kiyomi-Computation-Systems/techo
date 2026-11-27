@@ -339,6 +339,33 @@ it.
 - **Rule:** find a member with `assoc` and keep the pair. Test its value with
   `(eq? v 'null)`, never `null?`, and never by truth.
 
+## SQLite can pass over the index made for a statement
+
+- **Seen, three ways,** on a real file with no `sqlite_stat1` (slice 5b's
+  probes, `build/probe-5b/p2.sps` and `p3.sps`; its plan review's
+  `build/review-5b/plans.sps`, rerun):
+  - `DELETE FROM links WHERE owner = ? AND target = ?` searched the primary
+    key by owner alone: 28 ms for five rows, under 0.1 ms with
+    `INDEXED BY links_target`.
+  - A page of one type's backlinks joined to `nodes` did the same: 28 ms
+    against 0.05 ms. Without the join it chose well.
+  - With `type = ?` and `(type, source) > (?, ?)` both in, the range left the
+    search: 39 ms a page against 0.47 ms with `source > ?` alone.
+- **Naming an index where it does not fit is as bad:** `INDEXED BY
+  links_target` on a read by source sorts in a temp b-tree.
+- **A timing can miss it:** on a dense node the wrong plan was fast. A fresh
+  file of five nodes shows the wrong plan, so a test can hold it.
+- **Rule:** hold the plan's `SEARCH` line, whole, by a test, for every
+  statement on a table with two indexes. `ANALYZE` mends some; nothing runs it.
+
+## `INSERT OR IGNORE` hides more than a duplicate
+
+- **Seen:** with a null in a `NOT NULL` column, `INSERT OR IGNORE` raised
+  nothing and `changes()` was 0, as for a row already there
+  (`build/review-5b/ignore.sps`, rerun). A foreign key and a `STRICT` type
+  still raised. `ON CONFLICT (...) DO NOTHING` raised on the null.
+- **Rule:** look for the row first, then a plain `INSERT` that must make one.
+
 The siblings' traps apply wherever Techo touches the same ground. Read them there:
 
 - chez-sqlite3: `.plans/traps.md`

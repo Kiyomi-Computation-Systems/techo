@@ -72,3 +72,21 @@ Plan: [slice 5a](../2026-11-26-slice-5a-tree.md)
    not moved. An archived node is as an active one here.
 7. **A parent that is missing and one that is another account's get one
    answer.**
+
+## Amendment, 2026-11-26: links
+
+Status: accepted (owner, 2026-11-26, as slice 5b's K1, K2, K6 and K7)
+Plan: [slice 5b](../2026-11-26-slice-5b-links.md)
+
+1. **Three link types, fixed on the server:** `related`, `mentions`, `blocks`.
+   The code's list is the truth. A new one is a release; one once shipped
+   stays.
+2. **A link is directed and stored once,** and read from either end. There is
+   one per source, type and target, and none from a node to itself.
+3. **Both ends are live nodes of one account.** Only the code keeps it so: the
+   foreign keys take a purged row, a self link and another account's owner.
+4. **No link is made to or from a trashed node.** One is removed whatever the
+   states. Trash and archive leave links as they are, and a list shows them
+   with the other node's state.
+5. **A purge removes the node's links, both ways.** Links do not block it, and
+   nothing caps how many a node has.

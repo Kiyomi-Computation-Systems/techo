@@ -117,3 +117,24 @@ Plan: [slice 5a](../2026-11-26-slice-5a-tree.md)
    the one write that is: the request carries the node's revision, which the
    move does not change. It loses no content. A moved child's pending write
    meets a 412.
+
+## Amendment, 2026-11-26: a link is no write to a node
+
+Status: accepted (owner, 2026-11-26, as slice 5b's K4 and K5)
+Plan: [slice 5b](../2026-11-26-slice-5b-links.md)
+
+1. **A link made or removed changes neither node.** No revision is bumped, no
+   snapshot written, and the request carries no `If-Match`. This is the second
+   exception to "every write carries `If-Match`", after a bulk move's children.
+   A link is there or not, so two devices cannot conflict over one.
+2. **Its cost:** a restore brings back no old links, and a node's `ETag` says
+   nothing of its links.
+3. **Each link made or removed writes one change row on the source,** `link` or
+   `unlink`, at the source's present revision. So two rows of a node can carry
+   one revision. The row names no target; slice 8 decides what the feed says.
+4. **A purge writes its own row only,** however many links it removes: no row
+   on the nodes at their other ends. A purge's row means every link of the
+   node is gone.
+5. **A purge of a node with 181,667 links held the writer 0.6 s** and grew the
+   `-wal` to 70 MB, cut to 16 MiB at the next commit. Accepted, as a large
+   history's purge is.
