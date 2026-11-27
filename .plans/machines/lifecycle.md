@@ -3,16 +3,16 @@
 Generated from the table in `src/techo/nodes.sls`. Do not edit.
 Regenerate with `scripts/guix-env make machines`; a test fails when this file differs.
 
-A node starts `active`, and `purged` is the one end. `write` is a replace or a
-revision's restore. `move` puts the node under a new parent; `move-children`
-moves its children and leaves the node as it is. `link` makes a link with the
-node at either end, and `unlink` removes one. A refusal and `allow` leave the
-state.
+A node starts `active`, and `purged` is the one end.
+`write` is a replace, a revision's restore or a Task's transition. `move` puts
+the node under a new parent; `move-children` moves its children and leaves the
+node as it is. `link` makes a link with the node at either end, and `unlink`
+removes one. A refusal and `allow` leave the state.
 
-One function, `node-command`, answers every request but a link's from this
-table and the write machine's, with two facts more: the verdict on the new
-parent, and whether the node has children. It looks first at what the job
-found:
+One function, `node-command`, answers every request but a link's and a Task's
+transition from this table and the write machine's, with two facts more: the
+verdict on the new parent, and whether the node has children. It looks first
+at what the job found:
 
 - `none`: the write machine's answer. A create's is the verdict's: an insert
   when it is `ok`. A state change, a move and a bulk move are a 404.
@@ -32,6 +32,11 @@ link that is there is kept, whatever the states, or removed when the source
 allows `unlink`, which every state does; and an `unlink` of a link that is
 not there is a 404. `node-command` answers neither: for it they are cells
 that cannot happen.
+
+A Task's `done`, `wontdo` and `reopen` are answered by
+`task-command` in `(techo tasks)`, which asks `node-command` for a replace, so
+they take this table's `write`: a trashed Task takes none, and an archived one
+does. Then it asks the kind, then the task's own table, [task.md](task.md).
 
 ```mermaid
 stateDiagram-v2

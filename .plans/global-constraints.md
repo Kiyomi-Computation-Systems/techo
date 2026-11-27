@@ -125,6 +125,8 @@ disagree, the record wins and this file gets fixed.
 - **A Task's status changes only by a command,** and `closed` is there exactly
   when it is not `TODO` (ADR-0004 and ADR-0007, amended 2026-11-27).
 - **A replace with no `props` keeps them** (ADR-0004, amended 2026-11-27).
+- **A Task's command answers no body, and reads one only once it is
+  accepted** (slice 6's plan review).
 - **The five kinds are fixed,** and props are validated per kind before any write
   (ADR-0003).
 

@@ -250,6 +250,8 @@ it.
 - **Happened:** "multiple definitions for fields in body". `(rnrs)` exports `fields`
   (for `define-record-type`) and `port?`.
 - **See it again:** `(import (rnrs))` then `(define (fields n) n)`.
+- **Any name `(rnrs)` exports does it:** `real?` in a program, `member` in a
+  library, and my own probe's `log` (slices 5b and 6; reproduced).
 - **Rule:** pick another name, or import `(rnrs)` with `except`.
 
 ## `get-bytevector-all` on an empty file answers the eof object
@@ -374,6 +376,42 @@ it.
   (`build/review-5b/ignore.sps`, rerun). A foreign key and a `STRICT` type
   still raised. `ON CONFLICT (...) DO NOTHING` raised on the null.
 - **Rule:** look for the row first, then a plain `INSERT` that must make one.
+
+## A table with no end passes its checks when it is empty
+
+- **Seen:** `machine-problems`, told the table has no end, answers no problem
+  for a table of no rows (slice 6's task 2; reproduced with
+  `build/task6-2/probe-empty.sps`). A test of "no problems" then holds
+  nothing.
+- **Rule:** beside the check, count the rows.
+
+## Chez drops a pure call whose result is unused
+
+- **Seen:** `(let ((p (list? v))) ...)` with `p` unused cost 0 µs on a list of
+  a million; with `p` used, 2.3 ms (slice 6's task 1; reproduced with
+  `build/task6-1/probe/unused.sps`).
+- **What it breaks:** a mutant that adds a slow call and ignores its answer
+  changes nothing, and is "caught" by no test for the wrong reason.
+- **Rule:** a mutant uses what it computes.
+
+## An opaque record hides what it holds from the job tests
+
+- **Seen:** `reaches?` in `tests/http-support.sls`, which looks for a request's
+  values inside a job's closure, cannot look inside an opaque record: Chez's
+  inspector calls one `simple`, and `record?` answers `#f` for it (slice 6's
+  routes task; reproduced with `build/task6-3/probe/opaque.sps`). A Task's
+  Draft is opaque.
+- **What it breaks:** "the parsed JSON never reaches a job" holds for what is
+  inside a Draft only by reading the code.
+- **Rule:** such a test names what it can see: here, that the job holds the
+  Draft and never the props member as read.
+
+## `number->string` writes hex in capitals
+
+- **Seen:** `(number->string 254 16)` is `"FE"` (slice 6's integration task;
+  reproduced). The server writes an id in lower case, so a test id built from
+  a hex number of 10 or more never equals the answer's.
+- **Rule:** `string-downcase` an id built that way before comparing it.
 
 The siblings' traps apply wherever Techo touches the same ground. Read them there:
 

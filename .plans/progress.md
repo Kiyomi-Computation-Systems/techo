@@ -71,13 +71,21 @@ close-out under **Close-outs**, newest first.
 ## Next
 
 **Slice 6: kinds and props; task transitions.**
-[Planned](2026-11-27-slice-6-kinds-and-props.md): the owner decided P1 to P9
-on 2026-11-27. Not built.
+[Planned](2026-11-27-slice-6-kinds-and-props.md), built and reviewed on
+`slice-6-kinds-and-props`: the owner decided P1 to P14 on 2026-11-27, and
+three tightenings after the build's review. Not merged.
 
 **Slice 5b is merged** (#20, `25ad3b2`): migration 6, three
 link routes ([the plan](2026-11-26-slice-5b-links.md); ADR-0002, ADR-0003,
 ADR-0004 and ADR-0007, amended 2026-11-26). A person can now link one note to
 another and read a note's backlinks.
+
+**For slice 8, the change feed:** read
+[issue #21](https://github.com/Kiyomi-Computation-Systems/techo/issues/21)
+before planning it. The Emacs client asks for a cursor contract: read the
+latest cursor (an empty account too), paged replay after a saved cursor, a
+feed row for every kind of change with purges and links, and a distinct
+error for an expired cursor. Its acceptance cases are in the issue.
 
 **Kept ready, from slice 5b (2026-11-27):**
 
@@ -157,7 +165,7 @@ by a Journal (409 `invalid_parent`), a Project refused under its own child (409
 | 4b | The node lifecycle: archive, trash, purge | merged, #18 | |
 | 5a | The tree and move | merged, #19 | |
 | 5b | Links | merged, #20 | |
-| 6 | Kinds and props; task transitions | planned, on `slice-6-kinds-and-props` | |
+| 6 | Kinds and props; task transitions | built, on `slice-6-kinds-and-props` | |
 | 7 | Tags and search | not planned | |
 | 8 | The change feed | not planned | |
 | 9 | Docker image and backup | not planned | |

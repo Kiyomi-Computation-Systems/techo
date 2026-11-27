@@ -87,6 +87,20 @@ Each release's changes. Dates are UTC.
 - Deleting a node deletes its links, both ways.
 - The sixth migration: the `links` table. Run `techo migrate` with the server
   stopped.
+- Props for each kind. A Task has `status`, `closed`, `deadline` and
+  `scheduled`. A Contact holds a subset of JSContact (RFC 9553): a name's
+  parts, emails, phones, addresses and more. A Note may have `at`. A Project
+  and a Journal have none. Props may be 4,096 bytes.
+- `POST /v1/nodes/{id}/done`, `/wontdo` and `/reopen` change a Task's status.
+  A replace and a restore do not.
+- A date or time in props is a string: a date, a local time, or a moment in
+  UTC. Techo never converts it.
+- A replace with no `props` now keeps the node's props. It used to mean `{}`.
+- Four codes: `props_too_large`, `not_a_task`, `wrong_status` and
+  `status_fixed`.
+- No migration: a Task made before reads as `TODO`.
+- Dependencies: jsonparse and chez-uri, from the Akku index, are now the
+  server's own. Both were already fetched.
 
 ### Changed
 

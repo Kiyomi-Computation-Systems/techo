@@ -36,8 +36,12 @@
       (invalid_parent 409 "The parent cannot hold this node.")
       (would_loop 409 "The move would put a node under itself.")
       (has_children 409 "The node still has children.")
+      (not_a_task 409 "The node is not a Task.")
+      (wrong_status 409 "The Task's status does not allow this request.")
+      (status_fixed 409 "A replace cannot change a Task's status or closed time.")
       (precondition_failed 412 "The node has changed or already exists; read it again.")
       (payload_too_large 413 "The request body is too large.")
+      (props_too_large 413 "The props are too large.")
       (unsupported_media_type 415 "The request body must be application/json.")
       (precondition_required 428 "A write needs If-Match, or If-None-Match: * to create.")
       (rate_limited 429 "Too many login attempts; try again later.")
@@ -69,8 +73,9 @@
   ;; a handler's own choice); 401, 403, 404, 405, 412, 413, 415, 428, 500,
   ;; 503 and 504 are theirs; any other is `error`. invalid_credentials,
   ;; too_many_keys, kind_fixed, wrong_state, invalid_parent, would_loop,
-  ;; has_children and rate_limited are a handler's own choice, like
-  ;; invalid_json: a bare 401, 409 or 429 never gets them.
+  ;; has_children, not_a_task, wrong_status, status_fixed, props_too_large
+  ;; and rate_limited are a handler's own choice, like invalid_json: a bare
+  ;; 401, 409, 413 or 429 never gets them (413 is payload_too_large).
   (define (status->code status)
     (case status
       ((400) 'invalid_request)

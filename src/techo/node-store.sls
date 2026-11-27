@@ -21,6 +21,9 @@
 ;;; it. Every statement that reads or deletes by target names the index
 ;;; `links_target`, and every out statement leaves it alone (traps.md).
 ;;;
+;;; A node's props (slice 6) are read by `props-of`, from `nodes` alone, for
+;;; a replace, a restore and a Task's transition: `node-head` reads none.
+;;;
 ;;; The body lives only in `revisions` (D11): a node's body is its newest
 ;;; snapshot's, which is not the one at the node's revision once a change of
 ;;; state (no snapshot) has bumped it. `nodes` has an integer key, `num`, that no record holds and
@@ -43,7 +46,7 @@
 ;;;   Snapshot = (node revision author title body content-type props created)
 ;;;     body: (U String #f), #f in a list page
 (library (techo node-store)
-  (export node-in-use? node-head node-of-owner nodes-page snapshot-exists? snapshot-of
+  (export node-in-use? node-head props-of node-of-owner nodes-page snapshot-exists? snapshot-of
           snapshots-page insert-node! write-node! set-node-state! purge-node!
           move-node! ancestors has-children? count-children children-heads
           link-of insert-link! delete-link! links-page
@@ -151,6 +154,8 @@
      (cons 'node-in-use "SELECT id FROM nodes WHERE id = ?")
      (cons 'node-head
            "SELECT revision, kind, state, parent FROM nodes WHERE owner = ? AND id = ? AND state <> 'purged'")
+     (cons 'props-of
+           "SELECT props FROM nodes WHERE owner = ? AND id = ? AND state <> 'purged'")
      (cons 'node-of-owner
            (string-append "SELECT " node-small ", r.body FROM nodes n"
                           " JOIN revisions r ON r.node = n.id AND r.revision ="
@@ -328,6 +333,15 @@
     (let ((r (tx-query-row tx (statement 'node-head) owner id)))
       (and r (list (vector-ref r 0) (vector-ref r 1) (vector-ref r 2)
                    (col (vector-ref r 3))))))
+
+  ;; props-of : Tx Bytevector Bytevector -> (U String #f)
+  ;; owner id -> the node's props as stored, the JSON text, from `nodes`
+  ;; alone; #f for another account's node, a purged one or none. What a
+  ;; replace, a restore and a transition of a Task compare and keep: the
+  ;; head reads no props (slice 6's plan review, blocker 2).
+  (define (props-of tx owner id)
+    (let ((r (tx-query-row tx (statement 'props-of) owner id)))
+      (and r (vector-ref r 0))))
 
   ;; node-of-owner : Tx Bytevector Bytevector -> (U Node #f)
   ;; owner id -> the node with its body, read from the node's NEWEST

@@ -101,8 +101,9 @@ Plan: [slice 6](../2026-11-27-slice-6-kinds-and-props.md)
    `{}`" in the first amendment.
 2. **Props only grow.** A member is only ever added, optional, with a default,
    last in its object. None is removed, renamed or made required, and no
-   value's rule is tightened: an old snapshot must still restore, and an old
-   client must be able to send back what it does not know.
+   value's rule is tightened: what a client reads and sends again unchanged
+   must always be taken, and an old client must be able to send back what it
+   does not know.
 3. **A Project and a Journal have none.** **A Note** may have `at`, a When.
    This replaces point 6's "carries a timestamp": a Journal's Note need not.
 4. **A Task** has `status`, `closed`, `deadline` and `scheduled`. One stored

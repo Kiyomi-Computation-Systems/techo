@@ -170,8 +170,10 @@ JSContact's, case and all. `{}` is a valid Contact.
   `preferredLanguages`, `localizations`, `keywords`, `notes`, `personalInfo`,
   `relatedTo`, `members`; the kinds `group`, `device`, `application`; every
   `phonetic`, `sortAs`, `separator` and `defaultSeparator`; an address's
-  `coordinates` and `timeZone`; an anniversary's `place`, `calendarScale` and
-  timestamp form; a link's `mediaType`.
+  `coordinates` and `timeZone`; an anniversary's `place` and `calendarScale`;
+  a link's `mediaType`. **Not addable:** an anniversary's timestamp form. A
+  `date` is an object, and a new form of an old member is a new rule on a
+  value, as with a When (the build's review).
 - **What Techo already has, and props do not repeat:** the Card's `uid` (the
   node's id), `created`, `updated`, and `name.full` (the node's title).
 
@@ -543,3 +545,62 @@ U+FFFE taken.
 - **P7:** every transition copies the body into a snapshot, up to 1 MiB.
 - **P8:** a round trip from a Card through Techo gains `name.full` from the
   title.
+
+## Changed at the build (2026-11-27)
+
+- **The store's new procedure is `props-of`,** not `node-props`: that name is
+  the Node record's accessor. Its plan is `node-head`'s, one search by `id`.
+- **The 413 in the job cannot happen.** No two kinds share a member, so a
+  value one kind takes within the cap is never another's over it. The check
+  stays as a guard.
+- **`closed` is an exact integer from 0 to 2^53 - 1.**
+- **A replace sending `TODO` with a `closed`** is a 409 `status_fixed`: it
+  differs from what is stored. Only a create's is a 400.
+- **`(techo when)` also exports `real-date?`,** which the Contact's partial
+  date uses.
+- **The Contact, made stricter (owner, 2026-11-27):** no string in a Contact
+  is empty, and none holds a control character (U+0000 to U+001F, U+007F,
+  U+0080 to U+009F), but a line feed in an address's `full`. An empty map or
+  list stays a 400: a member is removed by leaving it out.
+- **Left as built, and fixed for good by P3:** 29 February with no year is a
+  date; a `uri` is at most 1,000 characters.
+
+## The review of the build (2026-11-27)
+
+Read-only, on Opus. **No bug in behaviour:** no 500, no leak and no wrong
+write in 270 raced pairs and 121 mutants; a database made before this slice
+served rightly; 4.6 million When strings agreed with a second reference.
+
+**Three rules it found too loose, tightened before the merge (owner,
+2026-11-27).** P3 would have frozen each:
+
+- **An email address is ASCII:** an atom holds only RFC 5322's atext. It took
+  any character past ASCII, a full-width `@` and a zero-width space among
+  them. JSContact takes no internationalised address; one can be taken later.
+- **No string holds U+2028 or U+2029.** The line feed is the one line break,
+  and only in an address's `full`.
+- **No string is blank:** each holds a character that is neither white space
+  nor zero-width. The list is written out in `blank-char?` (Unicode's
+  White_Space, and U+200B to U+200D, U+2060, U+FEFF), so that it cannot move
+  with Chez's Unicode tables.
+
+**Also from it:**
+
+- **A test for the order of a pronoun entry's members:** the one mutant that
+  lived.
+- **What `chez-uri` decides is pinned** by 42 URIs in `test-contact.sps`. An
+  upgrade that moves the rule fails there. Any scheme is taken, `javascript:`
+  and `file:` among them: the guide tells a client to check.
+- **The guide:** ten sentences corrected, and a fourth rule for clients:
+  expect new values in an old member.
+
+**Holes, left as decided:**
+
+- **A task command copies the Task's body,** up to 1 MiB, into the snapshot,
+  as a restore does: about 75 ms of the writer each, and the file grows. No
+  limit on either.
+- **A new value in an old member** (a fourth contact `kind`) is within P3 and
+  can break a client that knows three. The guide's fourth rule is the answer.
+- **A dependency decides two rules:** `chez-uri` what a URI is, `jsonparse`
+  how a string is escaped. The first is pinned by a test; the second by the
+  model's stored bytes.

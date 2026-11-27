@@ -1,6 +1,7 @@
 #!r6rs
-;;; The node routes suite: slice 4's routes, slice 4b's lifecycle and slice
-;;; 5a's tree, (techo node-routes), as a router serves them inside the whole
+;;; The node routes suite: slice 4's routes, slice 4b's lifecycle, slice
+;;; 5a's tree, slice 5b's links and slice 6's props and task commands,
+;;; (techo node-routes), as a router serves them inside the whole
 ;;; stack (wrap-server), against real SQLite through the test doorway, raw
 ;;; HTTP bytes in through circuit's test host. The rig makes its own router
 ;;; of them; tests/test-app.sps holds them joined to make-app.
@@ -24,8 +25,12 @@
 ;;;   GET    /v1/nodes/:id/links?direction=&type=
 ;;;                                              a page of the node's links, each with the
 ;;;                                              other node without its body
+;;;   POST   /v1/nodes/:id/done, /wontdo, /reopen
+;;;                                              a Task's status (If-Match), the node
+;;;                                              without its body
 ;;;
 ;;; Every node in an answer has its parent after its state: an id, or null.
+;;; Its props are as stored, a Task's status TODO filled in when none is.
 ;;; The tree's tests end by checking the whole table is a forest
 ;;; (forest-faults), by rules written out here, not read from the code.
 ;;; The links' tests judge each answer by the plan's table, as its review
@@ -48,7 +53,8 @@
         (techo-testing)
         (circuit)
         (only (circuit router) make-router)
-        (only (jsonparse easy) json->string)
+        (only (jsonparse easy) json->string string->json)
+        (only (chez-sqlite3) open-database close-database! execute!)
         (http-support)
         (techo errors)
         (only (techo keys) key-secret id->string)
@@ -315,15 +321,20 @@
 (define (member-of j name) (let ((m (and (list? j) (assoc name j)))) (if m (cdr m) 'absent)))
 (define (names j) (map car j))
 
+;; kind-props : String -> Alist
+;; What an answer shows for KIND's props stored {}: a Task's status, TODO,
+;; filled in (P9); for any other kind, the empty object.
+(define (kind-props kind) (if (string=? kind "task") '(("status" . "TODO")) '()))
+
 ;; node-json-in : String Natural String String String String Natural Natural Natural -> Alist
 ;; A node's answer in STATE, at the top level: id, kind, state, parent
-;; (null), title, body, content_type, props, revision, created, updated, in
-;; that order. `under` names another parent.
+;; (null), title, body, content_type, props (stored {}), revision,
+;; created, updated, in that order. `under` names another parent.
 (define (node-json-in state n kind title body type revision created updated)
   (list (cons "id" (nid-text n)) (cons "kind" kind) (cons "state" state) (cons "parent" 'null)
         (cons "title" title)
-        (cons "body" body) (cons "content_type" type) (cons "props" '()) (cons "revision" revision)
-        (cons "created" created) (cons "updated" updated)))
+        (cons "body" body) (cons "content_type" type) (cons "props" (kind-props kind))
+        (cons "revision" revision) (cons "created" created) (cons "updated" updated)))
 
 ;; node-json : as node-json-in, for an active node
 (define (node-json . args) (apply node-json-in "active" args))
@@ -333,7 +344,7 @@
 (define (item-json-in state n kind title type revision created updated)
   (list (cons "id" (nid-text n)) (cons "kind" kind) (cons "state" state) (cons "parent" 'null)
         (cons "title" title)
-        (cons "content_type" type) (cons "props" '()) (cons "revision" revision)
+        (cons "content_type" type) (cons "props" (kind-props kind)) (cons "revision" revision)
         (cons "created" created) (cons "updated" updated)))
 
 ;; parent-text : (U Natural #f) -> (U String 'null)     node P's id, or JSON null
@@ -347,6 +358,7 @@
 (define (item-json . args) (apply item-json-in "active" args))
 
 ;; snapshot-json : Natural String String String Natural -> Alist
+;; A Note's snapshot, its props stored {}; snapshot-item, without the body.
 (define (snapshot-json revision title body type created)
   (list (cons "revision" revision) (cons "title" title) (cons "body" body)
         (cons "content_type" type) (cons "props" '()) (cons "created" created)))
@@ -356,6 +368,156 @@
         (cons "content_type" type) (cons "props" '()) (cons "created" created)))
 
 (define (items a) (vector->list (member-of (answer-json a) "items")))
+
+;;; Slice 6's props, as requests send them and as the table holds them
+
+;; q : String -> String     TEXT with each ' made a ": JSON written by hand
+(define (q text)
+  (list->string (map (lambda (c) (if (char=? c #\') #\" c)) (string->list text))))
+
+;; node-text : (U String #f) String String (U String #f) -> String
+;; A write's JSON text: KIND (left out when #f), the title as the JSON text
+;; TITLE (so "1" is a number), the string BODY, text/plain, and PROPS, JSON
+;; text, as its props member (left out when #f).
+(define (node-text kind title body props)
+  (string-append "{" (if kind (string-append "\"kind\":\"" kind "\",") "")
+                 "\"title\":" title ",\"body\":" (json->string body)
+                 ",\"content_type\":\"text/plain\""
+                 (if props (string-append ",\"props\":" props) "")
+                 "}"))
+
+;; with-props : (U String #f) (U String #f) -> String     node-text, title "t", body "b"
+(define (with-props kind props) (node-text kind "\"t\"" "b" props))
+
+;; make! : Rig Natural Natural String (U String #f) -> Answer
+;; WHO's create of node N, of KIND, with PROPS as JSON text (#f: none).
+(define (make! g who n kind props)
+  (put! g n (list (key-h who) json-type none-match) (with-props kind props)))
+
+;; change! : Rig Natural Natural Natural (U String #f) (U String #f) -> Answer
+;; WHO's replace of node N at If-Match REV, naming KIND (#f: none), with
+;; PROPS as JSON text (#f: none).
+(define (change! g who n rev kind props)
+  (put! g n (list (key-h who) json-type (match-h rev)) (with-props kind props)))
+
+;; props-row : Rig Natural -> (U String #f)     node N's props, the text as stored
+(define (props-row g n)
+  (run-read (rig-store g)
+            (lambda (tx)
+              (let ((r (tx-query-row tx "SELECT props FROM nodes WHERE id = ?" (nid n))))
+                (and r (vector-ref r 0))))))
+
+;; props-in : Answer -> Any     an answer's props, as the client reads them
+(define (props-in a) (member-of (answer-json a) "props"))
+
+;; shown-as : String String -> Any
+;; What an answer shows for KIND's stored TEXT, by the plan's rule (P9):
+;; the text as read, a Task's status TODO first when it holds none.
+(define (shown-as kind text)
+  (let ((v (string->json text)))
+    (if (and (string=? kind "task") (not (assoc "status" v)))
+        (cons (cons "status" "TODO") v)
+        v)))
+
+;; seed-props! : Rig Bytevector Natural String String -> Void
+;; Node N for OWNER, of KIND, with PROPS as its stored text, made at 5000
+;; at the top level ("seed", "seed body", text/plain), straight through the
+;; store, which judges nothing: as a file made before slice 6 holds it.
+(define (seed-props! g owner n kind props)
+  (run-write (rig-store g)
+             (lambda (tx) (insert-node! tx (nid n) owner kind "seed" "seed body" "text/plain" props #f 5000))))
+
+;; jobs-of : Rig -> (List Natural Natural)     the read jobs and the write jobs so far
+(define (jobs-of g) (list ((rig-reads g)) ((rig-writes g))))
+
+;; text-bytes : String -> Natural     its bytes of UTF-8
+(define (text-bytes s) (bytevector-length (string->utf8 s)))
+
+;; contact-of : (Listof String) -> Alist
+;; A Contact of one email, a@b, per label, its ids e1, e2, ...: in
+;; canonical order, so the writer writes its canonical text.
+(define (contact-of labels)
+  (list (cons "emails"
+              (let loop ((ls labels) (i 1) (acc '()))
+                (if (null? ls)
+                    (reverse acc)
+                    (loop (cdr ls) (+ i 1)
+                          (cons (cons (string-append "e" (number->string i))
+                                      (list (cons "address" "a@b") (cons "label" (car ls))))
+                                acc)))))))
+
+;; sized : Natural -> String
+;; The canonical text of a Contact of five emails that is exactly N bytes:
+;; its labels x's, an equal share each (none empty: a Contact's string is
+;; never empty), at most 1,000 characters each. An assertion violation
+;; when N does not fit.
+(define (sized n)
+  (let* ((left (- n (text-bytes (json->string (contact-of '("" "" "" "" ""))))))
+         (q (div left 5))
+         (r (mod left 5)))
+    (if (or (< q 1) (> (+ q 1) 1000))
+        (assertion-violation 'sized "no room for the bytes asked" n)
+        (json->string
+         (contact-of (map (lambda (i) (make-string (if (< i r) (+ q 1) q) #\x)) '(0 1 2 3 4)))))))
+
+;; many-members : Natural -> String     an object of N members, "m0":1, "m1":1, ...
+(define (many-members n)
+  (call-with-string-output-port
+   (lambda (p)
+     (put-string p "{")
+     (let loop ((i 0))
+       (when (< i n)
+         (when (> i 0) (put-string p ","))
+         (put-string p "\"m") (put-string p (number->string i)) (put-string p "\":1")
+         (loop (+ i 1))))
+     (put-string p "}"))))
+
+;; The plan's rich Contact (P8), as tests/test-contact.sps holds it: sent
+;; out of order, with defaults and @type given; and its canonical text.
+(define rich-text
+  (q (string-append
+      "{'speakToAs':{'pronouns':{'k1':{'pref':1,'pronouns':'she/her'}},'grammaticalGender':'feminine'},"
+      "'links':{'l2':{'label':'notes','uri':'https://notes.example.org/ada'},"
+      "'l1':{'pref':1,'kind':'contact','uri':'https://lovelace.example.org/'}},"
+      "'anniversaries':{'b':{'date':{'@type':'PartialDate','day':10,'month':12,'year':1815},'kind':'birth'}},"
+      "'addresses':{'work':{'contexts':{'work':true},'full':'Ockham Park, Surrey','countryCode':'GB','isOrdered':false},"
+      "'home':{'pref':1,'contexts':{'delivery':true,'private':true},'countryCode':'GB','isOrdered':true,"
+      "'components':[{'value':'12','kind':'number'},{'kind':'name','value':'St James Square'},"
+      "{'kind':'locality','value':'London'},{'kind':'postcode','value':'SW1Y 4JH'}]}},"
+      "'phones':{'p3':{'label':'fax','features':{'fax':true},'number':'+44 20 7946 0020'},"
+      "'p1':{'pref':1,'contexts':{'private':true},'features':{'text':true,'voice':true,'mobile':true},'number':'tel:+44-20-7946-0018'},"
+      "'p2':{'contexts':{'work':true},'features':{'voice':true},'number':'+44 20 7946 0019'}},"
+      "'emails':{'e3':{'address':'ada+notes@example.org'},"
+      "'e1':{'pref':1,'contexts':{'private':true},'address':'ada@example.com','@type':'EmailAddress'},"
+      "'e2':{'label':'office','contexts':{'work':true},'address':'a.lovelace@engines.example'}},"
+      "'titles':{'t1':{'organizationId':'o1','kind':'title','name':'Mathematician'}},"
+      "'organizations':{'o1':{'contexts':{'work':true},'units':[{'name':'Research'},{'name':'Notes'}],'name':'Analytical Engines Ltd'}},"
+      "'name':{'isOrdered':true,'components':[{'kind':'title','value':'Dr.'},{'kind':'given','value':'Ada'},"
+      "{'kind':'given2','value':'King'},{'kind':'surname','value':'Lovelace'}],'@type':'Name'},"
+      "'kind':'individual',"
+      "'onlineServices':{'s1':{'uri':'https://example.social/@ada','user':'@ada@example.social','service':'Mastodon'}}}")))
+
+(define rich-canonical
+  (q (string-append
+      "{'name':{'components':[{'kind':'title','value':'Dr.'},{'kind':'given','value':'Ada'},"
+      "{'kind':'given2','value':'King'},{'kind':'surname','value':'Lovelace'}],'isOrdered':true},"
+      "'organizations':{'o1':{'name':'Analytical Engines Ltd','units':[{'name':'Research'},{'name':'Notes'}],'contexts':{'work':true}}},"
+      "'titles':{'t1':{'name':'Mathematician','organizationId':'o1'}},"
+      "'emails':{'e1':{'address':'ada@example.com','contexts':{'private':true},'pref':1},"
+      "'e2':{'address':'a.lovelace@engines.example','contexts':{'work':true},'label':'office'},"
+      "'e3':{'address':'ada+notes@example.org'}},"
+      "'phones':{'p1':{'number':'tel:+44-20-7946-0018','features':{'mobile':true,'voice':true,'text':true},'contexts':{'private':true},'pref':1},"
+      "'p2':{'number':'+44 20 7946 0019','features':{'voice':true},'contexts':{'work':true}},"
+      "'p3':{'number':'+44 20 7946 0020','features':{'fax':true},'label':'fax'}},"
+      "'addresses':{'home':{'components':[{'kind':'number','value':'12'},{'kind':'name','value':'St James Square'},"
+      "{'kind':'locality','value':'London'},{'kind':'postcode','value':'SW1Y 4JH'}],"
+      "'isOrdered':true,'countryCode':'GB','contexts':{'private':true,'delivery':true},'pref':1},"
+      "'work':{'countryCode':'GB','full':'Ockham Park, Surrey','contexts':{'work':true}}},"
+      "'anniversaries':{'b':{'kind':'birth','date':{'year':1815,'month':12,'day':10}}},"
+      "'links':{'l1':{'uri':'https://lovelace.example.org/','kind':'contact','pref':1},"
+      "'l2':{'uri':'https://notes.example.org/ada','label':'notes'}},"
+      "'onlineServices':{'s1':{'service':'Mastodon','uri':'https://example.social/@ada','user':'@ada@example.social'}},"
+      "'speakToAs':{'grammaticalGender':'feminine','pronouns':{'k1':{'pronouns':'she/her','pref':1}}}}")))
 
 (test-begin "node-routes")
 
@@ -373,7 +535,8 @@
     ((list-revisions) (list 'GET (revisions-path 1) '() #f))
     ((get-revision) (list 'GET (revision-path 1 1) '() #f))
     ((restore) (list 'POST (restore-path 1 1) (list (match-h 1)) #f))
-    ((archive unarchive trash untrash purge) (event-request which 1 (list (match-h 1))))
+    ((archive unarchive trash untrash purge done wontdo reopen)
+     (event-request which 1 (list (match-h 1))))
     ((move) (list 'POST (move-path 1) (list json-type (match-h 1)) (move-body #f)))
     ((move-children) (list 'POST (move-children-path 1) (list json-type (match-h 1)) (move-body #f)))
     ((link) (list 'PUT (link-path 1 "related" 2) '() #f))
@@ -384,8 +547,12 @@
 ;; The links' three routes (slice 5b).
 (define link-routes '(link unlink list-links))
 
+;; A Task's three commands (slice 6), each a POST to its own sub-resource,
+;; as a state change is: event-target and event-request name them too.
+(define task-routes '(done wontdo reopen))
+
 (define route-names (append '(list-nodes get-node create replace list-revisions get-revision restore)
-                            events '(move move-children) link-routes))
+                            events '(move move-children) link-routes task-routes))
 
 ;; send : Rig Symbol (Listof Header) -> Answer     the route, with KEY-HEADERS first
 (define (send g which key-headers)
@@ -433,7 +600,7 @@
       ((list-revisions) (list 'GET (string-append p "/revisions") (list (key-h 1)) #f))
       ((get-revision) (list 'GET (string-append p "/revisions/1") (list (key-h 1)) #f))
       ((restore) (list 'POST (string-append p "/revisions/1/restore") (list (key-h 1) (match-h 1)) #f))
-      ((archive unarchive trash untrash purge)
+      ((archive unarchive trash untrash purge done wontdo reopen)
        (let ((t (event-target which p))) (list (car t) (cdr t) (list (key-h 1) (match-h 1)) #f)))
       ((move) (list 'POST (move-path-of p) (list (key-h 1) json-type (match-h 1)) (move-body #f)))
       ((move-children)
@@ -443,7 +610,7 @@
       ((list-links) (list 'GET (links-path-of text) (list (key-h 1)) #f))
       (else (assertion-violation 'id-request "no such route" which)))))
 
-(define id-routes (append '(get-node create replace list-revisions get-revision restore) events
+(define id-routes (append '(get-node create replace list-revisions get-revision restore) task-routes events
                           '(move move-children) link-routes))
 
 (define (send-id g which text)
@@ -515,7 +682,8 @@
     ((list-revisions) (list 'GET (revisions-path n) (list (key-h 1)) #f))
     ((get-revision) (list 'GET (revision-path n 1) (list (key-h 1)) #f))
     ((restore) (list 'POST (restore-path n 1) (list (key-h 1) (match-h 1)) #f))
-    ((archive unarchive trash untrash purge) (event-request which n (list (key-h 1) (match-h 1))))
+    ((archive unarchive trash untrash purge done wontdo reopen)
+     (event-request which n (list (key-h 1) (match-h 1))))
     ((move) (list 'POST (move-path n) (list (key-h 1) json-type (match-h 1)) (move-body #f)))
     ((move-children)
      (list 'POST (move-children-path n) (list (key-h 1) json-type (match-h 1)) (move-body #f)))
@@ -527,13 +695,13 @@
 (for-each
  (lambda (which)
    (test-equal (string-append "owner: " (symbol->string which)
-                              " on B's node and on a missing one: the same 404, one job each (a PUT's and a move's two), B's node untouched")
+                              " on B's node (a Task for a task command) and on a missing one: the same 404, one job each (a PUT's and a move's two), B's node untouched")
      (list '(404 "not_found") '(404 "not_found") #t #t (if (memq which body-routes) 4 2) #t)
      (attempt
       (lambda ()
         (with-rig "other.db"
           (lambda (g)
-            (seed-node! g acct-b 2 "note")
+            (seed-node! g acct-b 2 (if (memq which task-routes) "task" "note"))
             (let* ((before (tables g))
                    (send (lambda (n) (let ((r (missing-request which n)))
                                        ((rig-call g) (car r) (cadr r) (caddr r) (cadddr r)))))
@@ -545,7 +713,8 @@
                     ((rig-jobs g))
                     (equal? (map (lambda (t) (list-ref before t)) '(0 1 2 3))
                             (let ((after (tables g))) (map (lambda (t) (list-ref after t)) '(0 1 2 3))))))))))))
- (append '(get-node replace list-revisions get-revision restore) events '(move move-children)))
+ (append '(get-node replace list-revisions get-revision restore) events '(move move-children)
+         task-routes))
 
 (test-equal "owner: A's list holds A's nodes and never B's"
   (list (nid-text 1) (nid-text 3))
@@ -726,7 +895,8 @@
         (cons "a title that is a number" "{\"kind\":\"note\",\"title\":1,\"body\":\"b\",\"content_type\":\"text/plain\"}")
         (cons "a body of null" "{\"kind\":\"note\",\"title\":\"t\",\"body\":null,\"content_type\":\"text/plain\"}")
         (cons "a content_type that is an array" "{\"kind\":\"note\",\"title\":\"t\",\"body\":\"b\",\"content_type\":[]}")
-        (cons "props with a member" "{\"kind\":\"note\",\"title\":\"t\",\"body\":\"b\",\"content_type\":\"text/plain\",\"props\":{\"a\":1}}")
+        (cons "a Note's props with a member no Note has" "{\"kind\":\"note\",\"title\":\"t\",\"body\":\"b\",\"content_type\":\"text/plain\",\"props\":{\"a\":1}}")
+        (cons "a Note's props with a Task's status" "{\"kind\":\"note\",\"title\":\"t\",\"body\":\"b\",\"content_type\":\"text/plain\",\"props\":{\"status\":\"DONE\"}}")
         (cons "props an array" "{\"kind\":\"note\",\"title\":\"t\",\"body\":\"b\",\"content_type\":\"text/plain\",\"props\":[]}")
         (cons "props null" "{\"kind\":\"note\",\"title\":\"t\",\"body\":\"b\",\"content_type\":\"text/plain\",\"props\":null}")
         (cons "a title of 1001 characters" (content "note" (make-string 1001 #\t) "b" "text/plain"))
@@ -752,17 +922,17 @@
               (append (status+code a) (list ((rig-reads g)) ((rig-writes g)))))))))))
  bad-contents)
 
-(test-equal "put: a replace with a bad kind, or with props, is 400 before its stale If-Match's 412: a read job each, no write job"
+(test-equal "put: a replace with a bad kind, or naming no kind with props no kind takes, is 400 before its stale If-Match's 412: a read job each, no write job"
   '((400 "invalid_request") (400 "invalid_request") 2 0)
   (attempt
    (lambda ()
      (with-rig "bad-replace.db"
        (lambda (g)
          (seed-node! g acct-a 1 "note")
-         (let ((a (put! g 1 (list (key-h 1) json-type (match-h 7))
-                        "{\"kind\":\"folder\",\"title\":\"t\",\"body\":\"b\",\"content_type\":\"text/plain\"}"))
-               (b (put! g 1 (list (key-h 1) json-type (match-h 7))
-                        "{\"title\":\"t\",\"body\":\"b\",\"content_type\":\"text/plain\",\"props\":{\"a\":1}}")))
+         (let* ((a (put! g 1 (list (key-h 1) json-type (match-h 7))
+                         "{\"kind\":\"folder\",\"title\":\"t\",\"body\":\"b\",\"content_type\":\"text/plain\"}"))
+                (b (put! g 1 (list (key-h 1) json-type (match-h 7))
+                         "{\"title\":\"t\",\"body\":\"b\",\"content_type\":\"text/plain\",\"props\":{\"a\":1}}")))
            (list (status+code a) (status+code b) ((rig-reads g)) ((rig-writes g)))))))))
 
 (test-equal "put: a state member is one the route does not know: 400 invalid_request on a create and on a replace at the node's revision, a read job each, no write job, the node still active"
@@ -1213,19 +1383,50 @@
               (append (status+code a) (list ((rig-jobs g)))))))))))
  '("0" "01" "x" "+1"))
 
-(test-equal "props: stored props other than {} are no answer: a 500, its logged raise naming no title, body or props"
-  '((500 "internal") #t #f #f #f)
+;; with-raw : Rig (Database -> A) -> A
+;; A plain connection to the rig's file, beside its doorway, for what no
+;; job may do: a PRAGMA, a change of schema. Closed on the way out.
+(define (with-raw g f)
+  (let ((db (open-database (store-path (rig-store g)) '((busy-timeout . 1000)))))
+    (dynamic-wind (lambda () #f) (lambda () (f db)) (lambda () (close-database! db)))))
+
+;; Stored props are canonical JSON objects (R1): no write makes another.
+;; A file holding one anyway is answered 500, and the raise that is logged
+;; names none of it.
+(test-equal "props: stored props that are no JSON object (an array), or no JSON at all (put there past the table's CHECK), are no answer: the node's GET, the list and the snapshot each 500, the logged raises naming no title, body or props"
+  '(((500 "internal") (500 "internal") (500 "internal")) #t #f #f #f
+    ((500 "internal") (500 "internal") (500 "internal")) #t #f #f #f)
   (attempt
    (lambda ()
-     (with-rig "props.db"
-       (lambda (g)
-         (run-write (rig-store g)
-                    (lambda (tx) (insert-node! tx (nid 1) acct-a "note" "props-title" "props-body"
-                                               "text/plain" "{\"a\":1}" #f 5000)))
-         (let-values (((a text) (capture-output (lambda () (get! g 1 (node-path 1))))))
-           (list (status+code a) (contains? text "handler-failed")
-                 (contains? text "props-title") (contains? text "props-body")
-                 (contains? text "\"a\""))))))))
+     (let ((reads (lambda (g)
+                    (let-values (((as text)
+                                  (capture-output
+                                   (lambda ()
+                                     (let* ((a (get! g 1 (node-path 1)))
+                                            (b (get! g 1 "/v1/nodes"))
+                                            (c (get! g 1 (revision-path 1 1))))
+                                       (list a b c))))))
+                      (list (map status+code as) (contains? text "handler-failed")
+                            (contains? text "props-title") (contains? text "props-body")
+                            (contains? text "secret-props"))))))
+       (append
+        (with-rig "props.db"
+          (lambda (g)
+            (run-write (rig-store g)
+                       (lambda (tx) (insert-node! tx (nid 1) acct-a "note" "props-title" "props-body"
+                                                  "text/plain" "[\"secret-props-5\"]" #f 5000)))
+            (reads g)))
+        (with-rig "props-text.db"
+          (lambda (g)
+            (seed-props! g acct-a 1 "note" "{}")
+            (run-write (rig-store g)
+                       (lambda (tx) (write-node! tx (nid 1) acct-a 1 "props-title" "props-body" "text/plain"
+                                                 "{}" "update" 5500)))
+            (with-raw g (lambda (db)
+                          (execute! db "PRAGMA ignore_check_constraints = ON")
+                          (execute! db "UPDATE nodes SET props = 'secret-props-6 {' WHERE id = ?" (nid 1))
+                          (execute! db "UPDATE revisions SET props = 'secret-props-6 {' WHERE node = ?" (nid 1))))
+            (reads g))))))))
 
 ;;; GET /v1/nodes
 
@@ -2268,24 +2469,25 @@
                    (b ((rig-call g) (car t) (cdr t) (list (key-h 9) (match-h 1))))
                    (c (send-event g event 1 (list (key-h 9)))))
               (list (status+code a) (status+code b) (status+code c) ((rig-jobs g)))))))))
-   (test-equal (string-append "body: " (sym->str event)
-                               " reads no body and no Content-Type: text/plain, or JSON that does not parse, is answered as with none")
-     (let* ((s (from-state event))
-            (entry (assq event (cdr (assq s lifecycle-answers))))
-            (r (if (eq? s 'active) 2 3)))
-       (list (expected-cell s r entry) (expected-cell s r entry)))
-     (attempt
-      (lambda ()
-        (with-rig "lc-body.db"
-          (lambda (g)
-            (let* ((r1 (seed-state! g acct-a 1 "note" (from-state event)))
-                   (r2 (seed-state! g acct-a 2 "note" (from-state event)))
-                   (a (send-event g event 1
-                                  (list (key-h 1) (match-h r1) (cons "Content-Type" "text/plain"))
-                                  "not json at all"))
-                   (b (send-event g event 2 (list (key-h 1) (match-h r2) json-type) "{nope")))
-              (list (cell-at g 1 a) (cell-at g 2 b)))))))))
- events)
+   (when (memq event events)
+     (test-equal (string-append "body: " (sym->str event)
+                                " reads no body and no Content-Type: text/plain, or JSON that does not parse, is answered as with none")
+       (let* ((s (from-state event))
+              (entry (assq event (cdr (assq s lifecycle-answers))))
+              (r (if (eq? s 'active) 2 3)))
+         (list (expected-cell s r entry) (expected-cell s r entry)))
+       (attempt
+        (lambda ()
+          (with-rig "lc-body.db"
+            (lambda (g)
+              (let* ((r1 (seed-state! g acct-a 1 "note" (from-state event)))
+                     (r2 (seed-state! g acct-a 2 "note" (from-state event)))
+                     (a (send-event g event 1
+                                    (list (key-h 1) (match-h r1) (cons "Content-Type" "text/plain"))
+                                    "not json at all"))
+                     (b (send-event g event 2 (list (key-h 1) (match-h r2) json-type) "{nope")))
+                (list (cell-at g 1 a) (cell-at g 2 b))))))))))
+ (append events task-routes))
 
 (test-equal "id: in capitals, a state change and a purge find node 1; the change answers its id in lower case"
   (list (list 200 (nid-text 1)) (list 200 (nid-text 1)) 204)
@@ -2340,7 +2542,8 @@
 
 ;; req-like? : Any -> Boolean     a request, or a member of a parsed JSON object
 (define (req-like? x)
-  (or (req? x) (and (pair? x) (member (car x) '("title" "body" "kind" "content_type" "parent")) #t)))
+  (or (req? x)
+      (and (pair? x) (member (car x) '("title" "body" "kind" "content_type" "parent" "props")) #t)))
 
 (test-equal "job: a create's job holds its content, and reaches no request and no parsed JSON"
   '(201 #t #t #f)
@@ -4621,6 +4824,778 @@
          (let* ((d (unlink! g 1 1 "related" 2))
                 (row (car (reverse (change-rows g acct-a)))))
            (list (equal? (list-ref row 3) "unlink") (and (last-used g 1) (= (list-ref row 4) (last-used g 1))))))))))
+
+;;; Slice 6: kinds and their props
+;;;
+;;; Each kind's props through real requests: what is stored, read from the
+;;; column (R1); what is answered, a Task's TODO filled in; the order of a
+;;; PUT's answers as the plan's review has it. The texts expected are
+;;; written out here by the plan's rules, not read from (techo props).
+
+;;; A PUT's order of answers (the review's "The order of answers")
+
+(test-equal "order: a PUT's props before its job: the content's 400 before the props' 413, the props' 400 before the body's 413, the body's 413 before the props' 413; each after the key's read job with no write job"
+  '((400 "invalid_request" 1 0) (400 "invalid_request" 1 0) (413 "payload_too_large" 1 0)
+    (413 "props_too_large" 1 0) (400 "invalid_request" 1 0) (400 "invalid_request" 1 0))
+  (attempt
+   (lambda ()
+     (let ((one (lambda (name text)
+                  (with-rig name
+                    (lambda (g)
+                      (let ((a (put! g 1 (list (key-h 1) json-type none-match) text)))
+                        (append (status+code a) (jobs-of g)))))))
+           (over (make-string (+ body-cap 1) #\a)))
+       (list (one "order-a.db" (node-text "contact" "1" "b" (sized 4097)))
+             (one "order-b.db" (node-text "note" "\"t\"" over "{\"a\":1}"))
+             (one "order-c.db" (node-text "contact" "\"t\"" over (sized 4097)))
+             (one "order-d.db" (node-text "contact" "\"t\"" "b" (sized 4097)))
+             (one "order-e.db" (node-text "note" "\"t\"" "b" "{\"a\":1}"))
+             (one "order-f.db" (node-text "task" "1" "b" "{\"status\":\"BOGUS\"}")))))))
+
+;; R15: props are judged before the job, so a request refused for its
+;; props makes no write job, whatever its If-Match or its id.
+(test-equal "R15: a replace whose props no kind takes, or that are too large for any, is refused before the job: before a stale If-Match's 412 and a missing node's 404; a read job each and no write job; nothing written"
+  '((400 "invalid_request") (400 "invalid_request") (400 "invalid_request") (413 "props_too_large")
+    (400 "invalid_request") (413 "props_too_large") (6 0) #t)
+  (attempt
+   (lambda ()
+     (with-rig "r15.db"
+       (lambda (g)
+         (seed-props! g acct-a 1 "task" "{\"status\":\"DONE\",\"closed\":5}")
+         (let* ((before (tables g))
+                (as (in-order (lambda (s) (change! g 1 (car s) (cadr s) (caddr s) (cadddr s)))
+                              (list (list 1 7 #f "{\"a\":1}")
+                                    (list 1 7 #f "{\"status\":\"BOGUS\"}")
+                                    (list 1 7 "task" "{\"status\":\"DONE\",\"closed\":1.5}")
+                                    (list 1 7 #f (sized 4097))
+                                    (list 9 1 #f "{\"deadline\":\"2026-02-30\"}")
+                                    (list 9 1 "contact" (sized 4097))))))
+           (append (map status+code as) (list (jobs-of g) (equal? before (tables g))))))))))
+
+(test-equal "order: a replace naming no kind, its props a Task's alone: 404 for no node, 412 stale, wrong_state for a trashed Note, then the stored kind's 400 in the job; a Task takes them; each in a read job and a write job, the refusals writing nothing"
+  (list '(404 "not_found") '(412 "precondition_failed") '(409 "wrong_state") '(400 "invalid_request")
+        '(read write read write read write read write) #t #f
+        200 "{\"deadline\":\"2026-12-01\"}")
+  (attempt
+   (lambda ()
+     (with-rig "order-job.db"
+       (lambda (g)
+         (seed-props! g acct-a 1 "note" "{}")
+         (seed-props! g acct-a 2 "note" "{}")
+         (trashed-at! g acct-a 2 1)
+         (seed-props! g acct-a 3 "task" "{}")
+         (let* ((before (tables g))
+                (deadline "{\"deadline\":\"2026-12-01\"}")
+                (as (in-order (lambda (s) (change! g 1 (car s) (cadr s) #f deadline))
+                              '((9 1) (1 5) (2 2) (1 1))))
+                (order ((rig-order g)))
+                (same? (equal? before (tables g)))
+                (used (last-used g 1))
+                (t (change! g 1 3 1 #f deadline)))
+           (append (map status+code as)
+                   (list order same? used (answer-status t) (props-row g 3)))))))))
+
+(test-equal "order: a replace naming task on a Note: props a Task cannot take are 400 before the job, no write job; props a Task takes are 409 kind_fixed in the job, and stale 412; nothing written"
+  '((400 "invalid_request" (1 0)) (409 "kind_fixed" (2 1)) (412 "precondition_failed" (3 2)) #t)
+  (attempt
+   (lambda ()
+     (with-rig "order-kind.db"
+       (lambda (g)
+         (seed-props! g acct-a 1 "note" "{}")
+         (let* ((before (tables g))
+                (step (lambda (rev props)
+                        (let ((a (change! g 1 1 rev "task" props)))
+                          (append (status+code a) (list (jobs-of g))))))
+                (a (step 1 "{\"status\":\"BOGUS\"}"))
+                (b (step 1 "{\"status\":\"DONE\"}"))
+                (c (step 4 "{\"status\":\"DONE\"}")))
+           (list a b c (equal? before (tables g)))))))))
+
+(test-equal "order: a replace's status_fixed comes last: after 404, after 412, after a trashed Task's wrong_state; a Note's 400 before the job for a status at all; each refusal writing nothing, last_used null"
+  '((409 "status_fixed") (409 "status_fixed") (412 "precondition_failed") (409 "wrong_state")
+    (404 "not_found") (400 "invalid_request") #t #f)
+  (attempt
+   (lambda ()
+     (with-rig "order-status.db"
+       (lambda (g)
+         (seed-props! g acct-a 1 "task" "{\"status\":\"DONE\",\"closed\":5}")
+         (seed-props! g acct-a 2 "task" "{\"status\":\"DONE\",\"closed\":5}")
+         (trashed-at! g acct-a 2 1)
+         (let* ((before (tables g))
+                (as (in-order (lambda (s) (change! g 1 (car s) (cadr s) (caddr s) (cadddr s)))
+                              (list (list 1 1 #f "{\"status\":\"TODO\"}")
+                                    (list 1 1 "task" "{\"status\":\"DONE\",\"closed\":6}")
+                                    (list 1 3 #f "{\"status\":\"TODO\"}")
+                                    (list 2 2 #f "{\"status\":\"TODO\"}")
+                                    (list 9 1 #f "{\"status\":\"TODO\"}")
+                                    (list 1 1 "note" "{\"status\":\"DONE\"}")))))
+           (append (map status+code as) (list (equal? before (tables g)) (last-used g 1)))))))))
+
+;;; A Task's props, restated (the review's table)
+
+(test-equal "task: a create with no status is TODO, stored {} and answered {\"status\":\"TODO\"}; DONE and WONTDO are closed at the write's time, or at the closed given (P14); each member in the plan's order; TODO given is not stored"
+  (list (list 201 "{}" '(("status" . "TODO")))
+        (list 201 "{}" '(("status" . "TODO")))
+        (list 201 "{\"status\":\"DONE\",\"closed\":1795515226234}"
+              '(("status" . "DONE") ("closed" . 1795515226234)))
+        (list 201 "{\"status\":\"WONTDO\",\"closed\":5}" '(("status" . "WONTDO") ("closed" . 5)))
+        (list 201 "{\"status\":\"DONE\",\"closed\":1700000000000,\"deadline\":\"2026-12-01\",\"scheduled\":\"2026-11-30T09:00\"}"
+              '(("status" . "DONE") ("closed" . 1700000000000) ("deadline" . "2026-12-01")
+                ("scheduled" . "2026-11-30T09:00")))
+        (list 201 "{\"deadline\":\"2026-12-24\"}" '(("status" . "TODO") ("deadline" . "2026-12-24")))
+        (list 200 "{\"status\":\"DONE\",\"closed\":1795515226234}"))
+  (attempt
+   (lambda ()
+     (with-rig "task-create.db"
+       (lambda (g)
+         ((rig-set-now! g) (+ now0 111))
+         (let* ((shape (lambda (a n) (list (answer-status a) (props-row g n) (props-in a))))
+                (a (make! g 1 1 "task" #f))
+                (sa (shape a 1))
+                (b (make! g 1 2 "task" "{}"))
+                (sb (shape b 2))
+                (c (make! g 1 3 "task" "{\"status\":\"DONE\"}"))
+                (sc (shape c 3))
+                (d (make! g 1 4 "task" "{\"status\":\"WONTDO\",\"closed\":5}"))
+                (sd (shape d 4))
+                (e (make! g 1 5 "task" "{\"scheduled\":\"2026-11-30T09:00\",\"closed\":1700000000000,\"deadline\":\"2026-12-01\",\"status\":\"DONE\"}"))
+                (se (shape e 5))
+                (f (make! g 1 6 "task" "{\"status\":\"TODO\",\"deadline\":\"2026-12-24\"}"))
+                (sf (shape f 6))
+                (r (get! g 1 (node-path 3))))
+           (list sa sb sc sd se sf (list (answer-status r) (props-row g 3)))))))))
+
+(test-equal "task: a create of TODO with a closed, or a closed and no status, is 400 before the job: a create names its kind (P14); no write job"
+  '((400 "invalid_request") (400 "invalid_request") (2 0))
+  (attempt
+   (lambda ()
+     (with-rig "task-create-closed.db"
+       (lambda (g)
+         (let* ((a (make! g 1 1 "task" "{\"status\":\"TODO\",\"closed\":5}"))
+                (b (make! g 1 2 "task" "{\"closed\":5}")))
+           (list (status+code a) (status+code b) (jobs-of g))))))))
+
+(test-equal "task: a replace: a status and a closed claimed as stored are taken, TODO filled in for none; left out, each is kept; deadline and scheduled are as sent, an absent one removed; an archived Task too"
+  (list (list 200 "{\"status\":\"DONE\",\"closed\":5,\"scheduled\":\"2026-12-02\"}")
+        (list 200 "{\"status\":\"DONE\",\"closed\":5}")
+        (list 200 "{\"status\":\"DONE\",\"closed\":5}")
+        (list 200 "{\"status\":\"DONE\",\"closed\":5}")
+        (list 200 "{}")
+        (list 200 "{\"deadline\":\"2026-12-03\"}")
+        (list 200 "archived" "{\"status\":\"WONTDO\",\"closed\":7,\"deadline\":\"2026-12-04\"}"))
+  (attempt
+   (lambda ()
+     (with-rig "task-replace.db"
+       (lambda (g)
+         (seed-props! g acct-a 1 "task" "{\"status\":\"DONE\",\"closed\":5,\"deadline\":\"2026-12-01\"}")
+         (seed-props! g acct-a 2 "task" "{}")
+         (seed-props! g acct-a 3 "task" "{\"status\":\"WONTDO\",\"closed\":7}")
+         (archived-at! g acct-a 3 1)
+         (let* ((shape (lambda (a n) (list (answer-status a) (props-row g n))))
+                (a (shape (change! g 1 1 1 #f "{\"status\":\"DONE\",\"closed\":5,\"scheduled\":\"2026-12-02\"}") 1))
+                (b (shape (change! g 1 1 2 "task" "{\"status\":\"DONE\"}") 1))
+                (c (shape (change! g 1 1 3 #f "{\"closed\":5}") 1))
+                (d (shape (change! g 1 1 4 #f "{}") 1))
+                (e (shape (change! g 1 2 1 "task" "{\"status\":\"TODO\"}") 2))
+                (f (shape (change! g 1 2 2 #f "{\"status\":\"TODO\",\"deadline\":\"2026-12-03\"}") 2))
+                (h (change! g 1 3 2 #f "{\"status\":\"WONTDO\",\"closed\":7,\"deadline\":\"2026-12-04\"}")))
+           (list a b c d e f (list (answer-status h) (member-of (answer-json h) "state") (props-row g 3)))))))))
+
+(test-equal "task: a replace claiming another status or closed is 409 status_fixed, in the job: TODO or WONTDO of a DONE Task, DONE of a Task stored {}, a closed of one with none, another closed; 5.0 for 5 is 400 before the job; nothing written, last_used null (R4)"
+  '((409 "status_fixed") (409 "status_fixed") (409 "status_fixed") (409 "status_fixed")
+    (409 "status_fixed") (400 "invalid_request") (6 5) #t #f)
+  (attempt
+   (lambda ()
+     (with-rig "task-fixed.db"
+       (lambda (g)
+         (seed-props! g acct-a 1 "task" "{\"status\":\"DONE\",\"closed\":5}")
+         (seed-props! g acct-a 2 "task" "{}")
+         (let* ((before (tables g))
+                (as (in-order (lambda (s) (change! g 1 (car s) 1 #f (cadr s)))
+                              '((1 "{\"status\":\"TODO\"}") (1 "{\"status\":\"WONTDO\",\"closed\":5}")
+                                (2 "{\"status\":\"DONE\"}") (2 "{\"closed\":5}") (1 "{\"closed\":6}")
+                                (1 "{\"closed\":5.0}")))))
+           (append (map status+code as) (list (jobs-of g) (equal? before (tables g)) (last-used g 1)))))))))
+
+;;; Props each kind refuses, before the job (R3; "Answers the plan lacked")
+
+(for-each
+ (lambda (bad)
+   (test-equal (string-append "props: a create of a " (cadr bad) " with " (car bad)
+                              ": 400 invalid_request, after the key's read job, no write job, nothing written")
+     '(400 "invalid_request" 1 0 #f)
+     (attempt
+      (lambda ()
+        (with-rig "bad-props.db"
+          (lambda (g)
+            (let ((a (make! g 1 1 (cadr bad) (q (caddr bad)))))
+              (append (status+code a) (jobs-of g) (list (props-row g 1))))))))))
+ (list (list "props with a member" "project" "{'a':1}")
+       (list "a Contact's kind" "project" "{'kind':'org'}")
+       (list "a Note's at" "journal" "{'at':'2026-12-01'}")
+       (list "a Task's status" "note" "{'status':'DONE'}")
+       (list "a member no kind has" "note" "{'a':1}")
+       (list "an at that is a number" "note" "{'at':20261201}")
+       (list "an at of 24:00" "note" "{'at':'2026-12-01T24:00'}")
+       (list "an at of 29 February 1900" "note" "{'at':'1900-02-29'}")
+       (list "an at with a sign" "note" "{'at':'+026-12-01'}")
+       (list "an at with an offset" "note" "{'at':'2026-12-01T20:00:00+01:00'}")
+       (list "a Note's at" "task" "{'at':'2026-12-01'}")
+       (list "a Contact's emails" "task" "{'emails':{'e1':{'address':'a@b'}}}")
+       (list "a status in lower case" "task" "{'status':'done'}")
+       (list "a closed of 1.7e12" "task" "{'status':'DONE','closed':1.7e12}")
+       (list "a closed of null" "task" "{'status':'DONE','closed':null}")
+       (list "a closed of -1" "task" "{'status':'DONE','closed':-1}")
+       (list "the status twice" "task" "{'status':'DONE','status':'DONE'}")
+       (list "a deadline of 30 February" "task" "{'deadline':'2026-02-30'}")
+       (list "a Task's deadline" "contact" "{'deadline':'2026-12-01'}")
+       (list "@type at the top" "contact" "{'@type':'Card'}")
+       (list "a pref of 1.0" "contact" "{'emails':{'e1':{'address':'a@b','pref':1.0}}}")
+       (list "a name twice in an email" "contact" "{'emails':{'e1':{'address':'a@b','address':'a@b'}}}")
+       (list "an Id twice" "contact" "{'emails':{'e1':{'address':'a@b'},'e1':{'address':'c@d'}}}")
+       (list "an object empty as sent under the top" "contact" "{'emails':{'e1':{'address':'a@b','contexts':{}}}}")
+       (list "an email with no @" "contact" "{'emails':{'e1':{'address':'ab'}}}")
+       (list "props of 100,000 members" "contact" (many-members 100000))))
+
+;;; Each kind's props stored and answered
+
+;; Each case: a kind, its props as sent (#f: none), and the canonical text
+;; stored, by the plan's rules.
+(define kind-cases
+  (list (list "project" "{}" "{}")
+        (list "journal" #f "{}")
+        (list "note" "{}" "{}")
+        (list "note" "{'at':'2026-12-01T15:00'}" "{'at':'2026-12-01T15:00'}")
+        (list "note" "{'at':'2026-12-01T20:00:00Z'}" "{'at':'2026-12-01T20:00:00Z'}")
+        (list "task" #f "{}")
+        (list "task" "{'scheduled':'2026-12-01','deadline':'2026-12-24'}"
+              "{'deadline':'2026-12-24','scheduled':'2026-12-01'}")
+        (list "contact" "{}" "{}")
+        (list "contact" "{'kind':'individual'}" "{}")
+        (list "contact" "{'name':{'isOrdered':false,'components':[{'value':'Ltd','kind':'surname'}]},'kind':'org'}"
+              "{'kind':'org','name':{'components':[{'kind':'surname','value':'Ltd'}]}}")
+        (list "contact" rich-text rich-canonical)))
+
+(for-each
+ (lambda (c)
+   (let ((kind (car c)) (sent (and (cadr c) (q (cadr c)))) (canonical (q (caddr c))))
+     (test-equal (string-append "kind: a " kind " made with " (or sent "no props")
+                                " stores the canonical text; the answer and the GET show it, a Task's TODO filled in; a replace naming the kind, and one naming none, with the same props store the same text")
+       (let ((shown (shown-as kind canonical)))
+         (list 201 canonical shown 200 shown 200 canonical 200 canonical shown))
+       (attempt
+        (lambda ()
+          (with-rig "kinds.db"
+            (lambda (g)
+              (let* ((a (make! g 1 1 kind sent))
+                     (sa (list (answer-status a) (props-row g 1) (props-in a)))
+                     (r (get! g 1 (node-path 1)))
+                     (sr (list (answer-status r) (props-in r)))
+                     (b (change! g 1 1 1 kind sent))
+                     (sb (list (answer-status b) (props-row g 1)))
+                     (d (change! g 1 1 2 #f (or sent "{}")))
+                     (sd (list (answer-status d) (props-row g 1) (props-in d))))
+                (append sa sr sb sd)))))))))
+ kind-cases)
+
+(test-equal "kind: a replace naming no kind is judged by the stored kind, in the job: a Task takes a deadline and not an at, a Note an at and not a deadline, a Project neither, a Contact an email; each refusal a 400 after its write job, the props as they were"
+  (list '(200 "{\"deadline\":\"2026-12-01\"}") '(400 "{\"deadline\":\"2026-12-01\"}" (1 1))
+        '(200 "{\"at\":\"2026-12-01\"}") '(400 "{\"at\":\"2026-12-01\"}" (1 1))
+        '(400 "{}" (1 1))
+        '(200 "{\"emails\":{\"e1\":{\"address\":\"a@b\"}}}"))
+  (attempt
+   (lambda ()
+     (with-rig "kind-stored.db"
+       (lambda (g)
+         (seed-props! g acct-a 1 "task" "{}")
+         (seed-props! g acct-a 2 "note" "{}")
+         (seed-props! g acct-a 3 "project" "{}")
+         (seed-props! g acct-a 4 "contact" "{}")
+         (let* ((ok (lambda (n rev props)
+                      (let ((a (change! g 1 n rev #f props))) (list (answer-status a) (props-row g n)))))
+                (no (lambda (n rev props)
+                      (let* ((jobs (jobs-of g))
+                             (a (change! g 1 n rev #f props)))
+                        (list (answer-status a) (props-row g n) (map - (jobs-of g) jobs)))))
+                (a (ok 1 1 "{\"deadline\":\"2026-12-01\"}"))
+                (b (no 1 2 "{\"at\":\"2026-12-01\"}"))
+                (c (ok 2 1 "{\"at\":\"2026-12-01\"}"))
+                (d (no 2 2 "{\"deadline\":\"2026-12-01\"}"))
+                (e (no 3 1 "{\"at\":\"2026-12-01\"}"))
+                (f (ok 4 1 "{\"emails\":{\"e1\":{\"address\":\"a@b\"}}}")))
+           (list a b c d e f)))))))
+
+(test-equal "P11 (R13): a replace with no props keeps them, naming the kind or none; {} clears them, but a Task's status and closed"
+  (list (list "{\"at\":\"2026-12-01\"}" "{\"at\":\"2026-12-01\"}" "{}")
+        (list rich-canonical rich-canonical "{}")
+        (list "{\"status\":\"WONTDO\",\"closed\":7,\"deadline\":\"2026-12-01\"}"
+              "{\"status\":\"WONTDO\",\"closed\":7,\"deadline\":\"2026-12-01\"}"
+              "{\"status\":\"WONTDO\",\"closed\":7}"))
+  (attempt
+   (lambda ()
+     (with-rig "p11.db"
+       (lambda (g)
+         (let* ((m1 (make! g 1 1 "note" "{\"at\":\"2026-12-01\"}"))
+                (m2 (make! g 1 2 "contact" rich-text))
+                (m3 (make! g 1 3 "task" "{\"status\":\"WONTDO\",\"closed\":7,\"deadline\":\"2026-12-01\"}"))
+                (three (lambda (n kind)
+                         (let* ((a (change! g 1 n 1 #f #f))
+                                (sa (props-row g n))
+                                (b (change! g 1 n 2 kind #f))
+                                (sb (props-row g n))
+                                (c (change! g 1 n 3 #f "{}")))
+                           (list sa sb (props-row g n)))))
+                (x (three 1 "note"))
+                (y (three 2 "contact"))
+                (z (three 3 "task")))
+           (list x y z)))))))
+
+;; round-trip : Rig Natural String -> (List ...)
+;; Node N of KIND: its stored text; then its GET's props, as the client
+;; reads them, sent back as a replace naming no kind, and again naming the
+;; kind: each answer's status and the stored text after it.
+(define (round-trip g n kind)
+  (let* ((stored0 (props-row g n))
+         (rev (car (stored g n)))
+         (back (json->string (props-in (get! g 1 (node-path n)))))
+         (a (change! g 1 n rev #f back))
+         (s1 (props-row g n))
+         (b (change! g 1 n (+ rev 1) kind back)))
+    (list stored0 (answer-status a) s1 (answer-status b) (props-row g n))))
+
+(test-equal "R2: what a GET answers, sent back unchanged as a replace, is taken and stores the same bytes: a Note with an at, a Task in each status, a Task stored {}, the rich Contact"
+  (list (list "{\"at\":\"2026-12-01T20:00:00Z\"}" 200 "{\"at\":\"2026-12-01T20:00:00Z\"}" 200 "{\"at\":\"2026-12-01T20:00:00Z\"}")
+        (list "{\"deadline\":\"2026-12-01\"}" 200 "{\"deadline\":\"2026-12-01\"}" 200 "{\"deadline\":\"2026-12-01\"}")
+        (list "{\"status\":\"DONE\",\"closed\":5}" 200 "{\"status\":\"DONE\",\"closed\":5}" 200 "{\"status\":\"DONE\",\"closed\":5}")
+        (list "{\"status\":\"WONTDO\",\"closed\":7,\"scheduled\":\"2026-12-02T08:30\"}" 200
+              "{\"status\":\"WONTDO\",\"closed\":7,\"scheduled\":\"2026-12-02T08:30\"}" 200
+              "{\"status\":\"WONTDO\",\"closed\":7,\"scheduled\":\"2026-12-02T08:30\"}")
+        (list "{}" 200 "{}" 200 "{}")
+        (list rich-canonical 200 rich-canonical 200 rich-canonical))
+  (attempt
+   (lambda ()
+     (with-rig "r2.db"
+       (lambda (g)
+         (seed-props! g acct-a 5 "task" "{}")
+         (let* ((m1 (make! g 1 1 "note" "{\"at\":\"2026-12-01T20:00:00Z\"}"))
+                (m2 (make! g 1 2 "task" "{\"deadline\":\"2026-12-01\"}"))
+                (m3 (make! g 1 3 "task" "{\"status\":\"DONE\",\"closed\":5}"))
+                (m4 (make! g 1 4 "task" "{\"scheduled\":\"2026-12-02T08:30\",\"status\":\"WONTDO\",\"closed\":7}"))
+                (m6 (make! g 1 6 "contact" rich-text))
+                (a (round-trip g 1 "note"))
+                (b (round-trip g 2 "task"))
+                (c (round-trip g 3 "task"))
+                (d (round-trip g 4 "task"))
+                (e (round-trip g 5 "task"))
+                (f (round-trip g 6 "contact")))
+           (list a b c d e f)))))))
+
+(test-equal "R17: one value is one stored text whatever order its Id maps and their members were sent in, by a create and by a replace"
+  (list (q "{'emails':{'a1':{'address':'a@b'},'zz':{'address':'z@b','label':'work'}}}") #t #t)
+  (attempt
+   (lambda ()
+     (with-rig "r17.db"
+       (lambda (g)
+         (let* ((x (q "{'emails':{'zz':{'address':'z@b','label':'work'},'a1':{'address':'a@b'}}}"))
+                (y (q "{'emails':{'a1':{'address':'a@b'},'zz':{'label':'work','address':'z@b'}}}"))
+                (a (make! g 1 1 "contact" x))
+                (b (make! g 1 2 "contact" y))
+                (c (make! g 1 3 "contact" "{}"))
+                (d (change! g 1 3 1 #f y)))
+           (list (props-row g 1) (equal? (props-row g 1) (props-row g 2))
+                 (equal? (props-row g 1) (props-row g 3)))))))))
+
+;;; The cap (P2)
+
+(test-equal "props_too_large: a Contact whose canonical text is 4,096 bytes is 201 and stored as sent; 4,097 bytes is 413 props_too_large after the key's read job with no write job, on a create and on a replace naming the kind or none; nothing written"
+  (list (list 201 4096 #t) '(413 "props_too_large") '(413 "props_too_large") '(413 "props_too_large")
+        '(4 1) #t)
+  (attempt
+   (lambda ()
+     (with-rig "cap.db"
+       (lambda (g)
+         (let* ((a (make! g 1 1 "contact" (sized 4096)))
+                (sa (list (answer-status a) (text-bytes (props-row g 1)) (equal? (props-row g 1) (sized 4096))))
+                (before (tables g))
+                (b (make! g 1 2 "contact" (sized 4097)))
+                (c (change! g 1 1 1 "contact" (sized 4097)))
+                (d (change! g 1 1 1 #f (sized 4097))))
+           (list sa (status+code b) (status+code c) (status+code d) (jobs-of g)
+                 (equal? before (tables g)))))))))
+
+;;; A Task's three commands (P7): the plan's table, cell by cell
+
+;; task-cells : (Listof (List Symbol Symbol (U Symbol #f) Symbol))
+;; The plan's task table: the status, the event, the next status (#f where
+;; the status refuses) and its command, close, keep, open or refuse.
+(define task-cells
+  '((TODO done DONE close) (TODO wontdo WONTDO close) (TODO reopen #f refuse)
+    (DONE done #f refuse) (DONE wontdo WONTDO keep) (DONE reopen TODO open)
+    (WONTDO done DONE keep) (WONTDO wontdo #f refuse) (WONTDO reopen TODO open)))
+
+;; status-text : Symbol -> String
+;; A Task's stored props in STATUS: TODO with a deadline; DONE closed at 5
+;; and WONTDO at 7, each with the deadline too.
+(define (status-text status)
+  (case status
+    ((TODO) "{\"deadline\":\"2026-12-01\"}")
+    ((DONE) "{\"status\":\"DONE\",\"closed\":5,\"deadline\":\"2026-12-01\"}")
+    (else "{\"status\":\"WONTDO\",\"closed\":7,\"deadline\":\"2026-12-01\"}")))
+
+;; text-after : Symbol Symbol Symbol Natural -> String
+;; The stored text after a transition from STATUS to NEXT by COMMAND at
+;; NOW: no status for TODO; closed NOW for close, the old one for keep,
+;; none for open; the deadline kept.
+(define (text-after status next command now)
+  (let ((closed (case command
+                  ((close) (number->string now))
+                  ((keep) (if (eq? status 'DONE) "5" "7"))
+                  (else #f))))
+    (string-append "{"
+                   (if (eq? next 'TODO) "" (string-append "\"status\":\"" (symbol->string next) "\","))
+                   (if closed (string-append "\"closed\":" closed ",") "")
+                   "\"deadline\":\"2026-12-01\"}")))
+
+;; seed-task! : Rig Natural String Symbol -> Natural
+;; A's Project 10 and Note 11, made at 4000; A's Task N under the Project,
+;; made at 5000 ("task title", "task body", text/markdown) with PROPS,
+;; linked to Note 11 and from it; archived at 6000 when STATE is archived,
+;; with no snapshot. All through the store. The Task's revision: 1, or 2.
+(define (seed-task! g n props state)
+  (run-write (rig-store g)
+             (lambda (tx)
+               (insert-node! tx (nid 10) acct-a "project" "p" "pb" "text/plain" "{}" #f 4000)
+               (insert-node! tx (nid 11) acct-a "note" "n" "nb" "text/plain" "{}" #f 4000)
+               (insert-node! tx (nid n) acct-a "task" "task title" "task body" "text/markdown" props
+                             (nid 10) 5000)
+               (insert-link! tx acct-a (nid n) "related" (nid 11) 1 5100)
+               (insert-link! tx acct-a (nid 11) "related" (nid n) 1 5200)
+               (if (eq? state 'archived)
+                   (begin (set-node-state! tx (nid n) acct-a 1 "archived" "archive" 6000) 2)
+                   1))))
+
+;; task! : Rig Natural Natural Symbol Natural -> Answer
+;; WHO's EVENT (done, wontdo or reopen) on node N at If-Match REV, no body.
+(define (task! g who n event rev) (lifecycle! g who n event rev))
+
+(define now1 (+ now0 7777))
+
+(for-each
+ (lambda (state)
+   (for-each
+    (lambda (cell)
+      (let ((status (car cell)) (event (cadr cell)) (next (caddr cell)) (command (cadddr cell))
+            (st (symbol->string state)))
+        (test-equal (string-append "task: " (sym->str status) " x " (sym->str event) " on an " st " Task: "
+                                   (if next
+                                       (string-append "200, the GET's node but its body, the ETag, the props; closed by " (sym->str command)
+                                                      "; one snapshot of the same title, body and content type; one change row "
+                                                      (sym->str event) "; revision + 1; state, parent and links as they were (R5, R6)")
+                                       "409 wrong_status in its one write job; every table as it was, last_used null"))
+          (if next
+              (let ((r (if (eq? state 'archived) 2 1))
+                    (text (text-after status next command now1)))
+                (list 200 (tag (+ r 1)) 'absent st (nid-text 10) (shown-as "task" text) #t
+                      text #t #t (+ r 1) st (nid 10) #t))
+              (list '(409 "wrong_status") #f '(write) #t #f))
+          (attempt
+           (lambda ()
+             (with-rig "task-cell.db"
+               (lambda (g)
+                 (let* ((r (seed-task! g 1 (status-text status) state))
+                        (before (tables g))
+                        (snaps (snapshot-rows g 1))
+                        (changes (change-rows g acct-a))
+                        (links (link-rows g))
+                        (a (begin ((rig-set-now! g) now1) (task! g 1 1 event r))))
+                   (if next
+                       (let* ((j (answer-json a))
+                              (got (answer-json (get! g 1 (node-path 1))))
+                              (text (props-row g 1)))
+                         (list (answer-status a) (answer-header a "etag") (member-of j "body")
+                               (member-of j "state") (member-of j "parent") (member-of j "props")
+                               (equal? j (but-body got))
+                               text
+                               (equal? (snapshot-rows g 1)
+                                       (append snaps (list (list (+ r 1) acct-a "task title" "task body"
+                                                                 "text/markdown" text now1))))
+                               (equal? (change-rows g acct-a)
+                                       (append changes (list (list (+ (length changes) 1) (nid 1) (+ r 1)
+                                                                   (sym->str event) now1))))
+                               (car (stored g 1)) (state-of g 1) (parent-of g 1) (equal? links (link-rows g))))
+                       (list (status+code a) (answer-header a "etag") ((rig-order g))
+                             (equal? before (tables g)) (last-used g 1)))))))))))
+    task-cells))
+ '(active archived))
+
+(test-equal "task: the order of a transition's refusals (R7): 404 for no node and for B's Task, the same bytes and headers; 412 stale, whatever the state, the kind or the status; wrong_state for a trashed Task and a trashed Note; not_a_task for a Note, archived or not, a Project, a Journal and a Contact; wrong_status last; each in its one write job, every table as it was, last_used null"
+  (list '((404 "not_found") (404 "not_found")
+          (412 "precondition_failed") (412 "precondition_failed") (412 "precondition_failed")
+          (412 "precondition_failed")
+          (409 "wrong_state") (409 "wrong_state")
+          (409 "not_a_task") (409 "not_a_task") (409 "not_a_task") (409 "not_a_task") (409 "not_a_task")
+          (409 "wrong_status") (409 "wrong_status"))
+        #t #t (repeat 15 'write) #t #f)
+  (attempt
+   (lambda ()
+     (with-rig "task-order.db"
+       (lambda (g)
+         (seed-props! g acct-a 1 "task" "{\"status\":\"DONE\",\"closed\":5}")
+         (seed-props! g acct-a 2 "task" "{}")
+         (trashed-at! g acct-a 2 1)
+         (seed-props! g acct-a 3 "note" "{}")
+         (seed-props! g acct-a 4 "note" "{}")
+         (trashed-at! g acct-a 4 1)
+         (seed-props! g acct-a 5 "project" "{}")
+         (seed-props! g acct-a 6 "journal" "{}")
+         (seed-props! g acct-a 7 "contact" "{}")
+         (seed-props! g acct-a 8 "note" "{}")
+         (archived-at! g acct-a 8 1)
+         (seed-props! g acct-b 9 "task" "{\"status\":\"DONE\",\"closed\":5}")
+         (seed-props! g acct-a 12 "task" "{}")
+         (let* ((before (tables g))
+                (as (in-order (lambda (s) (task! g 1 (car s) (cadr s) (caddr s)))
+                              '((99 done 1) (9 done 1)
+                                (1 done 2) (2 done 1) (3 done 2) (2 wontdo 9)
+                                (2 done 2) (4 done 2)
+                                (3 done 1) (8 wontdo 2) (5 done 1) (6 reopen 1) (7 done 1)
+                                (1 done 1) (12 reopen 1)))))
+           (list (map status+code as)
+                 (equal? (answer-body (car as)) (answer-body (cadr as)))
+                 (equal? (answer-headers (car as)) (answer-headers (cadr as)))
+                 ((rig-order g)) (equal? before (tables g)) (last-used g 1))))))))
+
+;; R16: the body is in revisions alone. With its column renamed away, any
+;; statement that reads a body fails; one that reads none runs as before.
+(test-equal "R16: a refused transition reads no body: with the snapshots' body column renamed away, a 404, a 412, a wrong_state, a not_a_task and a wrong_status are each answered as before; an accepted transition, which copies the body, fails, and a state change, which reads none, does not"
+  '((404 "not_found") (412 "precondition_failed") (409 "wrong_state") (409 "not_a_task")
+    (409 "wrong_status") 500 200)
+  (attempt
+   (lambda ()
+     (with-rig "r16.db"
+       (lambda (g)
+         (seed-props! g acct-a 1 "task" "{\"status\":\"DONE\",\"closed\":5}")
+         (seed-props! g acct-a 2 "task" "{}")
+         (trashed-at! g acct-a 2 1)
+         (seed-props! g acct-a 3 "note" "{}")
+         (with-raw g (lambda (db) (execute! db "ALTER TABLE revisions RENAME COLUMN body TO body_gone")))
+         (let-values (((as text)
+                       (capture-output
+                        (lambda ()
+                          (in-order (lambda (s) (send-event g (cadr s) (car s) (list (key-h 1) (match-h (caddr s)))))
+                                    '((99 done 1) (1 done 9) (2 done 2) (3 done 1) (1 done 1) (1 wontdo 1)
+                                      (3 archive 1)))))))
+           (append (map status+code (list (list-ref as 0) (list-ref as 1) (list-ref as 2) (list-ref as 3)
+                                          (list-ref as 4)))
+                   (list (answer-status (list-ref as 5)) (answer-status (list-ref as 6))))))))))
+
+;;; A Task stored {} (P9, R8)
+
+(test-equal "P9: a Task stored {}, as a file made before this slice holds it, shows {\"status\":\"TODO\"} in its GET, its list item, a link page's item, its snapshot and the snapshot list; a Contact stored {} shows {}"
+  '((("status" . "TODO")) (("status" . "TODO")) (("status" . "TODO")) (("status" . "TODO"))
+    (("status" . "TODO")) () ())
+  (attempt
+   (lambda ()
+     (with-rig "p9.db"
+       (lambda (g)
+         (seed-props! g acct-a 1 "task" "{}")
+         (seed-props! g acct-a 2 "note" "{}")
+         (seed-props! g acct-a 3 "contact" "{}")
+         (seed-link! g acct-a 2 "related" 1 1 5100)
+         (let* ((a (props-in (get! g 1 (node-path 1))))
+                (b (member-of (car (items (get! g 1 "/v1/nodes"))) "props"))
+                (c (member-of (member-of (car (items (links-get g 1 2 ""))) "node") "props"))
+                (d (props-in (get! g 1 (revision-path 1 1))))
+                (e (member-of (car (items (get! g 1 (revisions-path 1)))) "props"))
+                (f (props-in (get! g 1 (node-path 3))))
+                (h (member-of (caddr (items (get! g 1 "/v1/nodes"))) "props")))
+           (list a b c d e f h)))))))
+
+(test-equal "P9: on a Task stored {}, a replace sending {\"status\":\"TODO\"} back is taken and {} stays stored, naming the kind or none; done then works on it, closed at the write's time"
+  (list '(200 "{}" (("status" . "TODO"))) '(200 "{}")
+        (list 200 (string-append "{\"status\":\"DONE\",\"closed\":" (number->string now1) "}")
+              (list (cons "status" "DONE") (cons "closed" now1))))
+  (attempt
+   (lambda ()
+     (with-rig "p9-write.db"
+       (lambda (g)
+         (seed-props! g acct-a 1 "task" "{}")
+         (let* ((a (change! g 1 1 1 "task" "{\"status\":\"TODO\"}"))
+                (sa (list (answer-status a) (props-row g 1) (props-in a)))
+                (b (change! g 1 1 2 #f "{\"status\":\"TODO\"}"))
+                (sb (list (answer-status b) (props-row g 1)))
+                (c (begin ((rig-set-now! g) now1) (task! g 1 1 'done 3))))
+           (list sa sb (list (answer-status c) (props-row g 1) (props-in c)))))))))
+
+;;; Restore (P10, R14) and import (P14)
+
+(test-equal "P10: a restore brings back a Task's deadline and scheduled and keeps its status and closed, in the node and in the new snapshot; a {} snapshot restored onto a DONE Task leaves it DONE, closed kept; a Note's at comes back"
+  (list (list 200 (string-append "{\"status\":\"DONE\",\"closed\":" (number->string now1)
+                                 ",\"deadline\":\"2026-01-01\",\"scheduled\":\"2026-01-02\"}") #t)
+        (list 200 (string-append "{\"status\":\"DONE\",\"closed\":" (number->string now1) "}"))
+        (list 200 "{\"at\":\"2026-12-01\"}"))
+  (attempt
+   (lambda ()
+     (with-rig "p10.db"
+       (lambda (g)
+         (seed-props! g acct-a 2 "task" "{}")
+         (let* ((m1 (make! g 1 1 "task" "{\"deadline\":\"2026-01-01\",\"scheduled\":\"2026-01-02\"}"))
+                (r1 (change! g 1 1 1 #f "{\"deadline\":\"2026-02-01\"}"))
+                (d1 (begin ((rig-set-now! g) now1) (task! g 1 1 'done 2)))
+                (a (restore! g 1 1 1 3))
+                (sa (list (answer-status a) (props-row g 1)
+                          (equal? (list-ref (car (reverse (snapshot-rows g 1))) 5) (props-row g 1))))
+                (d2 (task! g 1 2 'done 1))
+                (b (restore! g 1 2 1 2))
+                (sb (list (answer-status b) (props-row g 2)))
+                (m3 (make! g 1 3 "note" "{\"at\":\"2026-12-01\"}"))
+                (r3 (change! g 1 3 1 #f "{}"))
+                (c (restore! g 1 3 1 2)))
+           (list sa sb (list (answer-status c) (props-row g 3)))))))))
+
+;;; The task commands' requests: preconditions, ids, bodies, methods
+
+(for-each
+ (lambda (event)
+   (test-equal (string-append "body: " (sym->str event)
+                              " reads no body and no Content-Type: text/plain, or JSON that does not parse, is answered as with none")
+     '(#t #t 200)
+     (attempt
+      (lambda ()
+        (with-rig "task-body.db"
+          (lambda (g)
+            (let ((from (if (eq? event 'reopen) "{\"status\":\"DONE\",\"closed\":5}" "{}")))
+              (seed-props! g acct-a 1 "task" from)
+              (seed-props! g acct-a 2 "task" from)
+              (seed-props! g acct-a 3 "task" from)
+              (let* ((shape (lambda (a) (list (answer-status a) (answer-header a "etag") (props-in a))))
+                     (a (send-event g event 1 (list (key-h 1) (match-h 1) (cons "Content-Type" "text/plain"))
+                                    "not json at all"))
+                     (b (send-event g event 2 (list (key-h 1) (match-h 1) json-type) "{nope"))
+                     (c (send-event g event 3 (list (key-h 1) (match-h 1)))))
+                (list (equal? (shape a) (shape c)) (equal? (shape b) (shape c)) (answer-status c))))))))))
+ task-routes)
+
+(test-equal "task: a transition's head alone, a Content-Length of 2 MB and no byte of the body sent, is answered at once, 200, in its one write job, and the connection is ended: no body is waited for"
+  (list '(200) #f #t '(write))
+  (attempt
+   (lambda ()
+     (with-rig "task-head.db"
+       (lambda (g)
+         (seed-props! g acct-a 1 "task" "{}")
+         (let-values (((answers waiting? closed?)
+                       (exchange-steps (rig-handler g)
+                                       (list (request-bytes 'POST (string-append (node-path 1) "/done")
+                                                            (list (key-h 1) (match-h 1) json-type
+                                                                  (cons "Content-Length" "2000000")))))))
+           (list (map answer-status answers) waiting? closed? ((rig-order g)))))))))
+
+(test-equal "task: GET, PUT and DELETE on done, wontdo and reopen are 405, allow POST; no job"
+  (list (repeat 9 '(405 "method_not_allowed" "POST")) 0)
+  (attempt
+   (lambda ()
+     (with-rig "task-405.db"
+       (lambda (g)
+         (seed-props! g acct-a 1 "task" "{}")
+         (let ((as (in-order (lambda (s) ((rig-call g) (car s) (string-append (node-path 1) "/" (cdr s))
+                                                       (list (key-h 1) (match-h 1))))
+                             (apply append
+                                    (map (lambda (m) (map (lambda (e) (cons m e)) '("done" "wontdo" "reopen")))
+                                         '(GET PUT DELETE))))))
+           (list (map (lambda (a) (list (answer-status a) (member-of (answer-json a) "code")
+                                        (answer-header a "allow")))
+                      as)
+                 ((rig-jobs g)))))))))
+
+(test-equal "id: in capitals, done, wontdo and reopen find node 1, and answer its id in lower case"
+  (list (list 200 (nid-text 1)) (list 200 (nid-text 1)) (list 200 (nid-text 1)))
+  (attempt
+   (lambda ()
+     (with-rig "task-upper.db"
+       (lambda (g)
+         (seed-props! g acct-a 1 "task" "{}")
+         (let* ((up (node-path-of (string-upcase (nid-text 1))))
+                (send (lambda (event rev)
+                        ((rig-call g) 'POST (string-append up "/" event) (list (key-h 1) (match-h rev)))))
+                (a (send "done" 1))
+                (b (send "wontdo" 2))
+                (c (send "reopen" 3)))
+           (map (lambda (x) (list (answer-status x) (id-of (answer-json x)))) (list a b c))))))))
+
+(test-equal "time: a transition reads the wall clock once: closed, updated, the snapshot's created, the change row's time and the key's last_used are one time"
+  '(#t #t #t #t)
+  (attempt
+   (lambda ()
+     (with-rig-wall "task-time.db" stepping-wall
+       (lambda (g)
+         (seed-props! g acct-a 1 "task" "{}")
+         (let* ((a (task! g 1 1 'done 1))
+                (c (member-of (props-in a) "closed"))
+                (row (car (reverse (change-rows g acct-a))))
+                (snap (car (reverse (snapshot-rows g 1)))))
+           (list (equal? c (member-of (answer-json a) "updated")) (equal? c (list-ref snap 6))
+                 (equal? c (list-ref row 4)) (equal? c (last-used g 1)))))))))
+
+;;; Jobs and the log
+
+;; A Task's Draft is an opaque record, which Chez's inspector calls simple:
+;; reaches? cannot look inside one (traps.md), so the Task's job is shown to
+;; hold its Draft by the kind's pair, and to hold no member as read.
+(test-equal "job: a create's and a replace's jobs hold their props as Drafts, plain data: a Task's Draft, a Contact's and a Note's canonical texts, never a member of the props object as read, no request, no parsed JSON; a transition's job too"
+  '((201 #f #f #t) (201 #f #t) (200 #f #t) (200 #f))
+  (attempt
+   (lambda ()
+     (with-rig "job-props.db"
+       (lambda (g)
+         (seed-props! g acct-a 3 "note" "{}")
+         (let* ((a (make! g 1 1 "task" "{\"deadline\":\"2026-12-01\",\"scheduled\":\"2026-12-02\"}"))
+                (ja ((rig-job g)))
+                (b (make! g 1 2 "contact" "{\"emails\":{\"e1\":{\"address\":\"secret@x\"}}}"))
+                (jb ((rig-job g)))
+                (c (change! g 1 3 1 #f "{\"at\":\"2026-12-01\"}"))
+                (jc ((rig-job g)))
+                (d (task! g 1 1 'done 1))
+                (jd ((rig-job g))))
+           (list (list (answer-status a) (reaches? ja req-like?)
+                       (reaches? ja (lambda (x) (equal? x '("deadline" . "2026-12-01"))))
+                       (reaches? ja (lambda (x) (and (pair? x) (equal? (car x) "task")
+                                                     (not (pair? (cdr x))) (not (string? (cdr x)))))))
+                 (list (answer-status b) (reaches? jb (lambda (x) (equal? x '("address" . "secret@x"))))
+                       (reaches? jb (lambda (x) (equal? x "{\"emails\":{\"e1\":{\"address\":\"secret@x\"}}}"))))
+                 (list (answer-status c) (reaches? jc (lambda (x) (equal? x '("at" . "2026-12-01"))))
+                       (reaches? jc (lambda (x) (equal? x "{\"at\":\"2026-12-01\"}"))))
+                 (list (answer-status d) (reaches? jd req-like?)))))))))
+
+(test-equal "log: writes with props, a transition and their refusals: each line names the account and holds no title, no body and no props"
+  (list '(201 400 412 409 200 409 409 200) 8 #t #f)
+  (attempt
+   (lambda ()
+     (with-rig "log-props.db"
+       (lambda (g)
+         (run-write (rig-store g)
+                    (lambda (tx)
+                      (insert-node! tx (nid 1) acct-a "contact" "secret-title-1" "secret-body-1" "text/plain"
+                                    "{\"emails\":{\"e1\":{\"address\":\"a@b\",\"label\":\"secret-props-1\"}}}"
+                                    #f 5000)
+                      (insert-node! tx (nid 2) acct-a "task" "secret-title-2" "secret-body-2" "text/plain"
+                                    "{\"status\":\"DONE\",\"closed\":5}" #f 5000)))
+         (let* ((label (lambda (s) (string-append "{\"emails\":{\"e1\":{\"address\":\"a@b\",\"label\":\"" s "\"}}}")))
+                (as (in-order (lambda (send) (send))
+                              (list (lambda () (make! g 1 3 "contact" (label "secret-props-3")))
+                                    (lambda () (make! g 1 4 "contact" (string-append "{\"x\":\"secret-props-4\","
+                                                                                     (substring (label "secret-props-4") 1 (string-length (label "secret-props-4"))))))
+                                    (lambda () (change! g 1 1 9 #f (label "secret-props-5")))
+                                    (lambda () (change! g 1 2 1 #f "{\"status\":\"TODO\"}"))
+                                    (lambda () (task! g 1 2 'wontdo 1))
+                                    (lambda () (task! g 1 2 'wontdo 2))
+                                    (lambda () (task! g 1 1 'done 1))
+                                    (lambda () (get! g 1 (node-path 1))))))
+                (lines ((rig-lines g)))
+                (text (apply string-append lines)))
+           (list (map answer-status as) (length lines)
+                 (for-all (lambda (l) (contains? l (string-append "account=" (id->string acct-a)))) lines)
+                 (contains? text "secret-"))))))))
+
 (test-end "node-routes")
 
 (exit (suite-exit-status runner))
