@@ -970,8 +970,8 @@
 (define first-only (list (car migrations)))
 
 ;; objects in the shipped schema: accounts, api_keys, the index, and the
-;; automatic indexes of the primary and unique keys, then migration 3 (counted from sqlite_schema: 14).
-(define shipped-objects 14)
+;; automatic indexes of the primary and unique keys, then migration 3, and migration 5's index (counted from sqlite_schema: 15).
+(define shipped-objects 15)
 
 (let ((p (path "m-missing.db")))
   (clean! p)
@@ -1360,7 +1360,7 @@
 (let ((p (path "m-v3.db")))
   (clean! p)
   (test-equal "migration 4: a file at version 3 holding nodes with snapshots migrates to 4; every node is active and still reads its body"
-    (list '(applied (4) #f 4)
+    (list '(applied (4 5) #f 5)
           '((1 "active" "first v2") (2 "active" "second v1"))
           '(constraint ok))
     (attempt
@@ -1386,6 +1386,40 @@
                      (lambda (db)
                        (list (refused-kind db "UPDATE nodes SET state = 'gone' WHERE num = 1")
                              (refused-kind db "UPDATE nodes SET state = 'trashed' WHERE num = 1"))))))
+         (list (list (car r) (cadr r) (caddr r) (cadddr r)) got bad))))))
+
+;;; migration 5
+
+(let ((p (path "m-v4.db")))
+  (clean! p)
+  (test-equal "migration 5: a file at version 4 holding nodes with snapshots migrates to 5; every parent is NULL and every node still reads its body"
+    (list '(applied (5) #f 5)
+          '((1 1 "first v2") (2 1 "second v1"))
+          '(constraint constraint ok))
+    (attempt
+     (lambda ()
+       (migrate! p (list (car migrations) (cadr migrations) (caddr migrations) (cadddr migrations)))
+       (with-db (plain p)
+         (lambda (db)
+           (execute! db "PRAGMA foreign_keys = off")
+           (execute! db "INSERT INTO accounts(id, username, email, password_hash, created) VALUES (x'01010101010101010101010101010101', 'a', 'a@x', 'h', 1)")
+           (for-each
+            (lambda (sql) (execute! db sql))
+            (list
+             "INSERT INTO nodes(id, owner, author, kind, title, content_type, props, revision, created, updated) VALUES (x'0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a', x'01010101010101010101010101010101', x'01010101010101010101010101010101', 'note', 't1', 'text/plain', '{}', 2, 1, 2)"
+             "INSERT INTO nodes(id, owner, author, kind, title, content_type, props, revision, created, updated) VALUES (x'0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b', x'01010101010101010101010101010101', x'01010101010101010101010101010101', 'task', 't2', 'text/plain', '{}', 1, 1, 1)"
+             "INSERT INTO revisions(node, revision, author, title, content_type, props, created, body) VALUES (x'0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a', 1, x'01010101010101010101010101010101', 't1', 'text/plain', '{}', 1, 'first v1')"
+             "INSERT INTO revisions(node, revision, author, title, content_type, props, created, body) VALUES (x'0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a', 2, x'01010101010101010101010101010101', 't1', 'text/plain', '{}', 2, 'first v2')"
+             "INSERT INTO revisions(node, revision, author, title, content_type, props, created, body) VALUES (x'0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b', 1, x'01010101010101010101010101010101', 't2', 'text/plain', '{}', 1, 'second v1')"))))
+       (let* ((r (migrate! p migrations))
+              (got (with-db (open-techo-db p 'read-only)
+                     (lambda (db)
+                       (rows db "SELECT n.num, n.parent IS NULL, r.body FROM nodes n JOIN revisions r ON r.node = n.id AND r.revision = n.revision ORDER BY n.num"))))
+              (bad (with-db (open-techo-db p 'read-write 0)
+                     (lambda (db)
+                       (list (refused-kind db "UPDATE nodes SET parent = x'0101' WHERE num = 1")
+                             (refused-kind db "UPDATE nodes SET parent = x'0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c' WHERE num = 1")
+                             (refused-kind db "UPDATE nodes SET parent = x'0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b' WHERE num = 1"))))))
          (list (list (car r) (cadr r) (caddr r) (cadddr r)) got bad))))))
 
 ;;; wal-size-limit

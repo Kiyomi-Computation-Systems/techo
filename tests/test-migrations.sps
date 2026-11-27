@@ -862,10 +862,10 @@
 (test-equal "shipped list: the list equals its recorded copy"
   (read-datum "tests/shipped-migrations.scm")
   migrations)
-(test-equal "shipped list: the copy is one datum, a list of four migrations, versions 1, 2, 3 and 4"
-  '(1 2 3 4)
+(test-equal "shipped list: the copy is one datum, a list of five migrations, versions 1, 2, 3, 4 and 5"
+  '(1 2 3 4 5)
   (let ((r (read-datum "tests/shipped-migrations.scm")))
-    (if (and (list? r) (= (length r) 4)) (map car r) r)))
+    (if (and (list? r) (= (length r) 5)) (map car r) r)))
 (test-equal "shipped list: migration 1 is the one that sets the id"
   '(1 "techo's database" ("PRAGMA application_id = 1952801640"))
   (car migrations))
@@ -889,6 +889,11 @@
   (list "a node's state"
         (list "ALTER TABLE nodes ADD COLUMN state TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active','archived','trashed','purged'))"))
   (let ((m (list-ref migrations 3))) (list (cadr m) (caddr m))))
+(test-equal "shipped list: migration 5 is two statements, named for a node's parent, adding the column and its index"
+  (list "a node's parent"
+        (list "ALTER TABLE nodes ADD COLUMN parent BLOB REFERENCES nodes(id) CHECK (parent IS NULL OR length(parent) = 16)"
+              "CREATE INDEX nodes_parent ON nodes(owner, parent, id)"))
+  (let ((m (list-ref migrations 4))) (list (cadr m) (caddr m))))
 (test-equal "shipped list: the id is `tech`"
   #x74656368
   techo-application-id)

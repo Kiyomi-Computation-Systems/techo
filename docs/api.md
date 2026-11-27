@@ -138,7 +138,7 @@ write is checked against the node's revision, and every write is kept until the 
 
 ```json
 {"id":"0193a5c0-9000-7000-8000-000000000001","kind":"note","state":"active",
- "title":"Shopping","body":"* apples\n* pears","content_type":"text/org","props":{},
+ "parent":null,"title":"Shopping","body":"* apples\n* pears","content_type":"text/org","props":{},
  "revision":1,"created":1795515226123,"updated":1795515226123}
 ```
 
@@ -147,6 +147,7 @@ write is checked against the node's revision, and every write is kept until the 
 | `id` | A UUID of **version 7**, which you make. Anything else is a `400`. |
 | `kind` | `project`, `journal`, `note`, `task` or `contact`. Set when the node is made; it never changes. |
 | `state` | `active`, `archived` or `trashed`. See [putting a node away](#putting-a-node-away). You never send it. |
+| `parent` | The id of the Project or Journal it is in, or `null` at the top level. See [folders](#folders). You may give it when you make the node, and never in a replace. |
 | `title` | Up to 1,000 characters. May be empty. |
 | `body` | Text, up to 1 MiB (1,048,576 bytes of UTF-8). Techo never reads it. |
 | `content_type` | What the body is, such as `text/org`: 1 to 255 printable ASCII characters (a space is fine, a tab is not) with a `/`. Techo stores it and does nothing with it. |
@@ -182,6 +183,9 @@ curl -X PUT -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' 
 
 It answers `201`, the node, `ETag: "1"`, and `Location`.
 
+Add `"parent":"<id>"` to make it inside a Project or a Journal. See
+[folders](#folders).
+
 **If the answer never arrives,** send it again. A `412` then means the first try
 got through: read the node.
 
@@ -212,6 +216,9 @@ Your **active** nodes, in id order, **without their bodies**. [Paged](#paging).
 
 - `?state=archived` or `?state=trashed` lists those instead. One state a call.
 - `?state=active` is the default. Any other value is a `400`.
+- `?parent=<id>` lists one node's children, and `?parent=null` the top level.
+  Without it the list is flat: every node, wherever it is. See
+  [folders](#folders).
 
 ### `GET /v1/nodes/{id}/revisions`
 
@@ -284,6 +291,117 @@ nothing else. It cannot be undone.
 means the first try may have got through: read the node. For the `DELETE` a
 `404` means it is done.
 
+### Folders
+
+A **Project** or a **Journal** can hold other nodes. Nothing else can.
+
+| Parent | May hold |
+|---|---|
+| Project | any kind, other Projects too |
+| Journal | Notes only |
+| Note, Task, Contact | nothing |
+
+A node has one parent, or none: then it is at the top level. Its `parent` field
+says which. Techo keeps no order among a parent's children. Sort them yourself.
+
+**Make a node in a folder** by giving `parent` when you make it.
+
+**Move a node:**
+
+```sh
+curl -X POST -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -H 'If-Match: "3"' -d '{"parent":"0193a5c0-9000-7000-8000-000000000002"}' \
+  http://127.0.0.1:8080/v1/nodes/0193a5c0-9000-7000-8000-000000000001/move
+```
+
+- The body is exactly `{"parent": "<id>"}`, or `{"parent": null}` for the top
+  level.
+- The body may be 16 KiB at most.
+- It answers `200`, the node without its body, and the new `ETag`. The revision
+  goes up by one, as for any change, even when the parent is the one it had.
+- A move keeps no copy in the node's revisions. **Restoring an old revision does
+  not move a node back.** Move it back yourself.
+- **If the answer never arrives,** send it again. A `412` then means the first
+  try may have got through: read the node.
+
+**List a folder:** `GET /v1/nodes?parent=<id>`. It shows active children. Ask
+again with `?state=archived` and `?state=trashed` to see them all.
+
+**What a parent must be,** or the answer is a `409` `invalid_parent`:
+
+- a Project or Journal of yours that may hold this kind;
+- not in the trash;
+- not too deep: a parent may have at most 63 folders above it.
+
+A parent that is someone else's gets the same answer as one that does not
+exist.
+
+**A folder 64 levels down can hold nothing.** Moving a whole folder under a deep
+one can push what is inside it further down than that. Those nodes are fine,
+but nothing can be made in them or moved into them. The answer does not say
+which reason applied: count the parents above it if you need to know.
+
+**A node cannot go inside itself,** or inside anything under it. That is a `409`
+`would_loop`. (More than 64 levels under it, the answer is `invalid_parent`
+instead: too deep is found first.)
+
+#### Trashing a folder does not trash what is in it
+
+**Trash and archive change that one node only.** Everything inside it, at every
+level, keeps its own state.
+
+What that means for a client:
+
+- The nodes inside still show in the flat list, and under `?parent=<id>`. They
+  are `active`, so they are **not** in `?state=trashed`.
+- A client that walks down from the top level never reaches them: the default
+  list leaves the trashed folder out. So they are in no view you get by
+  walking.
+- **If you show a flat list, hide every node that has a trashed folder anywhere
+  above it.** Follow `parent` upward to find out. Techo does not do this for
+  you.
+- Untrashing the folder brings everything back as it was, because nothing
+  inside was changed.
+- You may trash the nodes inside as well, one by one. Then untrashing the
+  folder does not untrash them: each is its own node.
+
+What Techo checks, and what it does not:
+
+- Nothing can be made **directly** in a trashed folder or moved directly into
+  it, and a trashed node cannot be moved. Untrash it first. Things can be moved
+  **out**.
+- Only the folder you name is looked at. A folder that is active but sits
+  inside a trashed one still takes new nodes.
+
+#### Deleting a folder
+
+`DELETE` is refused with a `409` `has_children` while the node holds anything,
+in any state. Empty it first:
+
+```sh
+curl -X POST -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -H 'If-Match: "5"' -d '{"parent":null}' \
+  http://127.0.0.1:8080/v1/nodes/0193a5c0-9000-7000-8000-000000000002/move-children
+```
+
+`move-children` moves a node's children to another parent in one go.
+
+- `If-Match` is the **folder's** revision, which does not change.
+- It answers `{"moved": 12, "left": 3}`, with no `ETag`.
+- It moves at most 1,000 a call. **Call it until `moved` is `0`.**
+- `left` counts what is still inside. Once `moved` is `0`, those are trashed, or
+  of a kind the new parent cannot hold. Deal with each: untrash it and move it,
+  move it somewhere that can hold it, or delete it. A trashed folder among them
+  must be emptied itself before it can be deleted.
+- **Sending it twice is safe.** The second call moves whatever is inside by
+  then, which may include a node someone moved in meanwhile.
+- **Each child it moves gets a new revision,** without being asked for its old
+  one. No content is lost, but a write you had ready for one of them will get a
+  `412`: read it again.
+- The new parent cannot be the folder itself or anything inside it.
+
+There is no way yet to delete a folder and everything in it in one request.
+
 ### What can go wrong with a node
 
 | Status | `code` | When |
@@ -293,16 +411,19 @@ means the first try may have got through: read the node. For the `DELETE` a
 | 404 | `not_found` | No such node or revision. **Another account's node looks the same,** and so does a deleted one. |
 | 409 | `kind_fixed` | A replace named another kind. |
 | 409 | `wrong_state` | The node's state does not allow this. See [putting a node away](#putting-a-node-away). |
+| 409 | `invalid_parent` | The parent cannot hold this node. See [folders](#folders). |
+| 409 | `would_loop` | The move would put a node under itself. |
+| 409 | `has_children` | A `DELETE` of a node that still has children. |
 | 412 | `precondition_failed` | The node is not at the revision you gave, or the id you want to make is in use. |
-| 413 | `payload_too_large` | The body is over 1 MiB, or the whole request is over 2 MiB. |
+| 413 | `payload_too_large` | The body is over 1 MiB, or the whole request is over 2 MiB. A move's request is over 16 KiB. |
 | 415 | `unsupported_media_type` | `Content-Type` is not `application/json`. |
 | 428 | `precondition_required` | A write with neither `If-Match` nor `If-None-Match`. |
 
 A `400` `invalid_request` is one of:
 
-- a bad id, revision, `limit`, `after` or `state`;
+- a bad id, revision, `limit`, `after`, `state` or `parent`;
 - a bad `If-Match` or `If-None-Match`: both at once, `If-None-Match` that is not
-  `*`, or `If-None-Match` on a restore, a change of state or a `DELETE`;
+  `*`, or `If-None-Match` on a restore, a change of state, a move or a `DELETE`;
 - no body, or a body that is not one JSON object;
 - a field missing, unknown, given twice or of the wrong type;
 - a `kind` that is not one of the five, or `props` that is not `{}`;
@@ -388,6 +509,9 @@ An error is [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) problem details,
 | `too_many_keys` | 409 | The account has 100 active keys; revoke one first. Login only. |
 | `kind_fixed` | 409 | A node's kind cannot be changed. |
 | `wrong_state` | 409 | The node's state does not allow this request. |
+| `invalid_parent` | 409 | The parent cannot hold this node. |
+| `would_loop` | 409 | The move would put a node under itself. |
+| `has_children` | 409 | The node still has children. |
 | `precondition_failed` | 412 | The node has changed, or already exists; read it again. |
 | `payload_too_large` | 413 | The request body is too large. |
 | `unsupported_media_type` | 415 | The request body must be `application/json`. |

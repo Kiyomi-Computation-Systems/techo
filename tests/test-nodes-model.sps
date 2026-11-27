@@ -1,29 +1,43 @@
 #!r6rs
 ;;; The nodes model suite: ADR-0007's third layer for D5's versioned write
-;;; (slice 4, task 5a) and the node lifecycle (slice 4b, task 4a). Seeded
-;;; random sequences of requests by two accounts run against the real
-;;; handlers (make-app inside wrap-server, raw HTTP through a test host) and
-;;; real SQLite (the test doorway on a migrated file), with a wall clock the
-;;; sequence steps. After every request the answer is compared with the
+;;; (slice 4, task 5a), the node lifecycle (slice 4b, task 4a) and the tree
+;;; (slice 5a, task 4a). Seeded random sequences of requests by two
+;;; accounts run against the real handlers (make-app inside wrap-server,
+;;; raw HTTP through a test host) and real SQLite (the test doorway on a
+;;; migrated file), with a wall clock the sequence steps. After every request the answer is compared with the
 ;;; model's, which is the plan's rules written again in (nodes-model), never
 ;;; the tables of (techo nodes); the answers are held to laws that need no
 ;;; model; the three tables and every key's last_used are read whole and
 ;;; held to laws that need no model (H1 to H6, H11, H2', H3', H15', H16,
-;;; G3, G6, G9, G11, G12, G16) and to the model's world.
+;;; G3, G6, G9, G11, G12, G16; P1 to P4, P8, P11, P12, P15, P16) and to the
+;;; model's world.
 ;;;
-;;;   1. the oracle on a hand-made world, pure
-;;;   2. the run: SEQUENCES seeds of 45 to 65 requests, every one to agree
+;;;   1. the oracle on hand-made worlds, pure: the lifecycle's, then a tree
+;;;      on it, then a chain to the depth's boundary
+;;;   2. the run: SEQUENCES seeds of 60 to 87 requests, every one to agree;
+;;;      a family seed (ending in 3 or 7) first makes a mixed tree; a deep
+;;;      seed (a multiple of fifteen) first makes a chain of 65 Projects
+;;;      and runs a script at the depth's boundary, then 10 to 20
 ;;;   3. coverage, printed and held to floors: D5's cells; the lifecycle's
-;;;      18 (three states by five events and a write); node-command's
-;;;      reachable cells, and no other; requests at purged ids, by route,
-;;;      and a create by the owner and by the other account; the aims
-;;;   4. teeth: the oracle given a twisted rule disagrees with the handlers
+;;;      24 (three states by five events, a write and the two moves);
+;;;      node-command's reachable cells, and no other; requests at purged
+;;;      ids, by route, and a create by the owner and by the other account;
+;;;      the aims; the tree's: each verdict by each route that can get it,
+;;;      each kind pairing, the depth's boundary from both sides, loops by
+;;;      where they close, each bulk move's outcome, has_children by the
+;;;      children's states, and ?parent= by case and by ?state=
+;;;   4. teeth: the oracle given a twisted rule disagrees with the handlers;
+;;;      each tree twist on the first seeds whose run reached what it bends
+;;;
+;;; No sequence reaches a bulk move's cap of 1,000 children: the route
+;;; suite holds it (tests/test-node-routes.sps, "bulk: of 1,005 children").
 ;;;
 ;;; Replay one seed, each request printed as it goes:
 ;;;   scripts/guix-env sh -c 'TECHO_NODES_MODEL_SEED=17 make test SUITES=tests/test-nodes-model.sps'
 ;;; Then only that seed runs, and only its agreement is asserted. The run's
 ;;; seeds are FIRST to FIRST + 299, FIRST 1 unless TECHO_NODES_MODEL_FIRST
-;;; names another, so the floors can be held on other seeds.
+;;; names another, so the floors can be held on other seeds. Set either
+;;; inside the container (traps.md): scripts/guix-env sh -c 'FOO=1 make ...'.
 ;;;
 ;;; Its files are under build/test-nodes-model/<unique>/, emptied at the
 ;;; start. Everything that can raise is computed under `attempt`, and a
@@ -33,7 +47,7 @@
         (srfi :64)
         (techo-testing)
         (only (http-support) fresh-dir open-test-store close-test-store! contains?)
-        (only (techo nodes) write-rows)
+        (only (techo nodes) write-rows node-id->string)
         (nodes-model))
 
 (define runner (test-runner-simple))
@@ -62,22 +76,22 @@
 (define (nid n) (node-id-of n))
 (define (key-of tag) (if (eq? tag 'a) a1 b1))
 
-(define (content kind title body) (make-content kind title body "text/plain" #f))
+(define (content kind title body) (make-content kind title body "text/plain" #f 'absent))
 (define (create-at at tag key n kind title)
-  (make-event 'put at tag key (nid n) 'create '() (content kind title "a body") #f #f #f #f '()))
+  (make-event 'put at tag key (nid n) 'create '() (content kind title "a body") #f #f #f #f '() 'absent))
 (define (replace-at at tag key n rev kind title)
-  (make-event 'put at tag key (nid n) rev '() (content kind title "a new body") #f #f #f #f '()))
+  (make-event 'put at tag key (nid n) rev '() (content kind title "a new body") #f #f #f #f '() 'absent))
 (define (restore-at at tag key n rev k)
-  (make-event 'restore at tag key (nid n) rev '() #f k #f #f #f '()))
+  (make-event 'restore at tag key (nid n) rev '() #f k #f #f #f '() 'absent))
 (define (life-at at tag key n rev ev)
-  (make-event ev at tag key (nid n) rev '() #f #f #f #f #f '()))
+  (make-event ev at tag key (nid n) rev '() #f #f #f #f #f '() 'absent))
 (define (read-at at tag kind n k)
-  (make-event kind at tag (key-of tag) (and n (nid n)) #f '() #f k #f #f #f '()))
+  (make-event kind at tag (key-of tag) (and n (nid n)) #f '() #f k #f #f #f '() 'absent))
 (define (list-at at tag q)
-  (make-event 'list-nodes at tag (key-of tag) #f #f '() #f #f #f q #f '()))
+  (make-event 'list-nodes at tag (key-of tag) #f #f '() #f #f #f q #f '() 'absent))
 (define (bare-at at tag kind n pre)
   (make-event kind at tag (key-of tag) (nid n) pre '()
-              (and (eq? kind 'put) (content "note" "t" "b")) (and (eq? kind 'restore) 1) #f #f #f '()))
+              (and (eq? kind 'put) (content "note" "t" "b")) (and (eq? kind 'restore) 1) #f #f #f '() 'null))
 
 ;; summary : Expectation -> (List Status Code ETag Cells Problem)
 (define (summary x)
@@ -91,15 +105,19 @@
 ;; journal, archived at 2 (t0+5); a's node 4, a contact, trashed at 2
 ;; (t0+7); a's node 5, a project, trashed at 2 (t0+9) and purged at 3
 ;; (t0+10). Each archived or trashed node has the one snapshot, 1.
+;; walk-world : World (Listof Event) -> World     each event's world in turn
+(define (walk-world w0 events)
+  (fold-left (lambda (w e)
+               (let ((x (expect as-planned w e)))
+                 (when (expectation-problem x)
+                   (assertion-violation 'hand "the model cannot take a hand step" (expectation-problem x)))
+                 (expectation-world x)))
+             w0 events))
+
 (define hand
   (attempt
    (lambda ()
-     (fold-left (lambda (w e)
-                  (let ((x (expect as-planned w e)))
-                    (when (expectation-problem x)
-                      (assertion-violation 'hand "the model cannot take a hand step" (expectation-problem x)))
-                    (expectation-world x)))
-                model-start
+     (walk-world model-start
                 (list (create-at (+ t0 1) 'a a1 1 "note" "first")
                       (replace-at (+ t0 2) 'a a1 1 1 #f "second")
                       (create-at (+ t0 3) 'b b1 2 "task" "theirs")
@@ -352,21 +370,21 @@
 ;; Twisted rules, for the oracle and for the teeth below.
 
 ;; trashed-writable : a replace of a trashed node at its revision is written.
-(define (trashed-writable cell decision)
+(define (trashed-writable cell decision s)
   (if (equal? cell '(match trashed replace)) '(write) decision))
 
 ;; stale-wrong-state : a stale purge of a node that is not trashed is wrong_state.
-(define (stale-wrong-state cell decision)
+(define (stale-wrong-state cell decision s)
   (if (and cell (eq? (car cell) 'differ) (eq? (caddr cell) 'purge) (memq (cadr cell) '(active archived)))
       '(refuse 409 "wrong_state")
       decision))
 
 ;; untrash-to-archived : untrash lands on archived.
-(define (untrash-to-archived cell decision)
+(define (untrash-to-archived cell decision s)
   (if (equal? cell '(match trashed untrash)) '(set-state archived) decision))
 
 ;; state-on-put : a replace at the revision is a state change.
-(define (state-on-put cell decision)
+(define (state-on-put cell decision s)
   (if (equal? cell '(match active replace)) '(set-state archived) decision))
 
 (test-equal "oracle: its answer is its rules': a twist that writes a trashed node answers 200, the node still trashed"
@@ -382,6 +400,205 @@
    (lambda ()
      (list (contains? (expectation-problem (expect state-on-put hand (replace-at at 'a a1 1 2 #f "x")))
                       "which only a state change performs")))))
+
+;;; The tree, on the hand world (slice 5a)
+
+;; ref : Natural -> ParentRef     node N's id as a parent, in lower case
+(define (ref n) (list 'id (nid n) #f))
+(define (id-of n) (node-id->string (nid n)))
+
+(define (make-in at tag key n kind parent)
+  (make-event 'put at tag key (nid n) 'create '() (make-content kind "t" "b" "text/plain" #f parent)
+              #f #f #f #f '() 'absent))
+(define (move-at at tag key n rev parent)
+  (make-event 'move at tag key (nid n) rev '() #f #f #f #f #f '() parent))
+(define (bulk-at at tag key n rev parent)
+  (make-event 'move-children at tag key (nid n) rev '() #f #f #f #f #f '() parent))
+(define (list-in at tag q parent)
+  (make-event 'list-nodes at tag (key-of tag) #f #f '() #f #f #f q #f '() parent))
+
+;; The tree, at t0+30 to t0+40: a's 11, a Project at the top, holds 12, a
+;; Journal (which holds 13, a Note), 14, a Task, and 18, a Note, trashed
+;; at 2; a's 15, a Project made with "parent": null, holds 16, a Note,
+;; archived at 2, and is trashed at 2; b's 17 is a Project.
+(define tree
+  (attempt
+   (lambda ()
+     (walk-world hand
+                 (list (make-in (+ t0 30) 'a a1 11 "project" 'absent)
+                       (make-in (+ t0 31) 'a a1 12 "journal" (ref 11))
+                       (make-in (+ t0 32) 'a a1 13 "note" (ref 12))
+                       (make-in (+ t0 33) 'a a1 14 "task" (ref 11))
+                       (make-in (+ t0 34) 'a a1 15 "project" 'null)
+                       (make-in (+ t0 35) 'a a1 16 "note" (ref 15))
+                       (life-at (+ t0 36) 'a a1 16 1 'archive)
+                       (life-at (+ t0 37) 'a a1 15 1 'trash)
+                       (make-in (+ t0 38) 'b b1 17 "project" 'absent)
+                       (make-in (+ t0 39) 'a a1 18 "note" (ref 11))
+                       (life-at (+ t0 40) 'a a1 18 1 'trash))))))
+
+(define tat (+ t0 50))
+
+;; answer : World Event -> (List Status Code (U String 'null 'absent))     and the answer's parent
+(define (answer w e)
+  (attempt (lambda ()
+             (let ((x (expect as-planned w e)))
+               (list (expectation-status x) (expectation-code x) (member-of (expectation-json x) "parent"))))))
+
+(define (parent-in w n) (let ((p (mnode-parent (world-node w (nid n))))) (and p (node-id->string p))))
+(define (status-of w e) (let ((x (expect as-planned w e))) (list (expectation-status x) (expectation-code x))))
+
+(test-equal "oracle: the tree is 11 at the top over 12, 14 and 18; 12 over 13; 15 at the top over 16; b's 17 at the top"
+  (list #f (id-of 11) (id-of 12) (id-of 11) #f (id-of 15) #f (id-of 11))
+  (attempt (lambda () (map (lambda (n) (parent-in tree n)) '(11 12 13 14 15 16 17 18)))))
+
+(test-equal "oracle: a create under a Project is 201 with its id as the parent; a Journal takes a Note, not a Task; a Note, a trashed node, b's, a purged one and a fresh id are 409 invalid_parent; an id in use is 412 first"
+  (list (list 201 #f (id-of 11)) (list 201 #f (id-of 12)) '(409 "invalid_parent" absent)
+        '(409 "invalid_parent" absent) '(409 "invalid_parent" absent) '(409 "invalid_parent" absent)
+        '(409 "invalid_parent" absent) '(409 "invalid_parent" absent) '(412 "precondition_failed" absent))
+  (map (lambda (e) (answer tree e))
+       (list (make-in tat 'a a1 20 "task" (ref 11)) (make-in tat 'a a1 20 "note" (ref 12))
+             (make-in tat 'a a1 20 "task" (ref 12)) (make-in tat 'a a1 20 "note" (ref 13))
+             (make-in tat 'a a1 20 "note" (ref 15)) (make-in tat 'a a1 20 "note" (ref 17))
+             (make-in tat 'a a1 20 "note" (ref 5)) (make-in tat 'a a1 20 "note" (ref 99))
+             (make-in tat 'a a1 11 "note" (ref 99)))))
+
+(test-equal "oracle: a move is 200 at the next revision, the new parent, no body; to itself, a child or a grandchild 409 would_loop, where it sits above the parent 0, 1, 2; a Task into a Journal invalid_parent; a trashed node wrong_state; stale 412; b's 404"
+  (list (list 200 #f (id-of 11) "\"2\"" 'absent #f)
+        '(409 "would_loop" absent #f absent 0) '(409 "would_loop" absent #f absent 1) '(409 "would_loop" absent #f absent 2)
+        '(409 "invalid_parent" absent #f absent #f) '(409 "wrong_state" absent #f absent #f)
+        '(412 "precondition_failed" absent #f absent #f) '(404 "not_found" absent #f absent #f))
+  (map (lambda (e)
+         (attempt (lambda ()
+                    (let ((x (expect as-planned tree e)))
+                      (list (expectation-status x) (expectation-code x) (member-of (expectation-json x) "parent")
+                            (expectation-etag x) (member-of (expectation-json x) "body")
+                            (situation-loop-at (expectation-situation x)))))))
+       (list (move-at tat 'a a1 13 1 (ref 11)) (move-at tat 'a a1 11 1 (ref 11)) (move-at tat 'a a1 11 1 (ref 12))
+             (move-at tat 'a a1 11 1 (ref 13)) (move-at tat 'a a1 14 1 (ref 12)) (move-at tat 'a a1 15 2 'null)
+             (move-at tat 'a a1 13 2 'null) (move-at tat 'b b1 13 1 'null))))
+
+;; bulk : Event -> (List Status Code ETag JSON)
+(define (bulk w e)
+  (attempt (lambda ()
+             (let ((x (expect as-planned w e)))
+               (list (expectation-status x) (expectation-code x) (expectation-etag x) (expectation-json x))))))
+
+(test-equal "oracle: a bulk move of 11's children to the top moves 12 and 14, not trashed 18: moved 2, left 1, no ETag; into Journal 3 none (kind, state): moved 0, left 3; into its child 12 would_loop; into Note 1 invalid_parent; trashed 15's archived child moves"
+  (list (list 200 #f #f '(("left" . 1) ("moved" . 2))) (list 200 #f #f '(("left" . 3) ("moved" . 0)))
+        '(409 "would_loop" #f #f) '(409 "invalid_parent" #f #f) (list 200 #f #f '(("left" . 0) ("moved" . 1))))
+  (map (lambda (e) (bulk tree e))
+       (list (bulk-at tat 'a a1 11 1 'null) (bulk-at tat 'a a1 11 1 (ref 3)) (bulk-at tat 'a a1 11 1 (ref 12))
+             (bulk-at tat 'a a1 11 1 (ref 1)) (bulk-at tat 'a a1 15 2 'null))))
+
+(test-equal "oracle: the bulk move leaves 11 at 1 and moves 12 and 14 each to 2 at the top, a change row move each, in id order"
+  (list 1 '(2 #f) '(2 #f) (list (list (nid 12) 2 "move" tat) (list (nid 14) 2 "move" tat)))
+  (attempt
+   (lambda ()
+     (let* ((w (expectation-world (expect as-planned tree (bulk-at tat 'a a1 11 1 'null))))
+            (cs (reverse (world-changes-of w 'a))))
+       (list (mnode-revision (world-node w (nid 11)))
+             (list (mnode-revision (world-node w (nid 12))) (parent-in w 12))
+             (list (mnode-revision (world-node w (nid 14))) (parent-in w 14))
+             (map (lambda (c) (list (mchange-node c) (mchange-revision c) (mchange-op c) (mchange-created c)))
+                  (reverse (list (car cs) (cadr cs)))))))))
+
+(test-equal "oracle: a purge of trashed 15 with its archived child is 409 has_children; once the child is moved out it is 204, and the purged row has no parent"
+  '((409 "has_children") (204 #f) #f)
+  (attempt
+   (lambda ()
+     (let* ((w (expectation-world (expect as-planned tree (bulk-at tat 'a a1 15 2 'null))))
+            (x (expect as-planned w (life-at (+ tat 1) 'a a1 15 2 'purge))))
+       (list (status-of tree (life-at tat 'a a1 15 2 'purge))
+             (list (expectation-status x) (expectation-code x))
+             (mnode-parent (world-node (expectation-world x) (nid 15))))))))
+
+;; ids-listed : World Event -> (U (Listof String) (List Status Code))
+(define (ids-listed w e)
+  (attempt (lambda ()
+             (let ((x (expect as-planned w e)))
+               (if (= (expectation-status x) 200)
+                   (map (lambda (item) (member-of item "id")) (expectation-items x))
+                   (list (expectation-status x) (expectation-code x)))))))
+
+(test-equal "oracle: ?parent= 11 is its active children by id, trashed ones by ?state=; null the top level; a Note none; b's Project and a purged id 404; NULL and a bad ?state= before a missing parent 400"
+  (list (list (id-of 12) (id-of 14)) (list (id-of 18)) (list (id-of 1) (id-of 11)) '() (list (id-of 16))
+        '(404 "not_found") '(404 "not_found") '(400 "invalid_request") '(400 "invalid_request") '(400 "invalid_request"))
+  (map (lambda (e) (ids-listed tree e))
+       (list (list-in tat 'a #f (ref 11)) (list-in tat 'a "trashed" (ref 11)) (list-in tat 'a #f 'null)
+             (list-in tat 'a #f (ref 13)) (list-in tat 'a "archived" (ref 15)) (list-in tat 'a #f (ref 17))
+             (list-in tat 'a #f (ref 5)) (list-in tat 'a #f '(bad "NULL")) (list-in tat 'a "deleted" (ref 99))
+             (list-in tat 'a #f 'twice))))
+
+;; The chain: a's 100 to 164, Projects, each under the one before; node
+;; 100 + k has k ancestors. Then 165 under 163 (63 ancestors), and 166, a
+;; Project at the top, with 167 under it.
+(define chain
+  (attempt
+   (lambda ()
+     (walk-world hand
+                 (append (map (lambda (k) (make-in (+ tat k) 'a a1 (+ 100 k) "project" (if (= k 0) 'absent (ref (+ 99 k)))))
+                              (from-to 0 64))
+                         (list (make-in (+ tat 70) 'a a1 166 "project" 'absent)
+                               (make-in (+ tat 71) 'a a1 167 "project" (ref 166))
+                               (move-at (+ tat 72) 'a a1 166 1 (ref 163))))))))
+
+(define cat (+ tat 100))
+
+(test-equal "oracle: depth (P18): a parent with 63 ancestors takes a create, a move and a bulk move; one with 64 refuses each, invalid_parent; 100 under 166, its 64th ancestor, would_loop; under 167, its 65th, invalid_parent"
+  '((201 #f) (200 #f) (200 #f) (409 "invalid_parent") (409 "invalid_parent") (409 "invalid_parent")
+    (409 "would_loop") (409 "invalid_parent") (409 "would_loop") (409 "invalid_parent"))
+  (map (lambda (e) (attempt (lambda () (let ((x (expect as-planned chain e))) (list (expectation-status x) (expectation-code x))))))
+       (list (make-in cat 'a a1 200 "note" (ref 163)) (move-at cat 'a a1 1 2 (ref 163))
+             (bulk-at cat 'a a1 167 1 (ref 163))
+             (make-in cat 'a a1 200 "note" (ref 164)) (move-at cat 'a a1 1 2 (ref 164))
+             (bulk-at cat 'a a1 167 1 (ref 164))
+             (move-at cat 'a a1 100 1 (ref 166)) (move-at cat 'a a1 100 1 (ref 167))
+             (bulk-at cat 'a a1 100 1 (ref 166)) (bulk-at cat 'a a1 100 1 (ref 167)))))
+
+;; Twisted rules of the tree, for the oracle and for the teeth below.
+
+;; journal-holds-task : a Journal may hold a Task.
+(define (journal-holds-task cell decision s)
+  (if (and (situation-judged? s) (eq? (situation-verdict s) 'wrong-kind) (situation-parent s)
+           (string=? (mnode-kind (situation-parent s)) "journal") (equal? (situation-kind s) "task"))
+      (situation-if-ok s)
+      decision))
+
+;; trashed-movable : a trashed node is moved, its new parent judged as any.
+(define (trashed-movable cell decision s)
+  (if (and (equal? cell '(match trashed move)) (eq? (situation-verdict s) 'ok)) (situation-if-ok s) decision))
+
+;; grandchild-loop : a new parent that is the node's grandchild is no loop.
+(define (grandchild-loop cell decision s)
+  (if (and (situation-judged? s) (eq? (situation-verdict s) 'loop) (eqv? (situation-loop-at s) 2))
+      (situation-if-ok s)
+      decision))
+
+;; bulk-takes-trashed : a bulk move takes the trashed children of a kind the new parent holds too.
+(define (bulk-takes-trashed cell decision s)
+  (if (eq? (car decision) 'move-children) (list 'move-children (map mnode-id (situation-by-kind s))) decision))
+
+;; purge-ignores-children : a trashed node at its revision purges, children or none.
+(define (purge-ignores-children cell decision s)
+  (if (equal? cell '(match trashed purge)) '(purge) decision))
+
+;; depth-cap-65 : a new parent may have 64 ancestors.
+(define (depth-cap-65 cell decision s)
+  (if (and (situation-judged? s) (eq? (situation-verdict s) 'too-deep) (= (situation-depth s) 64))
+      (situation-if-ok s)
+      decision))
+
+(test-equal "oracle: each tree twist changes the answer it bends: a Task into a Journal 201; trashed 15 moved 200; 11 under its grandchild 13 200; 11's children with trashed 18 moved 3; trashed 15 with a child purged 204; under 164 (64 ancestors) 201"
+  (list 201 200 200 '(("left" . 0) ("moved" . 3)) 204 201)
+  (attempt
+   (lambda ()
+     (list (expectation-status (expect journal-holds-task tree (make-in tat 'a a1 20 "task" (ref 12))))
+           (expectation-status (expect trashed-movable tree (move-at tat 'a a1 15 2 'null)))
+           (expectation-status (expect grandchild-loop tree (move-at tat 'a a1 11 1 (ref 13))))
+           (expectation-json (expect bulk-takes-trashed tree (bulk-at tat 'a a1 11 1 'null)))
+           (expectation-status (expect purge-ignores-children tree (life-at tat 'a a1 15 2 'purge)))
+           (expectation-status (expect depth-cap-65 chain (make-in cat 'a a1 200 "note" (ref 164))))))))
 
 ;;; The store every sequence runs on, emptied by each
 
@@ -418,11 +635,13 @@
 ;;; 2. The run
 
 (define sequences 300)
+(define run-ms #f)
 (define verdicts
   (if replay-seed
       '()
       (map (lambda (s) (run-one as-planned s #f)) (from-to first-seed (+ first-seed sequences -1)))))
 (define failures (filter (lambda (f) f) (map failure verdicts)))
+(set! run-ms (- (real-time) started))
 (define agreed (filter (lambda (v) (not (or (raised? v) (verdict-report v)))) verdicts))
 
 (for-each (lambda (f) (display f) (newline)) (take* failures 3))
@@ -443,6 +662,7 @@
 (define shortest (fold-left min 1000 (map verdict-steps agreed)))
 
 (define d5-events '(create replace replace-other-kind restore restore-unknown))
+(define move-events '(move move-children))
 (define writable '(active archived))
 
 ;; project : (Cell -> (U K #f)) -> Hashtable     cells-hit counted under F's key
@@ -471,20 +691,20 @@
 (define d5-hit (project d5-of))
 (define lifecycle-hit (project lifecycle-of))
 
-;; lifecycle-cells : the plan's table: each live state by the five events and write
+;; lifecycle-cells : the plan's table: each live state by the five events, write and the two moves
 (define lifecycle-cells
-  (apply append (map (lambda (s) (map (lambda (e) (list s e)) (append lifecycle-events '(write))))
+  (apply append (map (lambda (s) (map (lambda (e) (list s e)) (append lifecycle-events '(write) move-events)))
                      '(active archived trashed))))
 
 ;; reachable-cells : node-command's cells a request can reach, in the plan's words.
-;;   none, no state: a create of a free id; a replace, a restore and each
-;;     state change of a node the account has not got (no kind to differ
-;;     from, no snapshot to restore)
+;;   none, no state: a create of a free id; a replace, a restore, each
+;;     state change, a move and a bulk move of a node the account has not
+;;     got (no kind to differ from, no snapshot to restore)
 ;;   differ, no state: a create on an id in use (a create's job reads no state)
 ;;   differ and match, each live state: every event but a create
 (define reachable-cells
   (append (map (lambda (e) (list 'none #f e))
-               (append '(create replace restore-unknown) lifecycle-events))
+               (append '(create replace restore-unknown) lifecycle-events move-events))
           (list (list 'differ #f 'create))
           (apply append
                  (map (lambda (f)
@@ -492,7 +712,7 @@
                                (map (lambda (s)
                                       (map (lambda (e) (list f s e))
                                            (append '(replace replace-other-kind restore restore-unknown)
-                                                   lifecycle-events)))
+                                                   lifecycle-events move-events)))
                                     '(active archived trashed))))
                       '(differ match)))))
 
@@ -548,7 +768,85 @@
     ;; slice 4b
     no-precondition-archive no-precondition-unarchive no-precondition-trash no-precondition-untrash
     no-precondition-purge bad-precondition-archive bad-precondition-unarchive bad-precondition-trash
-    bad-precondition-untrash bad-precondition-purge bad-create-on-lifecycle))
+    bad-precondition-untrash bad-precondition-purge bad-create-on-lifecycle
+    ;; slice 5a
+    no-precondition-move no-precondition-move-children bad-precondition-move bad-precondition-move-children
+    bad-create-on-move))
+
+;;; The tree's coverage (slice 5a)
+
+(define tree-routes '(create move move-children))
+(define (aim-of . parts) (string->symbol (apply string-append (map (lambda (p) (format "~a" p)) parts))))
+
+;; verdict-cases : each verdict by each route that can get it (tree-aims
+;; counts one when the rules looked at it). A create keeps out an id that
+;; is no node's, so no new parent is under it: a create has no loop. P12's
+;; three kinds of missing parent each.
+(define verdict-cases
+  (apply append
+         (map (lambda (route)
+                (map (lambda (v) (aim-of "verdict-" route "-" v))
+                     (append '(ok-top ok-parent missing-fresh missing-other missing-purged trashed)
+                             (if (eq? route 'create) '() '(loop))
+                             '(wrong-kind too-deep))))
+              tree-routes)))
+
+;; pair-aims : each parent's kind by each kind going in, a create's or a
+;; move's, once the verdict reached the kind: 6 allowed, 19 not (T2)
+(define pair-aims (apply append (map (lambda (p) (map (lambda (k) (aim-of "pair-" p "-" k)) kinds)) kinds)))
+
+;; depth-aims : the boundary from both sides by each route, a loop at the
+;; 64th ancestor and one above it (P18; the deep seeds' script)
+(define depth-aims
+  (append (map (lambda (r) (aim-of "depth-63-" r)) tree-routes)
+          (map (lambda (r) (aim-of "depth-64-" r)) tree-routes)
+          '(loop-at-64-move loop-at-64-move-children loop-above-cap-move loop-above-cap-move-children)))
+
+;; loop-aims : a loop by where the node kept out sits above the new parent
+(define loop-aims
+  (apply append (map (lambda (r) (map (lambda (at) (aim-of "loop-" at "-" r)) '(self child grandchild deeper)))
+                     '(move move-children))))
+
+;; bulk-aims : each accepted bulk move's outcome: no children; all move;
+;; some; some stay for their state (trashed); some stay for their kind.
+;; rare-bulk-aims: children, none movable; a trashed child of a kind the
+;; new parent holds
+(define bulk-aims '(bulk-no-children bulk-all-move bulk-some-move bulk-stay-state bulk-stay-kind))
+(define rare-bulk-aims '(bulk-none-movable bulk-stay-state-fits))
+
+;; purge-aims : has_children with an active child, and a purge that passes
+;; once a parent is emptied; rare-purge-aims: has_children with an
+;; archived child, a trashed one, and none active
+(define purge-aims '(has-children-active purge-emptied-parent))
+(define rare-purge-aims '(has-children-archived has-children-trashed has-children-none-active))
+
+;; list-parent-aims : ?parent= by case; list-state-aims: the cases that
+;; list, by ?state=, and a ?state= that is the 400 before ?parent= is asked
+(define list-parent-cases '(null node note trashed missing other purged bad twice))
+(define list-parent-aims (map (lambda (c) (aim-of "list-parent-" c)) list-parent-cases))
+(define list-state-aims
+  (append (apply append (map (lambda (c) (map (lambda (s) (aim-of "list-parent-" c "-" s))
+                                               '(default active archived trashed)))
+                             '(null node note trashed)))
+          (map (lambda (c) (aim-of "list-parent-" c "-invalid")) '(null node missing other))))
+
+;; other-tree-aims : another account's node moved (G7), and the rest
+(define other-tree-aims
+  '(move-other-current move-children-other-current move-same-parent move-archived move-into-archived
+    create-in-archived move-trashed-would-pass))
+
+;; tree-floors : (Listof (Pair (Listof Symbol) Natural))
+;; Each group's floor is about half the fewest seen over seeds 1 to 300 and
+;; five other runs of 300 (FIRST 1001 to 5001): a verdict 9, a pairing 10,
+;; the depth's 20 (exactly the deep seeds), a loop 21, a bulk outcome 62
+;; (a rare one 7), has_children with an active child or an emptied parent
+;; purged 18 (the rare ones 4), a ?parent= case 15, one by ?state= 3, the
+;; rest 28.
+(define tree-floors
+  (list (cons verdict-cases 4) (cons pair-aims 5) (cons depth-aims 10) (cons loop-aims 10)
+        (cons bulk-aims 30) (cons rare-bulk-aims 3) (cons purge-aims 9) (cons rare-purge-aims 2)
+        (cons list-parent-aims 7) (cons list-state-aims 1) (cons other-tree-aims 14)))
+(define tree-aims-all (apply append (map car tree-floors)))
 
 (define (at-least floor n) (if (>= n floor) (list 'at-least floor) (list 'only n)))
 
@@ -561,9 +859,14 @@
 
   (test-equal "the run: every one of the sequences ran and agreed" sequences (length agreed))
 
-  (test-equal "the run: every sequence is at least 45 requests" '(at-least 45) (at-least 45 shortest))
+  (test-equal "the run: every sequence is at least 60 requests" '(at-least 60) (at-least 60 shortest))
 
-  (test-equal "the run: at least 15,000 requests" '(at-least 15000) (at-least 15000 steps))
+  (test-equal "the run: at least 20,000 requests" '(at-least 20000) (at-least 20000 steps))
+
+  (test-equal "the run: one seed in fifteen is deep, one in five a family"
+    (list (/ sequences 15) (/ sequences 5))
+    (list (length (filter (lambda (v) (eq? (verdict-style v) 'deep)) agreed))
+          (length (filter (lambda (v) (eq? (verdict-style v) 'family)) agreed))))
 
   ;;; 3. Coverage
 
@@ -635,8 +938,21 @@
        (at-least rare-floor (hashtable-ref aims-hit aim 0))))
    rare-aims)
 
-  (display (format "nodes-model: seeds ~a to ~a: ~a sequences, ~a requests made, ~a HTTP requests sent, the shortest ~a\n"
-                   first-seed (+ first-seed sequences -1) (length agreed) steps requests shortest))
+  (for-each
+   (lambda (group)
+     (for-each
+      (lambda (aim)
+        (test-equal (format "coverage: ~a at least ~a times" aim (cdr group))
+          (list 'at-least (cdr group))
+          (at-least (cdr group) (hashtable-ref aims-hit aim 0))))
+      (car group)))
+   tree-floors)
+
+  (display (format "nodes-model: seeds ~a to ~a: ~a sequences (~a deep, ~a families), ~a requests made, ~a HTTP requests sent, the shortest ~a, in ~a ms\n"
+                   first-seed (+ first-seed sequences -1) (length agreed)
+                   (length (filter (lambda (v) (eq? (verdict-style v) 'deep)) agreed))
+                   (length (filter (lambda (v) (eq? (verdict-style v) 'family)) agreed))
+                   steps requests shortest run-ms))
   (display "  the cells of D5 stepped:\n")
   (for-each (lambda (row)
               (display (format "    ~a x ~a (~a): ~a\n" (car row) (cadr row) (cadddr row)
@@ -647,7 +963,7 @@
               (display (format "    ~a:~a\n" s
                                (apply string-append
                                       (map (lambda (e) (format " ~a ~a" e (hashtable-ref lifecycle-hit (list s e) 0)))
-                                           (append lifecycle-events '(write)))))))
+                                           (append lifecycle-events '(write) move-events))))))
             '(active archived trashed))
   (display "  node-command's cells stepped (found x state x event):\n")
   (for-each (lambda (c) (display (format "    ~a: ~a\n" (cell-name c) (hashtable-ref cells-hit c 0))))
@@ -659,10 +975,16 @@
   (display "  the aims:\n")
   (for-each (lambda (aim) (display (format "    ~a: ~a\n" aim (hashtable-ref aims-hit aim 0))))
             (append aims some-aims rare-aims))
+  (display "  the tree's (slice 5a):\n")
+  (for-each (lambda (group)
+              (display (format "   at least ~a:\n" (cdr group)))
+              (for-each (lambda (aim) (display (format "    ~a: ~a\n" aim (hashtable-ref aims-hit aim 0)))) (car group)))
+            tree-floors)
   (display "  and with no floor:\n")
   (for-each (lambda (aim) (display (format "    ~a: ~a\n" aim (hashtable-ref aims-hit aim 0))))
             (list-sort (lambda (x y) (string<? (symbol->string x) (symbol->string y)))
-                       (filter (lambda (aim) (not (or (memq aim aims) (memq aim some-aims) (memq aim rare-aims))))
+                       (filter (lambda (aim) (not (or (memq aim aims) (memq aim some-aims) (memq aim rare-aims)
+                                                      (memq aim tree-aims-all))))
                                (vector->list (hashtable-keys aims-hit))))))
 
 ;;; 4. Teeth: the oracle with a twisted rule, the handlers as they are
@@ -698,6 +1020,48 @@
            (contains? f "stepping match x trashed x untrash")
            (contains? f "the JSON: the model has")
            #t))))
+
+;; seeds-with : (Listof Symbol) -> (Listof Natural)
+;; The first five seeds of the run that counted any of AIMS: where a tree
+;; twist has something to bend, so its teeth need not search.
+(define (seeds-with aims)
+  (take* (map verdict-seed (filter (lambda (v) (exists (lambda (a) (assq a (verdict-aims v))) aims)) agreed))
+         5))
+
+;; bites? : Twist (Listof Symbol) (Listof String) -> Boolean
+;; Whether TWIST, run on the seeds that reached AIMS, disagrees with the
+;; handlers in a report holding each of TEXTS.
+(define (bites? twist aims texts)
+  (let* ((seeds (seeds-with aims))
+         (f (and (pair? seeds) (first-difference twist seeds))))
+    (and f (for-all (lambda (t) (contains? f t)) texts) #t)))
+
+(unless replay-seed
+  (test-equal "teeth: a rule that lets a Journal hold a Task disagrees with the handlers' 409"
+    #t
+    (bites? journal-holds-task '(pair-journal-task) '("the handlers answered 409")))
+
+  (test-equal "teeth: a rule that moves a trashed node disagrees with the handlers' 409 wrong_state"
+    #t
+    (bites? trashed-movable '(move-trashed-would-pass)
+            '("stepping match x trashed x move" "status: the model has 200, the handlers answered 409")))
+
+  (test-equal "teeth: a rule that takes a node's grandchild as its new parent disagrees with the handlers' 409"
+    #t
+    (bites? grandchild-loop '(loop-grandchild-move loop-grandchild-move-children) '("the handlers answered 409")))
+
+  (test-equal "teeth: a rule whose bulk move takes trashed children disagrees with the handlers' JSON"
+    #t
+    (bites? bulk-takes-trashed '(bulk-stay-state-fits) '("stepping match x" "x move-children" "the JSON: the model has")))
+
+  (test-equal "teeth: a rule whose purge ignores children disagrees with the handlers' 409 has_children"
+    #t
+    (bites? purge-ignores-children '(has-children-active has-children-archived has-children-trashed)
+            '("stepping match x trashed x purge" "status: the model has 204, the handlers answered 409")))
+
+  (test-equal "teeth: a rule that lets a parent have 64 ancestors disagrees with the handlers' 409"
+    #t
+    (bites? depth-cap-65 '(depth-64-create depth-64-move depth-64-move-children) '("the handlers answered 409"))))
 
 (unless (raised? store) (close-test-store! store))
 

@@ -126,7 +126,10 @@
   PRIMARY KEY (owner, seq)
 ) STRICT, WITHOUT ROWID"))
           (list 4 "a node's state"
-                (list "ALTER TABLE nodes ADD COLUMN state TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active','archived','trashed','purged'))"))))
+                (list "ALTER TABLE nodes ADD COLUMN state TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active','archived','trashed','purged'))"))
+          (list 5 "a node's parent"
+                (list "ALTER TABLE nodes ADD COLUMN parent BLOB REFERENCES nodes(id) CHECK (parent IS NULL OR length(parent) = 16)"
+                      "CREATE INDEX nodes_parent ON nodes(owner, parent, id)"))))
 
   ;; latest-version : (Listof Migration) -> Natural
   (define (latest-version ms)

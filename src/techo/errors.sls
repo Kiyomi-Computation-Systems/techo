@@ -33,6 +33,9 @@
       (too_many_keys 409 "This account has 100 active keys; revoke one first.")
       (kind_fixed 409 "A node's kind cannot be changed.")
       (wrong_state 409 "The node's state does not allow this request.")
+      (invalid_parent 409 "The parent cannot hold this node.")
+      (would_loop 409 "The move would put a node under itself.")
+      (has_children 409 "The node still has children.")
       (precondition_failed 412 "The node has changed or already exists; read it again.")
       (payload_too_large 413 "The request body is too large.")
       (unsupported_media_type 415 "The request body must be application/json.")
@@ -65,8 +68,9 @@
   ;; The code a bare status gets: 400 is invalid_request (invalid_json is
   ;; a handler's own choice); 401, 403, 404, 405, 412, 413, 415, 428, 500,
   ;; 503 and 504 are theirs; any other is `error`. invalid_credentials,
-  ;; too_many_keys, kind_fixed, wrong_state and rate_limited are a handler's
-  ;; own choice, like invalid_json: a bare 401, 409 or 429 never gets them.
+  ;; too_many_keys, kind_fixed, wrong_state, invalid_parent, would_loop,
+  ;; has_children and rate_limited are a handler's own choice, like
+  ;; invalid_json: a bare 401, 409 or 429 never gets them.
   (define (status->code status)
     (case status
       ((400) 'invalid_request)

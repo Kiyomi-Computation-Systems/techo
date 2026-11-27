@@ -3,7 +3,7 @@
 Date: 2026-11-26
 Status: the owner decided T1 to T10 on 2026-11-26 (below). Reviewed (the review
 section, at the end): where it and the text above disagree, the review wins. The
-records are amended. Not built.
+records are amended. Built, and the build reviewed (the last section).
 Records: ADR-0002 (the API), ADR-0003 (nodes), ADR-0004 (revisions), ADR-0007
 (machines), ADR-0012 (migrations), ADR-0013 (the doorway). Read
 [global-constraints.md](global-constraints.md) first, then
@@ -314,9 +314,10 @@ Read-only, with probes under `build/review-5a/` and a model of the plan's rules
   is whether the node has children, `#f` for every event but a purge. New
   commands: `move`, `move-children`, `refuse-invalid-parent`,
   `refuse-would-loop`, `refuse-has-children`. A create takes the verdict too.
-- `children-heads` answers only children that are `active` or `archived`, and
-  takes the kinds the new parent holds: `'any`, or a list of kinds, which today
-  is all five or `("note")`. Two statements, both in the list.
+- `children-heads` answers the id and revision of only the children that are
+  `active` or `archived`, and takes the kind the new parent holds: `'any`, or one
+  kind, which today is `"note"`. Two statements, both in the list. *(Corrected
+  at the build: first written as a list of kinds.)*
 - `has-children?` and `count-children` have no `state` term: a purged row has
   no parent, so the index alone answers.
 - `move-node!`'s `UPDATE` has `AND state IN ('active','archived')`.
@@ -398,4 +399,65 @@ This replaces "The work" above.
 - **Slice 7:** a search within a subtree caps its own walk.
 - **Slice 8:** a `move` row names neither parent, and history keeps none. One
   bulk move writes up to 1,000 rows.
+
+## The review of the build (Opus, 2026-11-26)
+
+Read-only, with probes and 29 mutants of its own under
+`build/review-5a-build/`. **No broken forest, wrong write, leak or 500 found,
+and no mutant survived.** It raced real requests (two nodes each moved under the
+other, 40 at a time; a bulk move against a move of its target; a purge against
+a create under the node): one winner each, and the forest whole. A missing id,
+another account's and a purged one gave the same bytes on every new path, and
+the same time. Migration 5 ran on a file made by the code before it.
+
+**Measured, through the server, on 141,213 nodes**
+
+| Request | Time |
+|---|---|
+| A move under 1, 63, 64 and 9,999 ancestors | 1 to 2 ms (5 cold) |
+| A bulk move of 1,000 | 47 to 51 ms |
+| A bulk move, 5 movable behind 20,000 trashed | 6 ms |
+| A purge refused for 20,000 children | 0 ms |
+| `?parent=` of 50,100 children: active | 1 to 2 ms |
+| The same, a state held by few | 5 to 7 ms |
+
+No statement scans `nodes`.
+
+**What it found, and what was done**
+
+| Finding | Done |
+|---|---|
+| Which children a bulk move takes is said twice, in `child-moves?` and in `children-heads`' SQL, and no test tied them | a store test holds them equal over every state, kind and parent |
+| The owner in `ancestors`' step was held only by the statement's text | a test with one account's node under another's |
+| A bulk move's handler had no arm for a state's refusal: a later row in the table would be a 500 | each handler raises every refusal its events can get |
+| No route test moved an archived node's children, nor met a parent both trashed and a loop | added |
+| No test held that a page of children needs no sort | added |
+| The guide: "parent's parent" for any folder above; `left` while `moved` is 1,000; how to deal with what is left; a loop past 64 levels; nothing can be made 64 levels down; a retry of either move | corrected |
+
+**Two holes in the decisions, left as decided and documented**
+
+- **T8 looks at the folder named, not at those above it.** A folder that is
+  active but sits inside a trashed one takes new nodes. It follows from T6:
+  trash touches one node. "Inherit on read" would close it.
+- **T5's cap is on the new parent only, so depth has no bound.** One subtree
+  move left a node 125 deep. A folder 64 levels down can hold nothing, and its
+  refusal reads as any other `invalid_parent`. "Inherit on read" would need a
+  cap of its own, and past that cap it would be wrong, not slow.
+
+**Left as they are**
+
+- The 404 of `?parent=` is decided where the list is read, as the revisions
+  list's is: it is a read's "no such node", not a command.
+- `child-moves?` is called by no handler. It is the rule in one place, and the
+  test above holds the SQL to it.
+
+**Handed on, added**
+
+- **Slice 6:** a kind that holds some kinds but not all would need more than
+  `child-kind-filter`'s one kind. Notes moved into a Journal before slice 6
+  have no timestamp.
+- **Slice 7:** nodes inside a trashed folder show in a search as active.
+- **Slice 8:** a `move` row names no parent, so a client reads each moved node:
+  up to 1,000 a bulk move. Neither parent's revision shows that its children
+  changed. The feed could give the parent as it is when read.
 

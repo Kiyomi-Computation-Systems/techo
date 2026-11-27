@@ -328,6 +328,17 @@ it.
 - **Rule:** put the recursive table first with `CROSS JOIN`, and hold the plan
   with a test.
 
+## Parsed JSON: null is a symbol, false is `#f`, `{}` is `'()`
+
+- **Seen:** through circuit's reader (jsonparse), `{"parent": null}` reads as
+  `(("parent" . null))`, `{"parent": false}` as `(("parent" . #f))`,
+  `{"parent": {}}` as `(("parent"))` and `{}` as `()` (slice 5a's pure task;
+  reproduced with `build/task5a-2/probe-json.sps`).
+- **What it breaks:** `(null? v)` takes `{}` for JSON null. `(and m (cdr m))` and
+  `(if v ...)` cannot tell `false` from a member that is not there.
+- **Rule:** find a member with `assoc` and keep the pair. Test its value with
+  `(eq? v 'null)`, never `null?`, and never by truth.
+
 The siblings' traps apply wherever Techo touches the same ground. Read them there:
 
 - chez-sqlite3: `.plans/traps.md`

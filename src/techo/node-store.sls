@@ -26,26 +26,29 @@
 ;;;
 ;;; Rows.
 ;;;   Node = (id owner author kind title body content-type props revision
-;;;           created updated state)
+;;;           created updated state parent)
 ;;;     id, owner, author: Bytevector (16)  kind, title, content-type, props:
 ;;;     String (props is the JSON text as stored)  body: (U String #f), #f in
 ;;;     a list page  revision: Natural  created, updated: Natural (whole
 ;;;     milliseconds since 1970, UTC)  state: String, "active", "archived",
 ;;;     "trashed" or "purged" (a purged node is never answered to a client)
+;;;     parent: (U Bytevector #f), the node it sits under, #f at the top
+;;;     level (NULL in the table). A purged row has none.
 ;;;   Snapshot = (node revision author title body content-type props created)
 ;;;     body: (U String #f), #f in a list page
 (library (techo node-store)
   (export node-in-use? node-head node-of-owner nodes-page snapshot-exists? snapshot-of
           snapshots-page insert-node! write-node! set-node-state! purge-node!
+          move-node! ancestors has-children? count-children children-heads
           node-store-statements
           node? node-id node-owner node-author node-kind node-title node-body
           node-content-type node-props node-revision node-created node-updated
-          node-state
+          node-state node-parent
           snapshot? snapshot-node snapshot-revision snapshot-author
           snapshot-title snapshot-body snapshot-content-type snapshot-props
           snapshot-created)
   (import (rnrs)
-          (only (chez-sqlite3) sql-null?)
+          (only (chez-sqlite3) sql-null sql-null?)
           (only (techo doorway) tx-execute! tx-query tx-query-row))
 
   ;;; Rows
@@ -56,6 +59,7 @@
   ;; node-body : Node -> (U String #f)
   ;; node-revision, node-created, node-updated : Node -> Natural
   ;; node-state : Node -> String
+  ;; node-parent : Node -> (U Bytevector #f)
   (define-record-type (node make-node node?)
     (sealed #t)
     (fields (immutable id node-id)
@@ -69,7 +73,8 @@
             (immutable revision node-revision)
             (immutable created node-created)
             (immutable updated node-updated)
-            (immutable state node-state)))
+            (immutable state node-state)
+            (immutable parent node-parent)))
 
   ;; snapshot? : Any -> Boolean
   ;; snapshot-node, snapshot-author : Snapshot -> Bytevector
@@ -92,25 +97,25 @@
 
   ;; node-small : String
   ;; The columns of a Node's row in `nodes`, in the record's order but for
-  ;; the body, which a row-reader takes from elsewhere. The state is last.
+  ;; the body, which a row-reader takes from elsewhere. The parent is last.
   (define node-small
-    "n.id, n.owner, n.author, n.kind, n.title, n.content_type, n.props, n.revision, n.created, n.updated, n.state")
+    "n.id, n.owner, n.author, n.kind, n.title, n.content_type, n.props, n.revision, n.created, n.updated, n.state, n.parent")
 
   ;; row->node : (U (Vectorof Any) #f) Boolean -> (U Node #f)
-  ;; A row of node-small, and the body at index 11 when BODY? .
+  ;; A row of node-small, and the body at index 12 when BODY? .
   (define (row->node r body?)
     (and r
          (let ((c (lambda (i) (col (vector-ref r i)))))
            (make-node (c 0) (c 1) (c 2) (c 3) (c 4)
-                      (and body? (c 11))
-                      (c 5) (c 6) (c 7) (c 8) (c 9) (c 10)))))
+                      (and body? (c 12))
+                      (c 5) (c 6) (c 7) (c 8) (c 9) (c 10) (c 11)))))
 
   ;; node-with-body : Node (U String #f) -> Node
   (define (node-with-body n body)
     (make-node (node-id n) (node-owner n) (node-author n) (node-kind n)
                (node-title n) body (node-content-type n) (node-props n)
                (node-revision n) (node-created n) (node-updated n)
-               (node-state n)))
+               (node-state n) (node-parent n)))
 
   ;; row->snapshot : (U (Vectorof Any) #f) Boolean -> (U Snapshot #f)
   ;; A row of: node, revision, author, title, content_type, props, created,
@@ -138,7 +143,7 @@
     (list
      (cons 'node-in-use "SELECT id FROM nodes WHERE id = ?")
      (cons 'node-head
-           "SELECT revision, kind, state FROM nodes WHERE owner = ? AND id = ? AND state <> 'purged'")
+           "SELECT revision, kind, state, parent FROM nodes WHERE owner = ? AND id = ? AND state <> 'purged'")
      (cons 'node-of-owner
            (string-append "SELECT " node-small ", r.body FROM nodes n"
                           " JOIN revisions r ON r.node = n.id AND r.revision ="
@@ -152,6 +157,44 @@
            (string-append "SELECT " node-small " FROM nodes n"
                           " WHERE n.owner = ? AND n.state = ? AND n.state <> 'purged' AND n.id > ?"
                           " ORDER BY n.id LIMIT ?"))
+     (cons 'nodes-page-top
+           (string-append "SELECT " node-small " FROM nodes n"
+                          " WHERE n.owner = ? AND n.state = ? AND n.state <> 'purged'"
+                          " AND n.parent IS NULL ORDER BY n.id LIMIT ?"))
+     (cons 'nodes-page-top-after
+           (string-append "SELECT " node-small " FROM nodes n"
+                          " WHERE n.owner = ? AND n.state = ? AND n.state <> 'purged'"
+                          " AND n.parent IS NULL AND n.id > ? ORDER BY n.id LIMIT ?"))
+     (cons 'nodes-page-of
+           (string-append "SELECT " node-small " FROM nodes n"
+                          " WHERE n.owner = ? AND n.state = ? AND n.state <> 'purged'"
+                          " AND n.parent = ? ORDER BY n.id LIMIT ?"))
+     (cons 'nodes-page-of-after
+           (string-append "SELECT " node-small " FROM nodes n"
+                          " WHERE n.owner = ? AND n.state = ? AND n.state <> 'purged'"
+                          " AND n.parent = ? AND n.id > ? ORDER BY n.id LIMIT ?"))
+     ;; The walk up. The recursive table comes FIRST, with CROSS JOIN, so
+     ;; that SQLite drives from it and searches nodes by id (traps.md). The
+     ;; cap is in the statement: depth stops at N, and LIMIT holds it again.
+     (cons 'ancestors
+           (string-append "WITH RECURSIVE up(id, depth) AS ("
+                          " SELECT parent, 1 FROM nodes WHERE owner = ? AND id = ?"
+                          " UNION ALL"
+                          " SELECT n.parent, up.depth + 1 FROM up CROSS JOIN nodes n"
+                          " WHERE n.id = up.id AND n.owner = ? AND up.depth < ?)"
+                          " SELECT id FROM up WHERE id IS NOT NULL ORDER BY depth LIMIT ?"))
+     (cons 'has-children
+           "SELECT 1 FROM nodes WHERE owner = ? AND parent = ? LIMIT 1")
+     (cons 'count-children
+           "SELECT count(*) FROM nodes WHERE owner = ? AND parent = ?")
+     (cons 'children-heads
+           (string-append "SELECT id, revision FROM nodes"
+                          " WHERE owner = ? AND parent = ? AND state IN ('active','archived')"
+                          " ORDER BY id LIMIT ?"))
+     (cons 'children-heads-kind
+           (string-append "SELECT id, revision FROM nodes"
+                          " WHERE owner = ? AND parent = ? AND state IN ('active','archived')"
+                          " AND kind = ? ORDER BY id LIMIT ?"))
      (cons 'snapshot-exists
            (string-append "SELECT r.revision FROM revisions r JOIN nodes n ON n.id = r.node"
                           " WHERE n.owner = ? AND r.node = ? AND r.revision = ?"
@@ -175,8 +218,8 @@
      (cons 'rows-changed "SELECT changes()")
      (cons 'insert-node
            (string-append "INSERT INTO nodes(id, owner, author, kind, title,"
-                          " content_type, props, revision, created, updated)"
-                          " VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)"))
+                          " content_type, props, revision, created, updated, parent)"
+                          " VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)"))
      (cons 'insert-snapshot
            (string-append "INSERT INTO revisions(node, revision, author, title,"
                           " content_type, props, created, body)"
@@ -194,13 +237,17 @@
            (string-append "UPDATE nodes SET state = ?, revision = ?, updated = ?"
                           " WHERE owner = ? AND id = ? AND revision = ?"
                           " AND state <> 'purged'"))
+     (cons 'move-node
+           (string-append "UPDATE nodes SET parent = ?, revision = ?, updated = ?"
+                          " WHERE owner = ? AND id = ? AND revision = ?"
+                          " AND state IN ('active','archived')"))
      (cons 'purge-snapshots
            (string-append "DELETE FROM revisions AS r WHERE r.node = ? AND EXISTS"
                           " (SELECT 1 FROM nodes n WHERE n.id = r.node AND n.owner = ?)"))
      (cons 'purge-node
            (string-append "UPDATE nodes SET title = '', props = '{}',"
                           " content_type = 'application/octet-stream', state = 'purged',"
-                          " revision = ?, updated = ?"
+                          " parent = NULL, revision = ?, updated = ?"
                           " WHERE owner = ? AND id = ? AND revision = ? AND state = 'trashed'"))
      (cons 'written-node
            (string-append "SELECT " node-small " FROM nodes n WHERE n.owner = ? AND n.id = ?"))))
@@ -226,12 +273,14 @@
   (define (node-in-use? tx id)
     (and (tx-query-row tx (statement 'node-in-use) id) #t))
 
-  ;; node-head : Tx Bytevector Bytevector -> (U (List Natural String String) #f)
-  ;; owner id -> (revision kind state), from `nodes` alone. The write's
-  ;; check. A purged row is not found.
+  ;; node-head : Tx Bytevector Bytevector
+  ;;              -> (U (List Natural String String (U Bytevector #f)) #f)
+  ;; owner id -> (revision kind state parent), from `nodes` alone. The
+  ;; write's check. A purged row is not found.
   (define (node-head tx owner id)
     (let ((r (tx-query-row tx (statement 'node-head) owner id)))
-      (and r (list (vector-ref r 0) (vector-ref r 1) (vector-ref r 2)))))
+      (and r (list (vector-ref r 0) (vector-ref r 1) (vector-ref r 2)
+                   (col (vector-ref r 3))))))
 
   ;; node-of-owner : Tx Bytevector Bytevector -> (U Node #f)
   ;; owner id -> the node with its body, read from the node's NEWEST
@@ -240,15 +289,58 @@
   (define (node-of-owner tx owner id)
     (row->node (tx-query-row tx (statement 'node-of-owner) owner id) #t))
 
-  ;; nodes-page : Tx Bytevector String (U Bytevector #f) Natural -> (Listof Node)
-  ;; owner state after n -> up to n nodes in STATE with id > after, by id
-  ;; rising, body #f. Never touches `revisions`. STATE "purged" finds
-  ;; nothing: no answer shows a purged row.
-  (define (nodes-page tx owner state after n)
+  ;; nodes-page : Tx Bytevector String (U 'any #f Bytevector) (U Bytevector #f)
+  ;;               Natural -> (Listof Node)
+  ;; owner state parent after n -> up to n nodes in STATE with id > after, by
+  ;; id rising, body #f. PARENT is 'any (whatever the parent: the flat list),
+  ;; #f (the top level only: parent IS NULL) or an id (that node's children).
+  ;; Never touches `revisions`. STATE "purged" finds nothing: no answer shows
+  ;; a purged row.
+  (define (nodes-page tx owner state parent after n)
     (map (lambda (r) (row->node r #f))
-         (if after
-             (tx-query tx (statement 'nodes-page-after) owner state after n)
-             (tx-query tx (statement 'nodes-page) owner state n))))
+         (cond ((eq? parent 'any)
+                (if after
+                    (tx-query tx (statement 'nodes-page-after) owner state after n)
+                    (tx-query tx (statement 'nodes-page) owner state n)))
+               ((not parent)
+                (if after
+                    (tx-query tx (statement 'nodes-page-top-after) owner state after n)
+                    (tx-query tx (statement 'nodes-page-top) owner state n)))
+               (else
+                (if after
+                    (tx-query tx (statement 'nodes-page-of-after) owner state parent after n)
+                    (tx-query tx (statement 'nodes-page-of) owner state parent n))))))
+
+  ;; ancestors : Tx Bytevector Bytevector Natural -> (Listof Bytevector)
+  ;; owner id n -> the ids above the node: its parent, its parent's parent,
+  ;; and so on, nearest first, at most N. '() for a root and for an id that
+  ;; is not a node of that owner. The statement stops after N rows itself,
+  ;; even on a loop made by hand in the table.
+  (define (ancestors tx owner id n)
+    (map (lambda (r) (vector-ref r 0))
+         (tx-query tx (statement 'ancestors) owner id owner n n)))
+
+  ;; has-children? : Tx Bytevector Bytevector -> Boolean
+  ;; owner id -> whether any row of that owner has the id as its parent. A
+  ;; purged row never has a parent, so the index alone answers.
+  (define (has-children? tx owner id)
+    (and (tx-query-row tx (statement 'has-children) owner id) #t))
+
+  ;; count-children : Tx Bytevector Bytevector -> Natural
+  ;; owner id -> how many rows of that owner have the id as their parent.
+  (define (count-children tx owner id)
+    (vector-ref (tx-query-row tx (statement 'count-children) owner id) 0))
+
+  ;; children-heads : Tx Bytevector Bytevector (U 'any String) Natural
+  ;;                  -> (Listof (Pair Bytevector Natural))
+  ;; owner parent kind n -> the (id . revision) of up to N children of PARENT
+  ;; whose state is active or archived and, when KIND is a String, whose kind
+  ;; is that; in id order.
+  (define (children-heads tx owner parent kind n)
+    (map (lambda (r) (cons (vector-ref r 0) (vector-ref r 1)))
+         (if (string? kind)
+             (tx-query tx (statement 'children-heads-kind) owner parent kind n)
+             (tx-query tx (statement 'children-heads) owner parent n))))
 
   ;; snapshot-exists? : Tx Bytevector Bytevector Natural -> Boolean
   ;; owner id revision -> whether the node is that owner's, not purged, and
@@ -290,17 +382,17 @@
     (tx-execute! tx (statement 'insert-change) owner id revision op now owner))
 
   ;; insert-node! : Tx Bytevector Bytevector String String String String
-  ;;                String Natural -> Node
-  ;; id owner kind title body content-type props now. Revision 1, author the
+  ;;                String (U Bytevector #f) Natural -> Node
+  ;; id owner kind title body content-type props parent now. Revision 1, author the
   ;; owner: the node's row, then its snapshot (the foreign key's order), then
   ;; a change row with op "create". The Node is built from the arguments; the
   ;; body is not read back.
-  (define (insert-node! tx id owner kind title body content-type props now)
+  (define (insert-node! tx id owner kind title body content-type props parent now)
     (tx-execute! tx (statement 'insert-node)
-                 id owner owner kind title content-type props now now)
+                 id owner owner kind title content-type props now now (or parent sql-null))
     (insert-snapshot! tx id 1 owner title body content-type props now)
     (insert-change! tx owner id 1 "create" now)
-    (make-node id owner owner kind title body content-type props 1 now now "active"))
+    (make-node id owner owner kind title body content-type props 1 now now "active" parent))
 
   ;; stored-node : Tx Bytevector Bytevector (U String #f) -> Node
   ;; The node's row as it now is, with BODY.
@@ -348,10 +440,26 @@
     (insert-change! tx owner id (+ expected 1) op now)
     (stored-node tx owner id #f))
 
+  ;; move-node! : Tx Bytevector Bytevector Natural (U Bytevector #f) Natural
+  ;;              -> Node
+  ;; id owner expected new-parent now. Sets the node's parent (#f: the top
+  ;; level), moves it from revision EXPECTED to EXPECTED + 1 with updated =
+  ;; now, only WHERE owner, id and revision match and the state is active or
+  ;; archived; then a change row, op "move", at the new revision. Writes NO
+  ;; snapshot. Raises as write-node! does when no row changed. It does not
+  ;; judge the move: a pure function elsewhere does. The Node is the row as
+  ;; it now is, body #f.
+  (define (move-node! tx id owner expected new-parent now)
+    (tx-execute! tx (statement 'move-node)
+                 (or new-parent sql-null) (+ expected 1) now owner id expected)
+    (unless (= (changes tx) 1) (refuse-write 'move-node! id expected))
+    (insert-change! tx owner id (+ expected 1) "move" now)
+    (stored-node tx owner id #f))
+
   ;; purge-node! : Tx Bytevector Bytevector Natural Natural -> Void
   ;; id owner expected now. Deletes the node's snapshots, empties the row
-  ;; (title '', props '{}', content type application/octet-stream, state
-  ;; purged, revision + 1, updated = now) only WHERE owner, id and revision
+  ;; (title '', props '{}', content type application/octet-stream, parent
+  ;; NULL, state purged, revision + 1, updated = now) only WHERE owner, id and revision
   ;; match and the state is trashed, and raises as write-node! does when no
   ;; row changed: the job then rolls back, and the snapshots return. Then a
   ;; change row, op "purge", at the new revision.

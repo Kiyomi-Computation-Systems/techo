@@ -53,4 +53,7 @@
   PRIMARY KEY (owner, seq)
 ) STRICT, WITHOUT ROWID"))
  (4 "a node's state"
-    ("ALTER TABLE nodes ADD COLUMN state TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active','archived','trashed','purged'))")))
+    ("ALTER TABLE nodes ADD COLUMN state TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active','archived','trashed','purged'))"))
+ (5 "a node's parent"
+    ("ALTER TABLE nodes ADD COLUMN parent BLOB REFERENCES nodes(id) CHECK (parent IS NULL OR length(parent) = 16)"
+     "CREATE INDEX nodes_parent ON nodes(owner, parent, id)")))

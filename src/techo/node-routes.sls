@@ -1,13 +1,17 @@
 #!r6rs
-;;; (techo node-routes): the node routes, slice 4's (D3) and slice 4b's
-;;; lifecycle (L3, L6). The imperative shell.
+;;; (techo node-routes): the node routes, slice 4's (D3), slice 4b's
+;;; lifecycle (L3, L6) and slice 5a's tree (T3, T4, T7, T9). The imperative
+;;; shell.
 ;;;
-;;;   PUT    /v1/nodes/:id                       create, with If-None-Match: * (201),
+;;;   PUT    /v1/nodes/:id                       create, with If-None-Match: * (201), under
+;;;                                              the JSON's parent when it names one;
 ;;;                                              or replace, with If-Match: "N" (200)
 ;;;   GET    /v1/nodes/:id                       the node, with its ETag
 ;;;   DELETE /v1/nodes/:id                       purge, with If-Match: "N" (204, no body)
-;;;   GET    /v1/nodes?state=                    the account's nodes in one state (active
-;;;                                              unless named), paged, no bodies
+;;;   GET    /v1/nodes?state=&parent=            the account's nodes in one state (active
+;;;                                              unless named): all of them, a node's
+;;;                                              children, or the top level (null); paged,
+;;;                                              no bodies
 ;;;   GET    /v1/nodes/:id/revisions             its snapshots, newest first, no bodies
 ;;;   GET    /v1/nodes/:id/revisions/:n          one snapshot, whole
 ;;;   POST   /v1/nodes/:id/revisions/:n/restore  snapshot n copied as a new revision (200)
@@ -15,44 +19,64 @@
 ;;;   POST   /v1/nodes/:id/unarchive             the node without its body, and its ETag
 ;;;   POST   /v1/nodes/:id/trash
 ;;;   POST   /v1/nodes/:id/untrash
+;;;   POST   /v1/nodes/:id/move                  {"parent": id or null}, with If-Match: "N":
+;;;                                              200, the node without its body, its ETag
+;;;   POST   /v1/nodes/:id/move-children         {"parent": id or null}, with the node's
+;;;                                              If-Match: "N": 200, {"moved": N, "left": M},
+;;;                                              no ETag
 ;;;
-;;; Each handler is exactly one call of (techo auth): the PUT's is
-;;; db-write-with-body-as, so no body is read before its key is known to be
-;;; good; each of the others' is db-read-as or db-write-as. On the loop's
-;;; thread, the prepare thunk makes the cheap checks, and the PUT's Reader
-;;; reads the body once the key has passed, so the order of checks is:
+;;; Every node in an answer has its parent after its state: the id, or
+;;; null at the top level. A snapshot has none.
+;;;
+;;; Each handler is exactly one call of (techo auth): the PUT's and the two
+;;; moves' are db-write-with-body-as, so no body is read before its key is
+;;; known to be good; each of the others' is db-read-as or db-write-as. On
+;;; the loop's thread, the prepare thunk makes the cheap checks, and the
+;;; Reader of a write with a body reads it once the key has passed, so the
+;;; order of checks is:
 ;;;
 ;;;   1. the key's shape (401), by (techo auth) itself, with no job;
-;;;   2. the path's id, the path's revision, `limit`, `after`, `state` (400);
-;;;   3. the preconditions: 428 for none, 400 for a bad shape;
-;;;   4. a PUT's key (401), by a read job of its own;
-;;;   5. a PUT's Content-Type (415), then its body under request-cap
-;;;      through wrap-json-body (413; 400 invalid_json for JSON that does
-;;;      not parse), then parse-content (400; 413 for a body over body-cap);
-;;;   6. the job: the key (401; a PUT's again, as it may have been revoked
-;;;      while the body came), then the work.
+;;;   2. the path's id, the path's revision, `limit`, `after`, `state`,
+;;;      `parent` (400);
+;;;   3. the preconditions: 428 for none, 400 for a bad shape (and for
+;;;      If-None-Match on any write but a create);
+;;;   4. the key of a write with a body (401), by a read job of its own;
+;;;   5. its Content-Type (415), then its body through wrap-json-body, under
+;;;      request-cap for a PUT and move-body-cap for a move (413; 400
+;;;      invalid_json for JSON that does not parse), then parse-content
+;;;      (400; 413 for a body over body-cap) or parse-move-body (400);
+;;;   6. the job: the key (401; again for a write with a body, as it may
+;;;      have been revoked while the body came), then the work.
 ;;;
-;;; A PUT's time is read once its body has come, so a slow upload is
-;;; stamped with when it arrived; a restore and a state change, with no
-;;; body, read it first. Neither reads a body or a Content-Type.
+;;; A write with a body reads its time once the body has come, so a slow
+;;; upload is stamped with when it arrived; a restore and a state change,
+;;; with no body, read it first. Neither reads a body or a Content-Type.
 ;;;
-;;; A write's work finds the node (its revision, kind and state, or none),
-;;; names the event, asks (techo nodes)' node-command, by which the write's
-;;; table and the lifecycle's answer it, and performs the command it names:
-;;; insert, write, copy, set-state or purge, or a refusal raised as a
-;;; &refusal, so the job rolls back, the key's last_used with it. The
-;;; answer follows from the command alone; the handler decides none of its
-;;; own (ADR-0007). A missing node on a read is a &refusal too. A state is
-;;; a symbol in (techo nodes) and a string in the store; the work converts.
+;;; A write's work finds the node (its revision, kind, state and parent, or
+;;; none), and for a create or a move with a parent, the parent's head and
+;;; its ancestors, which parent-verdict judges; for a purge, whether the
+;;; node has children. It names the event, asks (techo nodes)' node-command,
+;;; by which the write's table and the lifecycle's answer it, and performs
+;;; the command it names: insert, write, copy, set-state, purge, move or
+;;; move-children, or a refusal raised as a &refusal, so the job rolls
+;;; back, the key's last_used with it. The answer follows from the command
+;;; alone; the handler decides none of its own (ADR-0007). A missing node on
+;;; a read is a &refusal too, and so is a list's ?parent= naming no node of
+;;; the account. A state is a symbol in (techo nodes) and a string in the
+;;; store; the work converts.
+;;;
+;;; A bulk move moves, in id order, up to move-children-cap of the node's
+;;; children that may move under the new parent, each at its own revision,
+;;; a revision and a change row each; the node itself is not written.
 ;;;
 ;;; A node's answer shows its stored state. A purged node is never found:
 ;;; the store leaves it out of every read, so it is a 404, and a create on
-;;; its id a 412.
+;;; its id a 412; as a parent, it is invalid_parent, as a missing one is.
 ;;;
 ;;; A job's work closes over plain data only: the id, the precondition, the
-;;; five content values, the path's revision, the event, the time. Never
-;;; the request, never the parsed JSON. Nothing waits in a job: the body is
-;;; read in the PUT's Reader, between its two jobs. Nothing raised here
+;;; five content values, a parent's id, the path's revision, the event, the
+;;; time. Never the request, never the parsed JSON. Nothing waits in a job:
+;;; a body is read in its Reader, between its two jobs. Nothing raised here
 ;;; carries a title or a body. The database is reached only through
 ;;; db-read-as, db-write-as, db-write-with-body-as and (techo node-store).
 (library (techo node-routes)
@@ -68,13 +92,16 @@
           (only (techo requests) query-one take json-type? bad-request)
           (only (techo nodes) request-cap parse-node-id node-id->string parse-revision etag
                 precondition parse-content content-kind content-title content-body
-                content-content-type content-props found found-for-create write-event
-                node-command node-state->string string->node-state parse-state-param event-op)
+                content-content-type content-props content-parent found found-for-create
+                write-event node-command node-state->string string->node-state parse-state-param
+                event-op depth-cap move-children-cap move-body-cap parse-move-body
+                parse-parent-param parent-verdict child-kind-filter)
           (only (techo node-store) node-in-use? node-head node-of-owner nodes-page
                 snapshot-exists? snapshot-of snapshots-page insert-node! write-node!
-                set-node-state! purge-node!
+                set-node-state! purge-node! move-node! ancestors has-children? count-children
+                children-heads
                 node-id node-kind node-title node-body node-content-type node-props
-                node-revision node-created node-updated node-state
+                node-revision node-created node-updated node-state node-parent
                 snapshot-revision snapshot-title snapshot-body snapshot-content-type
                 snapshot-props snapshot-created))
 
@@ -93,13 +120,14 @@
         (assertion-violation 'node-routes "stored props other than {} before slice 6")))
 
   ;; node->json : Node Boolean -> Alist
-  ;; id (lower case), kind, state (the stored one), title, body when BODY?,
-  ;; content_type, props, revision, created, updated. Never num, the owner
-  ;; or the author.
+  ;; id (lower case), kind, state (the stored one), parent (its id in lower
+  ;; case, or null at the top level), title, body when BODY?, content_type,
+  ;; props, revision, created, updated. Never num, the owner or the author.
   (define (node->json n body?)
     (append (list (cons "id" (node-id->string (node-id n)))
                   (cons "kind" (node-kind n))
                   (cons "state" (node-state n))
+                  (cons "parent" (let ((p (node-parent n))) (if p (node-id->string p) 'null)))
                   (cons "title" (node-title n)))
             (if body? (list (cons "body" (node-body n))) '())
             (list (cons "content_type" (node-content-type n))
@@ -134,22 +162,25 @@
                                               (next-of (car (reverse shown)))
                                               'null)))))))
 
-  ;; written : (Pair CommandKind (U Node #f)) -> Res
+  ;; written : (Pair CommandKind (U Node #f (Pair Natural Natural))) -> Res
   ;; A write's answer, by the command its job performed: insert is 201 with
   ;; Location, the id in lower case; write and copy are 200, each with the
-  ;; node whole and its ETag; set-state is 200, the node without its body
-  ;; (the client has it, and the job read none), and its ETag; purge is
-  ;; 204, no body and no ETag, as nothing is left to tag. Any other
-  ;; command is an assertion violation.
+  ;; node whole and its ETag; set-state and move are 200, the node without
+  ;; its body (the client has it, and the job read none), and its ETag;
+  ;; purge is 204, no body and no ETag, as nothing is left to tag;
+  ;; move-children is 200, {"moved": N, "left": M}, of the pair (N . M),
+  ;; and no ETag, as the node was not written. Any other command is an
+  ;; assertion violation.
   (define (written outcome)
     (let ((command (car outcome)) (n (cdr outcome)))
       (case command
         ((insert) (res-set-header (node-answer 201 n) "location"
                                   (string-append "/v1/nodes/" (node-id->string (node-id n)))))
         ((write copy) (node-answer 200 n))
-        ((set-state) (res-set-header (make-json-res 200 (node->json n #f))
-                                     "etag" (etag (node-revision n))))
+        ((set-state move) (res-set-header (make-json-res 200 (node->json n #f))
+                                          "etag" (etag (node-revision n))))
         ((purge) (make-res 204 '() #f))
+        ((move-children) (make-json-res 200 (list (cons "moved" (car n)) (cons "left" (cdr n)))))
         (else (assertion-violation 'node-routes "a write's answer has no such command" command)))))
 
   ;;; The work of a write, in its job
@@ -157,7 +188,8 @@
   ;; refusal-codes : (Listof (Pair CommandKind Symbol))
   (define refusal-codes
     '((refuse-404 . not_found) (refuse-409 . kind_fixed) (refuse-412 . precondition_failed)
-      (refuse-wrong-state . wrong_state)))
+      (refuse-wrong-state . wrong_state) (refuse-invalid-parent . invalid_parent)
+      (refuse-would-loop . would_loop) (refuse-has-children . has_children)))
 
   ;; refuse : CommandKind Bytevector -> !
   ;; The refusal COMMAND names, raised as a &refusal for OWNER, so the job
@@ -165,33 +197,63 @@
   (define (refuse command owner)
     (raise (make-refusal (cdr (assq command refusal-codes)) owner)))
 
-  ;; Head = (List Natural String String)     node-head's revision, kind and state
+  ;; Head = (List Natural String String (U Bytevector #f))
+  ;;   node-head's revision, kind, state and parent
 
   ;; head-state : (U Head #f) -> (U Symbol #f)
   ;; The stored state as (techo nodes) names it; #f for no node.
   (define (head-state head)
     (and head (string->node-state (caddr head))))
 
-  ;; put-work : Bytevector Precondition (U String #f) String String String String Natural
-  ;;            -> Work
+  ;; judge-parent : Tx Bytevector (U Bytevector #f) Bytevector (U String #f)
+  ;;                -> (values Verdict (U String #f))
+  ;; The verdict on PARENT, the new parent of a create, a move or a bulk
+  ;; move for OWNER, and the parent's kind. For an id, its head (owner's
+  ;; alone: missing, another account's and purged all read as none) and up
+  ;; to depth-cap of its ancestors are read; for the top level (#f),
+  ;; nothing. parent-verdict judges them, with KEEP-OUT, the id that may
+  ;; not be the parent or among its ancestors, and KIND, the kind going in
+  ;; (#f for a bulk move). The kind is #f for the top level and for none.
+  (define (judge-parent tx owner parent keep-out kind)
+    (if parent
+        (let ((head (node-head tx owner parent)))
+          (values (parent-verdict parent (and head (list (cadr head) (head-state head)))
+                                  (ancestors tx owner parent depth-cap) keep-out kind)
+                  (and head (cadr head))))
+        (values (parent-verdict #f #f '() keep-out kind) #f)))
+
+  ;; verdict-of : Tx Bytevector (U Bytevector #f) Bytevector (U String #f) -> Verdict
+  ;; judge-parent's verdict alone.
+  (define (verdict-of tx owner parent keep-out kind)
+    (let-values (((verdict parent-kind) (judge-parent tx owner parent keep-out kind)))
+      verdict))
+
+  ;; put-work : Bytevector Precondition (U String #f) String String String String
+  ;;            (U Bytevector #f) Natural -> Work
   ;; A PUT's work: what the job found (node-in-use? for a create, node-head
-  ;; for a replace), the stored state, the event, node-command, and the
-  ;; command it names performed. Answers the command and the node; a
-  ;; refusal is raised. A command a PUT has no action for is an assertion
-  ;; violation.
-  (define (put-work id pre kind title body type props now)
+  ;; for a replace), the stored state, the event, for a create the verdict
+  ;; on its PARENT (the id made kept out, its kind going in; ok for the top
+  ;; level), node-command, and the command it names performed. A replace's
+  ;; PARENT is #f: parse-content refuses one. Answers the command and the
+  ;; node; a refusal is raised. A command a PUT has no action for is an
+  ;; assertion violation.
+  (define (put-work id pre kind title body type props parent now)
     (lambda (tx account key)
       (let* ((owner (account-id account))
-             (head (and (not (eq? pre 'create)) (node-head tx owner id)))
-             (found-kind (if (eq? pre 'create)
+             (create? (eq? pre 'create))
+             (head (and (not create?) (node-head tx owner id)))
+             (found-kind (if create?
                              (found-for-create (node-in-use? tx id))
                              (found (and head (car head)) pre)))
-             (event (write-event 'put pre kind (and head (cadr head)) #f)))
-        (let-values (((command next) (node-command found-kind (head-state head) event)))
+             (event (write-event 'put pre kind (and head (cadr head)) #f))
+             (verdict (if create? (verdict-of tx owner parent id kind) 'ok)))
+        (let-values (((command next) (node-command found-kind (head-state head) event verdict #f)))
           (case command
-            ((insert) (cons command (insert-node! tx id owner kind title body type props now)))
+            ((insert) (cons command (insert-node! tx id owner kind title body type props parent now)))
             ((write) (cons command (write-node! tx id owner pre title body type props "update" now)))
-            ((refuse-404 refuse-409 refuse-412 refuse-wrong-state) (refuse command owner))
+            ((refuse-404 refuse-409 refuse-412 refuse-wrong-state refuse-invalid-parent
+              refuse-would-loop)
+             (refuse command owner))
             (else (assertion-violation 'node-routes "a PUT has no action for this command"
                                        command)))))))
 
@@ -209,7 +271,7 @@
              (head (node-head tx owner id))
              (found-kind (found (and head (car head)) pre))
              (event (write-event 'restore pre #f #f (and head (snapshot-exists? tx owner id n)))))
-        (let-values (((command next) (node-command found-kind (head-state head) event)))
+        (let-values (((command next) (node-command found-kind (head-state head) event 'ok #f)))
           (case command
             ((copy)
              (let ((snap (snapshot-of tx owner id n)))
@@ -223,24 +285,80 @@
 
   ;; lifecycle-work : Bytevector Natural Symbol Natural -> Work
   ;; A state change's or a purge's work: the node's head and what was
-  ;; found, node-command with the stored state and EVENT, one of
-  ;; lifecycle-events, and the command performed. set-state stores the state
-  ;; node-command names, with EVENT's op, and answers the node as it now is,
-  ;; with no body; purge empties the node and answers #f. Neither writes or
-  ;; reads a snapshot's body.
+  ;; found, node-command with the stored state, EVENT, one of
+  ;; lifecycle-events, and for a purge whether the node has children (any
+  ;; row under it: purged rows have no parent), and the command performed.
+  ;; set-state stores the state node-command names, with EVENT's op, and
+  ;; answers the node as it now is, with no body; purge empties the node and
+  ;; answers #f. Neither writes or reads a snapshot's body.
   (define (lifecycle-work id pre event now)
     (lambda (tx account key)
       (let* ((owner (account-id account))
-             (head (node-head tx owner id)))
+             (head (node-head tx owner id))
+             (children? (and (eq? event 'purge) (has-children? tx owner id))))
         (let-values (((command next)
-                      (node-command (found (and head (car head)) pre) (head-state head) event)))
+                      (node-command (found (and head (car head)) pre) (head-state head) event 'ok
+                                    children?)))
           (case command
             ((set-state)
              (cons command (set-node-state! tx id owner pre (node-state->string next)
                                             (event-op event) now)))
             ((purge) (purge-node! tx id owner pre now) (cons command #f))
-            ((refuse-404 refuse-412 refuse-wrong-state) (refuse command owner))
+            ((refuse-404 refuse-412 refuse-wrong-state refuse-has-children) (refuse command owner))
             (else (assertion-violation 'node-routes "a state change has no action for this command"
+                                       command)))))))
+
+  ;; move-work : Bytevector Natural (U Bytevector #f) Natural -> Work
+  ;; A move's work: the node's head and what was found; when there is a
+  ;; node, the verdict on PARENT (#f: the top level), the node kept out of
+  ;; its ancestors and its kind going in; when there is none, ok, as
+  ;; node-command looks at no verdict for none; node-command with the
+  ;; stored state and move; and the command performed. move sets the
+  ;; parent, with no snapshot, and answers the node as it now is, with no
+  ;; body.
+  (define (move-work id pre parent now)
+    (lambda (tx account key)
+      (let* ((owner (account-id account))
+             (head (node-head tx owner id))
+             (verdict (if head (verdict-of tx owner parent id (cadr head)) 'ok)))
+        (let-values (((command next)
+                      (node-command (found (and head (car head)) pre) (head-state head) 'move verdict
+                                    #f)))
+          (case command
+            ((move) (cons command (move-node! tx id owner pre parent now)))
+            ((refuse-404 refuse-412 refuse-wrong-state refuse-invalid-parent refuse-would-loop)
+             (refuse command owner))
+            (else (assertion-violation 'node-routes "a move has no action for this command"
+                                       command)))))))
+
+  ;; move-children-work : Bytevector Natural (U Bytevector #f) Natural -> Work
+  ;; A bulk move's work: the node's head and what was found; when there is
+  ;; a node, the verdict on PARENT with the node kept out of its ancestors
+  ;; and no kind going in; node-command with the stored state and
+  ;; move-children; and the command performed. move-children takes up to
+  ;; move-children-cap of the node's children that may go under PARENT
+  ;; (active or archived, of a kind it holds: child-kind-filter of its
+  ;; kind), in id order, and moves each in that order at its own revision;
+  ;; then counts the children left under the node. The node's own row is
+  ;; not written. Answers the pair (moved . left).
+  (define (move-children-work id pre parent now)
+    (lambda (tx account key)
+      (let* ((owner (account-id account))
+             (head (node-head tx owner id)))
+        (let*-values (((verdict parent-kind)
+                       (if head (judge-parent tx owner parent id #f) (values 'ok #f)))
+                      ((command next)
+                       (node-command (found (and head (car head)) pre) (head-state head) 'move-children
+                                     verdict #f)))
+          (case command
+            ((move-children)
+             (let ((heads (children-heads tx owner id (child-kind-filter parent-kind)
+                                          move-children-cap)))
+               (for-each (lambda (h) (move-node! tx (car h) owner (cdr h) parent now)) heads)
+               (cons command (cons (length heads) (count-children tx owner id)))))
+            ((refuse-404 refuse-412 refuse-wrong-state refuse-invalid-parent refuse-would-loop)
+             (refuse command owner))
+            (else (assertion-violation 'node-routes "a bulk move has no action for this command"
                                        command)))))))
 
   ;;; The work of a read, in its job
@@ -254,10 +372,16 @@
       (let ((owner (account-id account)))
         (or (node-of-owner tx owner id) (missing owner)))))
 
-  ;; nodes-work : Symbol (U Bytevector #f) Natural -> Work     STATE's page
-  (define (nodes-work state after limit)
+  ;; nodes-work : Symbol (U 'any #f Bytevector) (U Bytevector #f) Natural -> Work
+  ;; STATE's page: of every node ('any), the top level (#f), or the
+  ;; children of the node PARENT names. That node first: one that is no
+  ;; node of the account, or is purged, is the 404, not an empty page.
+  (define (nodes-work state parent after limit)
     (lambda (tx account key)
-      (nodes-page tx (account-id account) (node-state->string state) after (+ limit 1))))
+      (let ((owner (account-id account)))
+        (if (and (bytevector? parent) (not (node-head tx owner parent)))
+            (missing owner)
+            (nodes-page tx owner (node-state->string state) parent after (+ limit 1))))))
 
   ;; revisions-work : Bytevector (U Natural #f) Natural -> Work
   ;; The node first: a missing one is the 404, not an empty page.
@@ -283,12 +407,28 @@
   ;; put-plan : Upload Natural -> Plan
   ;; The PUT's plan, of what its Reader read and NOW, the time read once
   ;; the body had come: its work closed over the id, the precondition, the
-  ;; five content values and NOW alone.
+  ;; five content values, the parent and NOW alone.
   (define (put-plan u now)
     (let ((c (upload-content u)))
       (make-plan (put-work (upload-id u) (upload-pre u) (content-kind c) (content-title c)
-                           (content-body c) (content-content-type c) (content-props c) now)
+                           (content-body c) (content-content-type c) (content-props c)
+                           (content-parent c) now)
                  written)))
+
+  ;;; A move's body
+
+  ;; Shift : what a move's or a bulk move's Reader hands on, read on the
+  ;; loop's thread: the node's id, the precondition and the new parent (#f
+  ;; for the top level).
+  (define-record-type shift (fields id pre parent))
+
+  ;; shift-plan : (Bytevector Natural (U Bytevector #f) Natural -> Work) -> (Shift Natural -> Plan)
+  ;; A move's plan, of what its Reader read and NOW, the time read once the
+  ;; body had come: WORK-OF's work, closed over the id, the precondition,
+  ;; the parent and NOW alone.
+  (define (shift-plan work-of)
+    (lambda (m now)
+      (make-plan (work-of (shift-id m) (shift-pre m) (shift-parent m) now) written)))
 
   ;;; The routes
 
@@ -307,6 +447,9 @@
 
     ;; json-body : Middleware     the PUT's body, under request-cap
     (define json-body (wrap-json-body request-cap))
+
+    ;; move-json-body : Middleware     a move's body, under move-body-cap
+    (define move-json-body (wrap-json-body move-body-cap))
 
     ;; preconditions : Req -> (U Precondition 'missing 'invalid)
     (define (preconditions req)
@@ -327,32 +470,69 @@
               ((eq? c 'too-large) (problem-res 'payload_too_large))
               (else (make-upload id pre c)))))
 
-    ;; put-body : Req Bytevector Precondition -> (U Res Upload)
-    ;; The body under the cap, as login's handler reads it: wrap-json-body's
-    ;; plain 400 for JSON that does not parse, answered before its handler
-    ;; ran, is invalid_json here; past the cap it raises the 413.
-    (define (put-body req id pre)
+    ;; move-content : Req Bytevector Precondition -> (U Res Shift)
+    ;; The body wrap-json-body read: no JSON (an empty body) or what
+    ;; parse-move-body refuses is 400. Else the shift: the id, the
+    ;; precondition and the new parent.
+    (define (move-content r id pre)
+      (let ((p (if (req-json? r) (parse-move-body (req-json r)) 'invalid)))
+        (if (eq? p 'invalid) (bad-request) (make-shift id pre p))))
+
+    ;; read-body : Middleware (Req -> (U Res A)) Req -> (U Res A)
+    ;; The body under BODY's cap, as login's handler reads it, handed to
+    ;; CONTENT: wrap-json-body's plain 400 for JSON that does not parse,
+    ;; answered before its handler ran, is invalid_json here; past the cap
+    ;; it raises the 413.
+    (define (read-body body content req)
       (let* ((ran? #f)
-             (step ((json-body (lambda (r) (set! ran? #t) (put-content r id pre))) req)))
+             (step ((body (lambda (r) (set! ran? #t) (content r))) req)))
         (if ran? step (problem-res 'invalid_json))))
 
+    ;; with-body : Req (Precondition -> Boolean) (Req Bytevector Precondition -> (U Res A))
+    ;;             -> (-> (U Res Reader))
+    ;; The prepare of a write with a body: the path's id (400), then the
+    ;; preconditions (428 for none; 400 for a bad shape, or one ALLOWED?
+    ;; refuses); then its Reader, called once the key has passed: the media
+    ;; type (415), then READER-OF's read of the body.
+    (define (with-body req allowed? reader-of)
+      (lambda ()
+        (let ((id (path-id req)))
+          (if (eq? id 'invalid)
+              (bad-request)
+              (let ((pre (preconditions req)))
+                (cond ((eq? pre 'missing) (problem-res 'precondition_required))
+                      ((or (eq? pre 'invalid) (not (allowed? pre))) (bad-request))
+                      (else (lambda ()
+                              (if (json-type? req)
+                                  (reader-of req id pre)
+                                  (problem-res 'unsupported_media_type))))))))))
+
     ;; PUT /v1/nodes/:id
-    ;; prepare checks the id and the preconditions; its Reader, called once
-    ;; the key has passed, the media type and the body.
+    ;; prepare checks the id and the preconditions, a create's or a
+    ;; replace's; its Reader, called once the key has passed, the media
+    ;; type and the body.
     (define (put-node req)
       (db-write-with-body-as read write clock wall-clock req
-                             (lambda ()
-                               (let ((id (path-id req)))
-                                 (if (eq? id 'invalid)
-                                     (bad-request)
-                                     (let ((pre (preconditions req)))
-                                       (cond ((eq? pre 'missing) (problem-res 'precondition_required))
-                                             ((eq? pre 'invalid) (bad-request))
-                                             (else (lambda ()
-                                                     (if (json-type? req)
-                                                         (put-body req id pre)
-                                                         (problem-res 'unsupported_media_type)))))))))
+                             (with-body req
+                                        (lambda (pre) #t)
+                                        (lambda (r id pre)
+                                          (read-body json-body (lambda (r) (put-content r id pre)) r)))
                              put-plan))
+
+    ;; mover : (Bytevector Natural (U Bytevector #f) Natural -> Work) -> Handler
+    ;; POST /v1/nodes/:id/move, of move-work, and /move-children, of
+    ;; move-children-work: the PUT's checks and order, with If-Match alone
+    ;; (If-None-Match is the 400, as a state change's), and the body under
+    ;; move-body-cap, read by parse-move-body.
+    (define (mover work-of)
+      (lambda (req)
+        (db-write-with-body-as read write clock wall-clock req
+                               (with-body req
+                                          (lambda (pre) (not (eq? pre 'create)))
+                                          (lambda (r id pre)
+                                            (read-body move-json-body
+                                                       (lambda (r) (move-content r id pre)) r)))
+                               (shift-plan work-of))))
 
     ;; revision-plan : Req (Natural -> Work) -> (U Res Plan)
     ;; A write with no body: REQ's If-Match, one revision, handed to
@@ -401,17 +581,21 @@
                           (bad-request)
                           (make-plan (node-work id) (lambda (n) (node-answer 200 n))))))))
 
-    ;; GET /v1/nodes?limit=&after=&state=
-    ;; state is one of active, archived and trashed, active when not given.
+    ;; GET /v1/nodes?limit=&after=&state=&parent=
+    ;; state is one of active, archived and trashed, active when not given;
+    ;; parent is a node's id, or null for the top level, every node when not
+    ;; given.
     (define (list-nodes req)
       (db-read-as read clock req
                   (lambda ()
                     (let ((limit (parse-limit (query-one req "limit")))
                           (after (query-after req parse-node-id))
-                          (state (parse-state-param (query-one req "state"))))
-                      (if (or (eq? limit 'invalid) (eq? after 'invalid) (eq? state 'invalid))
+                          (state (parse-state-param (query-one req "state")))
+                          (parent (parse-parent-param (query-one req "parent"))))
+                      (if (or (eq? limit 'invalid) (eq? after 'invalid) (eq? state 'invalid)
+                              (eq? parent 'invalid))
                           (bad-request)
-                          (make-plan (nodes-work state after limit)
+                          (make-plan (nodes-work state parent after limit)
                                      (page-answer limit
                                                   (lambda (n) (node->json n #f))
                                                   (lambda (n) (node-id->string (node-id n))))))))))
@@ -447,6 +631,8 @@
           (route "/v1/nodes/:id/unarchive" (POST (lifecycle 'unarchive)))
           (route "/v1/nodes/:id/trash" (POST (lifecycle 'trash)))
           (route "/v1/nodes/:id/untrash" (POST (lifecycle 'untrash)))
+          (route "/v1/nodes/:id/move" (POST (mover move-work)))
+          (route "/v1/nodes/:id/move-children" (POST (mover move-children-work)))
           (route "/v1/nodes/:id/revisions" (GET list-revisions))
           (route "/v1/nodes/:id/revisions/:n" (GET get-revision))
           (route "/v1/nodes/:id/revisions/:n/restore" (POST restore-node))))

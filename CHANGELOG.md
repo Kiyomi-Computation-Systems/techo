@@ -68,6 +68,17 @@ Each release's changes. Dates are UTC.
 - The write-ahead log file shrinks back to 16 MiB after a large write. It can
   grow by the size of a deleted node's history meanwhile.
 - A deleted node's text is overwritten with zeros in the database file.
+- Folders: a Project holds any node and a Journal holds Notes. Give `parent`
+  when making a node, or move it with `POST /v1/nodes/{id}/move`.
+  `POST /v1/nodes/{id}/move-children` moves a folder's children to another,
+  1,000 a call.
+- Trashing or archiving a folder changes that node only, not what is in it.
+- `GET /v1/nodes?parent=` lists a folder, or the top level with `null`. Every
+  node shows its `parent`.
+- A node that holds others cannot be deleted (`409` `has_children`).
+- Three codes: `invalid_parent`, `would_loop` and `has_children`.
+- The fifth migration: a node's `parent`. Run `techo migrate` with the server
+  stopped.
 
 ### Changed
 
