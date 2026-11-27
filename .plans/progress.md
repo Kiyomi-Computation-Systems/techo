@@ -204,6 +204,33 @@ From [outline.md](outline.md) §14, each for the slice named:
 
 ## Close-outs
 
+### Slice 6: kinds and props; task transitions (PR #22, 2026-11-27)
+
+- **Built:** four pure libraries, `(techo when)`, `(techo contact)`,
+  `(techo tasks)` and `(techo props)`; `props-of` in the store; three routes,
+  `done`, `wontdo`, `reopen`; four codes. No migration. Four new suites: 40.
+  The model sends props from a corpus of 115 and runs about 37,000 requests
+  in 38 s.
+- **Answered:** fixed members per kind, add-only for good; a 4 KiB cap; a
+  When in three forms that the server never compares; a Task's status moved
+  only by a command, each a revision; a Contact as a strict subset of
+  JSContact; old Tasks read as `TODO` (P1 to P14).
+- **Moved on:** nothing. Kept ready: a rebuild of `nodes` with props last, if
+  the cap is ever raised past about 8 KiB (a page of 51 costs 6.7 ms at 4 KiB
+  and grows in line with it).
+- **What the reviews caught that the builders could not:**
+  - the plan's: props were judged inside the job, on the writer; "the store
+    needs nothing new" was false; a transition through `node-command` would
+    have raised; the canonical form was not pinned; `wrong_status` meant two
+    things;
+  - the build's: no bug, in 270 raced pairs and 121 mutants. Three rules too
+    loose, which P3 would have frozen: any character past ASCII in an email
+    address, U+2028 and U+2029 in every string, and a string of only spaces.
+    All three tightened on the owner's word. Ten false or thin sentences in
+    the guide.
+- **Learned:** with an add-only rule, the review that matters most is of what
+  is accepted, not of what is refused. A loose rule cannot be fixed later.
+
 ### Slice 5b: links (merged 2026-11-27, #20)
 
 - **Built:** migration 6 (`links`, `links_target`); a new pure `(techo links)`
