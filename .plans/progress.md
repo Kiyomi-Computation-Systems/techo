@@ -152,6 +152,17 @@ by a Journal (409 `invalid_parent`), a Project refused under its own child (409
 `DELETE` refused (409 `has_children`), its children moved out in one call
 (`{"moved":2,"left":0}`), and then deleted (204).
 
+**And for slice 6, 2026-11-27, on its branch before the merge:** `make test`
+passed 40 of 40 suites. Against a real server, twenty steps matched: a Note
+with `at`, a Task with a deadline (read as `TODO`), a Contact stored in
+Techo's own order; a false date, an unknown member, an email past ASCII and a
+blank label each refused (400); a Task marked done, refused a second `done`
+(409 `wrong_status`), moved to `WONTDO` with `closed` kept, refused a replace
+that changed its status (409 `status_fixed`), kept its props through a replace
+with none, reopened with `closed` gone; `done` refused on a Note (409
+`not_a_task`); and a restore that brought back the old deadline and left the
+Task `DONE`.
+
 ## Slices
 
 | # | Slice | State | Waits on |
@@ -228,6 +239,8 @@ From [outline.md](outline.md) §14, each for the slice named:
     address, U+2028 and U+2029 in every string, and a string of only spaces.
     All three tightened on the owner's word. Ten false or thin sentences in
     the guide.
+- **Run on the owner's Mac, by hand, before the merge:** see "Run on the owner's
+  Mac" above.
 - **Learned:** with an add-only rule, the review that matters most is of what
   is accepted, not of what is refused. A loose rule cannot be fixed later.
 
