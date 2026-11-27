@@ -359,6 +359,11 @@ it.
   links_target` on a read by source sorts in a temp b-tree.
 - **A timing can miss it:** on a dense node the wrong plan was fast. A fresh
   file of five nodes shows the wrong plan, so a test can hold it.
+- **A plan's words change with SQLite's version:** a delete by `links_target`
+  reads `USING INDEX` in 3.53 and `USING COVERING INDEX` in 3.37.2 and 3.45.1,
+  and the test that held the line whole failed on CI's 3.45.1 (slice 5b's
+  first CI run; seen again with a 3.45.1 built by `guix shell
+  --with-source=sqlite=<its tarball>`). The search and its terms were the same.
 - **Rule:** hold the plan's `SEARCH` line, whole, by a test, for every
   statement on a table with two indexes. `ANALYZE` mends some; nothing runs it.
 

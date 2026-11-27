@@ -1779,8 +1779,23 @@
         (list "SEARCH links USING PRIMARY KEY (owner=? AND source=?)"))
   (attempt
    (lambda ()
-     (let ((p (fresh "plan-purge-links.db")))
-       (list (plan-of p (statement-of 'purge-links-target) acct-a A1)
+     ;; An older SQLite calls a delete's index a COVERING INDEX (seen in
+     ;; 3.37.2 and in CI's 3.45.1, which failed this test as first written;
+     ;; 3.53 says INDEX): the search
+     ;; and its terms are the same, so the one word is dropped before the
+     ;; comparison.
+     (let ((p (fresh "plan-purge-links.db"))
+           (plain (lambda (plan)
+                    (map (lambda (line)
+                           (let ((old "SEARCH links USING COVERING INDEX ")
+                                 (new "SEARCH links USING INDEX "))
+                             (if (and (>= (string-length line) (string-length old))
+                                      (string=? (substring line 0 (string-length old)) old))
+                                 (string-append new (substring line (string-length old)
+                                                               (string-length line)))
+                                 line)))
+                         plan))))
+       (list (plain (plan-of p (statement-of 'purge-links-target) acct-a A1))
              (plan-of p (statement-of 'purge-links-source) acct-a A1))))))
 
 (test-equal "plan: link-of and delete-link by the whole key: one search of the primary key each"

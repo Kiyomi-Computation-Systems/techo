@@ -101,6 +101,14 @@ bound, 1024 bytes, is under its 64 KiB cap, so nothing changes.
 that admits it. That ends the server's submodule (ADR-0011, amended 2026-11-23).
 Nothing fails when it happens.
 
+**Run on the owner's Mac, by hand, 2026-11-27, before slice 5b's merge:**
+`make test` passed 36 of 36 suites, and twenty steps by hand against the
+server matched: a link made (201) and made again (200, the first time kept);
+a node's links and its backlinks, one a page with `next`; no revision changed
+by a link; a self link and an `If-Match` refused (400); no new link to a
+trashed node (409) while the old one is kept (200) and listed as trashed; a
+link removed (204, then 404); and a purge taking the node's links with it.
+
 **Still GNU-only, found by the macOS audit and left:** `make test` needs `timeout` or
 `gtimeout`; `make help`'s awk pattern `.*?` is untested on BSD awk; `check-pins` and
 `fetch` use `diff --no-dereference`. On macOS chez-sodium needs
@@ -209,6 +217,11 @@ From [outline.md](outline.md) §14, each for the slice named:
     (a 204's headers, the time read once), three false or thin sentences in
     the guide, and K7's price at size: seconds for every account, and a 504
     that lands.
+- **CI's first run failed one test:** a plan line that reads differently in
+  CI's SQLite 3.45.1 than in the container's 3.53.1. The test now drops the
+  one word that differs.
+- **Run on the owner's Mac, by hand, before the merge:** see "Run on the owner's
+  Mac" above.
 
 ### Slice 5a: the tree and move (merged 2026-11-26, #19)
 
