@@ -117,6 +117,14 @@ trashed, refused a replace (409 `wrong_state`) and a stale untrash (412),
 untrashed, refused a `DELETE` while active (409), trashed again, purged (204, no
 body, no `ETag`), and then a 404.
 
+**And for slice 5a, 2026-11-26, on its branch before the merge:** `make test`
+passed 35 of 35 suites. Against a real server: a Note made inside a Project,
+the top level and the folder listed, a Task moved in (200, revision 2), refused
+by a Journal (409 `invalid_parent`), a Project refused under its own child (409
+`would_loop`), the Project trashed with the Task inside still active, its
+`DELETE` refused (409 `has_children`), its children moved out in one call
+(`{"moved":2,"left":0}`), and then deleted (204).
+
 ## Slices
 
 | # | Slice | State | Waits on |
@@ -200,7 +208,8 @@ From [outline.md](outline.md) §14, each for the slice named:
   routes (Opus, 355k, 43 min); 4a, the model (Opus, 534k, 71 min); 4b,
   integration (Sonnet, 148k, 55 min); the build's review (Opus, 299k, 24 min);
   its fixes (Sonnet, 104k, 10 min).
-- **Not run:** macOS, by hand.
+- **Run on the owner's Mac, by hand, before the merge:** see "Run on the owner's
+  Mac" above.
 
 ### Slice 4b: the node lifecycle (merged 2026-11-26, #18)
 
