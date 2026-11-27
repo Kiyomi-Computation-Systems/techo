@@ -888,7 +888,9 @@
  '(nodes-page nodes-page-after nodes-page-top nodes-page-top-after nodes-page-of nodes-page-of-after
    snapshots-page snapshots-page-before node-head node-in-use snapshot-exists
    ancestors has-children count-children children-heads children-heads-kind
-   set-node-state move-node purge-snapshots purge-node))
+   set-node-state move-node purge-snapshots purge-node
+   link-of insert-link delete-link links-out links-out-typed links-in links-in-typed
+   purge-links-source purge-links-target))
 
 (test-equal "statements: node-in-use's plan is one search of a covering index: it reads the id alone (H19)"
   #t
@@ -936,10 +938,12 @@
 ;; The statements with no owner in their WHERE, each by name and with what
 ;; its text begins with: node-in-use, the one query without (ADR-0003,
 ;; amended); rows-changed, which reads no table; and the three INSERTs,
-;; which write the owner they are handed.
+;; which write the owner they are handed (insert-link too: an INSERT of VALUES
+;; has no WHERE to name the owner in).
 (define owner-exempt
   '((node-in-use . "SELECT id FROM nodes ") (rows-changed . "SELECT changes()")
-    (insert-node . "INSERT ") (insert-snapshot . "INSERT ") (insert-change . "INSERT ")))
+    (insert-node . "INSERT ") (insert-snapshot . "INSERT ") (insert-change . "INSERT ")
+    (insert-link . "INSERT ")))
 
 (test-equal "statements: each one not exempt by name names the owner in its WHERE, a snapshot's through its node (H19)"
   '()
@@ -1461,6 +1465,476 @@
          (list (w (lambda (tx)
                     (tx-execute! tx "INSERT INTO nodes(id, owner, author, kind, title, content_type, props, revision, created, updated) VALUES (?, ?, ?, 'note', 't', 'a/a', '{}', 0, 1, 1)" A1 acct-a acct-a)))
                (ok-of (r (lambda (tx) (count-of tx "nodes"))))))))))
+
+;;; Links (slice 5b)
+
+;; link-set-up! : Tx -> Void
+;; A's nodes 1 to 6 and B's 20 and 21, times 10. Then A's links, `created`
+;; 100 up, each at revision 1 as the job read it:
+;;   out of 1: blocks 2 (101), mentions 3 (102), mentions 5 (106), related 2
+;;             (103), related 4 (104), related 5 (105)
+;;   into 1:   related from 2 (110), blocks from 3 (111), related from 5
+;;             (112), mentions from 6 (113)
+;;   others:   2 -> 3 related (120); B's 20 -> 21 related (130)
+;; Then node 3 is trashed and node 4 archived.
+(define (link-set-up! tx)
+  (set-up! tx)
+  (for-each (lambda (n) (insert-node! tx (nid n) acct-a "note" (string-append "T" (number->string n))
+                                      (string-append "B" (number->string n)) "a/a" "{}" #f 10))
+            '(1 2 3 4 5 6))
+  (insert-node! tx (nid 20) acct-b "note" "T20" "B20" "a/a" "{}" #f 10)
+  (insert-node! tx (nid 21) acct-b "note" "T21" "B21" "a/a" "{}" #f 10)
+  (for-each (lambda (l) (insert-link! tx acct-a (nid (car l)) (cadr l) (nid (caddr l)) 1 (cadddr l)))
+            '((1 "blocks" 2 101) (1 "mentions" 3 102) (1 "related" 2 103) (1 "related" 4 104)
+              (1 "related" 5 105) (1 "mentions" 5 106)
+              (2 "related" 1 110) (3 "blocks" 1 111) (5 "related" 1 112) (6 "mentions" 1 113)
+              (2 "related" 3 120)))
+  (insert-link! tx acct-b (nid 20) "related" (nid 21) 1 130)
+  (set-node-state! tx (nid 3) acct-a 1 "trashed" "trash" 20)
+  (set-node-state! tx (nid 4) acct-a 1 "archived" "archive" 20))
+
+;; link-rows : Tx -> (Listof (List ...))     every row of links, in key order
+(define (link-rows tx)
+  (raw tx "SELECT owner, source, type, target, created FROM links ORDER BY owner, source, type, target"))
+
+;; item->list : (List String Natural Node) -> (List String Natural Natural String String)
+;; (type created first-byte-of-id state title)
+(define (item->list i)
+  (list (car i) (cadr i) (bytevector-u8-ref (node-id (caddr i)) 0)
+        (node-state (caddr i)) (node-title (caddr i))))
+
+;; page-all : (Proc Job -> A) Bytevector Bytevector (U 'out 'in) (U String #f)
+;;            Natural -> (Listof (List ...))
+;; Every page of the list at limit N, each from the cursor the last item
+;; makes, to the end, as item->list. At most 200 pages.
+(define (page-all r owner node dir type n)
+  (let loop ((cursor #f) (acc '()) (k 0))
+    (let ((page (ok-of (r (lambda (tx) (links-page tx owner node dir type cursor n))))))
+      (cond ((or (not (list? page)) (null? page) (> k 200)) (if (list? page) (reverse acc) page))
+            (else
+             (let ((last (car (reverse page))))
+               (loop (cons (car last) (node-id (caddr last)))
+                     (append (reverse (map item->list page)) acc)
+                     (+ k 1))))))))
+
+(define out-all
+  '(("blocks" 101 2 "active" "T2") ("mentions" 102 3 "trashed" "T3") ("mentions" 106 5 "active" "T5")
+    ("related" 103 2 "active" "T2") ("related" 104 4 "archived" "T4") ("related" 105 5 "active" "T5")))
+(define in-all
+  '(("blocks" 111 3 "trashed" "T3") ("mentions" 113 6 "active" "T6")
+    ("related" 110 2 "active" "T2") ("related" 112 5 "active" "T5")))
+
+(test-equal "link-of: the link's created; #f for another type, target, source, or owner; the key alone finds it"
+  (list 103 #f #f #f #f 130 #f)
+  (attempt
+   (lambda ()
+     (with-store "link-of.db"
+       (lambda (w r p)
+         (w link-set-up!)
+         (let ((of (lambda (o s t g) (ok-of (r (lambda (tx) (link-of tx o (nid s) t (nid g))))))))
+           (list (of acct-a 1 "related" 2) (of acct-a 1 "blocks" 3) (of acct-a 1 "related" 3)
+                 (of acct-a 2 "related" 2) (of acct-b 1 "related" 2)
+                 (of acct-b 20 "related" 21) (of acct-a 20 "related" 21))))))))
+
+(test-equal "insert-link!: one link row, created kept as given; one change row link on the SOURCE at the revision given (not the node's), the owner's next seq; no row of nodes or revisions changed"
+  (list #t 777 1 (list 1 "link" 5 777) 'unchanged #t)
+  (attempt
+   (lambda ()
+     (with-store "link-insert.db"
+       (lambda (w r p)
+         (w (lambda (tx) (set-up! tx)
+                         (insert-node! tx A1 acct-a "note" "T1" "B1" "a/a" "{}" #f 10)
+                         (insert-node! tx A2 acct-a "note" "T2" "B2" "a/a" "{}" #f 10)))
+         (let* ((before (ok-of (r (lambda (tx) (list (raw tx "SELECT * FROM nodes ORDER BY num")
+                                                      (raw tx "SELECT * FROM revisions ORDER BY node, revision"))))))
+                (cbefore (ok-of (r (lambda (tx) (length (changes-of tx acct-a))))))
+                (res (w (lambda (tx) (insert-link! tx acct-a A1 "related" A2 5 777))))
+                (changes (ok-of (r (lambda (tx) (changes-of tx acct-a)))))
+                (last (car (reverse changes))))
+           (list (eq? (car res) 'ok)
+                 (ok-of (r (lambda (tx) (link-of tx acct-a A1 "related" A2))))
+                 (ok-of (r (lambda (tx) (count-of tx "links"))))
+                 (list (- (length changes) cbefore) (cadddr last) (caddr last) (list-ref last 4))
+                 (if (equal? before (ok-of (r (lambda (tx) (list (raw tx "SELECT * FROM nodes ORDER BY num")
+                                                                   (raw tx "SELECT * FROM revisions ORDER BY node, revision"))))))
+                     'unchanged 'changed)
+                 (and (equal? (cadr last) A1) #t))))))))
+
+(test-equal "insert-link!: the change row's owner is the link's owner (B's link, B's seq 3: its two creates, then the link)"
+  '(3 "link" 1)
+  (attempt
+   (lambda ()
+     (with-store "link-insert-owner.db"
+       (lambda (w r p)
+         (w link-set-up!)
+         (let ((c (ok-of (r (lambda (tx) (changes-of tx acct-b))))))
+           (let ((l (car (reverse c)))) (list (car l) (cadddr l) (caddr l)))))))))
+
+(test-equal "insert-link!: the same link twice raises, in its own job: one link row, one link change row, nothing new in the second; the raise names no title or body"
+  (list 'raised 1 1 #f)
+  (attempt
+   (lambda ()
+     (with-store "link-twice.db"
+       (lambda (w r p)
+         (w (lambda (tx) (set-up! tx)
+                         (insert-node! tx A1 acct-a "note" "T1" "B1" "a/a" "{}" #f 10)
+                         (insert-node! tx A2 acct-a "note" "T2" "B2" "a/a" "{}" #f 10)
+                         (insert-link! tx acct-a A1 "related" A2 1 50)))
+         (let* ((second (w (lambda (tx) (insert-link! tx acct-a A1 "related" A2 1 60))))
+                (text (caddr (ok-of (w (lambda (tx) (caught (lambda () (insert-link! tx acct-a A1 "related" A2 1 60)))))))))
+           (list (car second)
+                 (ok-of (r (lambda (tx) (count-of tx "links"))))
+                 (ok-of (r (lambda (tx) (length (filter (lambda (c) (string=? (cadddr c) "link")) (changes-of tx acct-a))))))
+                 (or (contains? text "T1") (contains? text "B1") (contains? text "T2") (contains? text "B2")))))))))
+
+(test-equal "insert-link!: a second link of the same ends and another type is a second link; the same type from the other end too"
+  '(3 3)
+  (attempt
+   (lambda ()
+     (with-store "link-twins.db"
+       (lambda (w r p)
+         (w (lambda (tx) (set-up! tx)
+                         (insert-node! tx A1 acct-a "note" "T1" "B1" "a/a" "{}" #f 10)
+                         (insert-node! tx A2 acct-a "note" "T2" "B2" "a/a" "{}" #f 10)
+                         (insert-link! tx acct-a A1 "related" A2 1 50)
+                         (insert-link! tx acct-a A1 "blocks" A2 1 50)
+                         (insert-link! tx acct-a A2 "related" A1 1 50)))
+         (list (ok-of (r (lambda (tx) (count-of tx "links"))))
+               (ok-of (r (lambda (tx) (length (filter (lambda (c) (string=? (cadddr c) "link")) (changes-of tx acct-a))))))))))))
+
+(test-equal "delete-link!: removes that link only; a change row unlink on the source at the revision given; the others and their created kept; no node row changed"
+  (list 1 '(#f 101 104 111) 1 (list "unlink" 7 (nid 1) 400) #t)
+  (attempt
+   (lambda ()
+     (with-store "link-delete.db"
+       (lambda (w r p)
+         (w link-set-up!)
+         (let* ((nodes-before (ok-of (r (lambda (tx) (raw tx "SELECT * FROM nodes ORDER BY num")))))
+                (cb (ok-of (r (lambda (tx) (length (changes-of tx acct-a))))))
+                (links-before (ok-of (r (lambda (tx) (count-of tx "links")))))
+                (res (w (lambda (tx) (delete-link! tx acct-a (nid 1) "related" (nid 2) 7 400))))
+                (cs (ok-of (r (lambda (tx) (changes-of tx acct-a)))))
+                (l (car (reverse cs)))
+                (of (lambda (s t g) (ok-of (r (lambda (tx) (link-of tx acct-a (nid s) t (nid g))))))))
+           (list (- links-before (ok-of (r (lambda (tx) (count-of tx "links")))))
+                 (list (of 1 "related" 2) (of 1 "blocks" 2) (of 1 "related" 4) (of 3 "blocks" 1))
+                 (- (length cs) cb)
+                 (list (cadddr l) (caddr l) (cadr l) (list-ref l 4))
+                 (equal? nodes-before (ok-of (r (lambda (tx) (raw tx "SELECT * FROM nodes ORDER BY num"))))))))))))
+
+(test-equal "delete-link!: a link that is not there (another type, target, source, owner) raises with the two ids only, writes no change row and no link row"
+  (list (list (list 'raised (list (nid 1) (nid 2)) #t)) 4)
+  (attempt
+   (lambda ()
+     (with-store "link-delete-absent.db"
+       (lambda (w r p)
+         (w link-set-up!)
+         (let ((res (ok-of (w (lambda (tx)
+                                (let ((before (list (link-rows tx) (changes-of tx acct-a) (changes-of tx acct-b))))
+                                  (map (lambda (thunk)
+                                         (let ((c (caught thunk)))
+                                           (list (car c) (cadr c)
+                                                 (equal? before (list (link-rows tx) (changes-of tx acct-a) (changes-of tx acct-b))))))
+                                       (list (lambda () (delete-link! tx acct-a (nid 1) "mentions" (nid 2) 1 400))
+                                             (lambda () (delete-link! tx acct-a (nid 1) "related" (nid 3) 1 400))
+                                             (lambda () (delete-link! tx acct-a (nid 4) "related" (nid 2) 1 400))
+                                             (lambda () (delete-link! tx acct-b (nid 1) "related" (nid 2) 1 400))))))))))
+           (list (list (list (car (car res)) (list (nid 1) (nid 2)) (caddr (car res))))
+                 (length (filter (lambda (x) (and (eq? (car x) 'raised) (caddr x))) res)))))))))
+
+(test-equal "links-page: out and in, untyped and typed, every link once and in order (type, then the other end's id), at limits 1, 2, 3, 4 and 100"
+  (list out-all
+        '(("related" 103 2 "active" "T2") ("related" 104 4 "archived" "T4") ("related" 105 5 "active" "T5"))
+        '(("mentions" 102 3 "trashed" "T3") ("mentions" 106 5 "active" "T5"))
+        in-all
+        '(("related" 110 2 "active" "T2") ("related" 112 5 "active" "T5"))
+        '() '())
+  (attempt
+   (lambda ()
+     (with-store "links-pages.db"
+       (lambda (w r p)
+         (w link-set-up!)
+         (let ((each (lambda (owner node dir type)
+                       (let ((ans (map (lambda (n) (page-all r owner node dir type n)) '(1 2 3 4 100))))
+                         (if (for-all (lambda (a) (equal? a (car ans))) ans) (car ans) (list 'differ ans))))))
+           (list (each acct-a (nid 1) 'out #f)
+                 (each acct-a (nid 1) 'out "related")
+                 (each acct-a (nid 1) 'out "mentions")
+                 (each acct-a (nid 1) 'in #f)
+                 (each acct-a (nid 1) 'in "related")
+                 (each acct-a (nid 1) 'out "nonesuch")
+                 (each acct-a (nid 4) 'out #f))))))))
+
+(test-equal "links-page: the other end's state and title as they are now; a write to the node shows; a link is listed from a trashed node as well"
+  (list '("related" 103 2 "active" "T2 now") '("related" 104 4 "trashed" "T4")
+        '(("related" 110 1 "active" "T1") ("related" 120 3 "trashed" "T3"))
+        '(("mentions" 102 1 "active" "T1") ("related" 120 2 "active" "T2 now")))
+  (attempt
+   (lambda ()
+     (with-store "links-now.db"
+       (lambda (w r p)
+         (w link-set-up!)
+         (w (lambda (tx)
+              (write-node! tx (nid 2) acct-a 1 "T2 now" "B2 now" "a/a" "{}" "update" 200)
+              (set-node-state! tx (nid 4) acct-a 2 "trashed" "trash" 210)))
+         (let ((out (page-all r acct-a (nid 1) 'out "related" 100)))
+           (list (car out) (cadr out)
+                 (page-all r acct-a (nid 2) 'out #f 100)
+                 (page-all r acct-a (nid 3) 'in #f 100))))))))
+
+(test-equal "links-page: the page's Node is the small row, body #f, with every column of the node's own"
+  (list #f (list (nid 2) acct-a acct-a "note" "T2" "a/a" "{}" 1 10 10 "active" #f))
+  (attempt
+   (lambda ()
+     (with-store "links-node.db"
+       (lambda (w r p)
+         (w link-set-up!)
+         (let ((n (caddr (car (ok-of (r (lambda (tx) (links-page tx acct-a (nid 1) 'out "blocks" #f 5))))))))
+           (list (node-body n)
+                 (list (node-id n) (node-owner n) (node-author n) (node-kind n) (node-title n) (node-content-type n)
+                       (node-props n) (node-revision n) (node-created n) (node-updated n) (node-state n) (node-parent n)))))))))
+
+(test-equal "links-page: another account's links are never shown: B's link rows on A's node, and A's link rows to B's node, so A's two lists are as without them; B sees only its own"
+  (list out-all in-all '(("related" 130 21 "active" "T21")) '(("related" 130 20 "active" "T20")))
+  (attempt
+   (lambda ()
+     (with-store "links-owner.db"
+       (lambda (w r p)
+         (w link-set-up!)
+         ;; made by hand: B's link whose source is A's node 1 to B's 20; A's link from 1 to B's 20 and from B's 21 to 1
+         (w (lambda (tx)
+              (tx-execute! tx "INSERT INTO links(owner, source, type, target, created) VALUES (?, ?, 'blocks', ?, 140)" acct-b (nid 1) (nid 20))
+              (tx-execute! tx "INSERT INTO links(owner, source, type, target, created) VALUES (?, ?, 'blocks', ?, 141)" acct-a (nid 1) (nid 20))
+              (tx-execute! tx "INSERT INTO links(owner, source, type, target, created) VALUES (?, ?, 'blocks', ?, 142)" acct-a (nid 21) (nid 1))))
+         (list (page-all r acct-a (nid 1) 'out #f 100)
+               (page-all r acct-a (nid 1) 'in #f 100)
+               (page-all r acct-b (nid 20) 'out #f 100)
+               (page-all r acct-b (nid 21) 'in #f 100)))))))
+
+(test-equal "links-page: a link whose other end is purged is not listed, by each of the four statements (a link row made by hand: a purge deletes them)"
+  '((("related" 104 4 "archived" "T4") ("related" 105 5 "active" "T5"))
+    (("mentions" 102 3 "trashed" "T3") ("mentions" 106 5 "active" "T5")
+     ("related" 104 4 "archived" "T4") ("related" 105 5 "active" "T5"))
+    (("related" 112 5 "active" "T5"))
+    (("blocks" 111 3 "trashed" "T3") ("mentions" 113 6 "active" "T6") ("related" 112 5 "active" "T5")))
+  (attempt
+   (lambda ()
+     (with-store "links-purged-end.db"
+       (lambda (w r p)
+         (w link-set-up!)
+         (w (lambda (tx) (tx-execute! tx "UPDATE nodes SET state = 'purged' WHERE id = ?" (nid 2))))
+         (list (page-all r acct-a (nid 1) 'out "related" 100)
+               (page-all r acct-a (nid 1) 'out #f 100)
+               (page-all r acct-a (nid 1) 'in "related" 100)
+               (page-all r acct-a (nid 1) 'in #f 100)))))))
+
+(test-equal "links-page: a purge of a node's other end takes its links, so the page then lacks them, through purge-node!"
+  (list '(("related" 104 4 "archived" "T4") ("related" 105 5 "active" "T5")) '(("related" 112 5 "active" "T5")))
+  (attempt
+   (lambda ()
+     (with-store "links-purged-real.db"
+       (lambda (w r p)
+         (w link-set-up!)
+         (w (lambda (tx) (set-node-state! tx (nid 2) acct-a 1 "trashed" "trash" 20)
+                         (purge-node! tx (nid 2) acct-a 2 30)))
+         (list (page-all r acct-a (nid 1) 'out "related" 100)
+               (page-all r acct-a (nid 1) 'in "related" 100)
+               ))))))
+
+(test-equal "links-page: a direction that is neither out nor in raises"
+  'raised
+  (attempt
+   (lambda ()
+     (with-store "links-dir.db"
+       (lambda (w r p)
+         (w link-set-up!)
+         (car (r (lambda (tx) (links-page tx acct-a (nid 1) 'sideways #f #f 5)))))))))
+
+;;; The plans of the four page statements, held whole
+
+;; link-plan : Symbol -> (Listof String)
+;; The plan of a page statement on a fresh file with no sqlite_stat1.
+(define (link-plan name)
+  (let ((p (fresh (string-append "plan-" (symbol->string name) ".db")))
+        (zero (bv 16 0)))
+    (case name
+      ((links-out links-in) (plan-of p (statement-of name) acct-a A1 "" zero 5))
+      (else (plan-of p (statement-of name) acct-a A1 "related" zero 5)))))
+
+(for-each
+ (lambda (c)
+   (test-equal (string-append "plan: " (symbol->string (car c)) " is exactly its two lines, its first as the plan decided; no temp b-tree")
+     (list (list (cadr c) "SEARCH n USING INDEX nodes_owner (owner=? AND id=?)") #f)
+     (attempt
+      (lambda ()
+        (let ((plan (link-plan (car c))))
+          (list plan (exists (lambda (d) (contains? d "TEMP B-TREE")) plan)))))))
+ '((links-out "SEARCH l USING PRIMARY KEY (owner=? AND source=? AND (type,target)>(?,?))")
+   (links-out-typed "SEARCH l USING PRIMARY KEY (owner=? AND source=? AND type=? AND target>?)")
+   (links-in "SEARCH l USING INDEX links_target (owner=? AND target=? AND (type,source)>(?,?))")
+   (links-in-typed "SEARCH l USING INDEX links_target (owner=? AND target=? AND type=? AND source>?)")))
+
+(test-equal "plan: the purge's delete by target searches links_target by owner and target; the delete by source, the primary key by owner and source"
+  (list (list "SEARCH links USING INDEX links_target (owner=? AND target=?)")
+        (list "SEARCH links USING PRIMARY KEY (owner=? AND source=?)"))
+  (attempt
+   (lambda ()
+     ;; An older SQLite calls a delete's index a COVERING INDEX (seen in
+     ;; 3.37.2 and in CI's 3.45.1, which failed this test as first written;
+     ;; 3.53 says INDEX): the search
+     ;; and its terms are the same, so the one word is dropped before the
+     ;; comparison.
+     (let ((p (fresh "plan-purge-links.db"))
+           (plain (lambda (plan)
+                    (map (lambda (line)
+                           (let ((old "SEARCH links USING COVERING INDEX ")
+                                 (new "SEARCH links USING INDEX "))
+                             (if (and (>= (string-length line) (string-length old))
+                                      (string=? (substring line 0 (string-length old)) old))
+                                 (string-append new (substring line (string-length old)
+                                                               (string-length line)))
+                                 line)))
+                         plan))))
+       (list (plain (plan-of p (statement-of 'purge-links-target) acct-a A1))
+             (plan-of p (statement-of 'purge-links-source) acct-a A1))))))
+
+(test-equal "plan: link-of and delete-link by the whole key: one search of the primary key each"
+  (list (list "SEARCH links USING PRIMARY KEY (owner=? AND source=? AND type=? AND target=?)")
+        (list "SEARCH links USING PRIMARY KEY (owner=? AND source=? AND type=? AND target=?)"))
+  (attempt
+   (lambda ()
+     (let ((p (fresh "plan-link-key.db")))
+       (list (plan-of p (statement-of 'link-of) acct-a A1 "related" A2)
+             (plan-of p (statement-of 'delete-link) acct-a A1 "related" A2))))))
+
+(test-equal "statements: the page statements' texts: an in statement names links_target and an out one never; a typed one has no row value; each is ordered, joins the node's owner and leaves a purged node out"
+  '(#t #t #t #t)
+  (attempt
+   (lambda ()
+     (map (lambda (name)
+            (let ((s (statement-of name)))
+              (and s
+                   (contains? s "ORDER BY")
+                   (contains? s "n.owner = l.owner")
+                   (contains? s "n.state <> 'purged'")
+                   (contains? s " FROM links l ")
+                   (contains? s " CROSS JOIN nodes n ")
+                   (eq? (and (contains? s "INDEXED BY links_target") #t) (and (memq name '(links-in links-in-typed)) #t))
+                   (or (memq name '(links-out links-in)) (not (contains? s "(l.type")))
+                   (not (contains? s "body")))))
+          '(links-out links-out-typed links-in links-in-typed)))))
+
+(test-equal "statements: the purge's delete by target names links_target; the one by source does not"
+  '(#t #f)
+  (attempt
+   (lambda ()
+     (list (contains? (statement-of 'purge-links-target) "INDEXED BY links_target")
+           (contains? (statement-of 'purge-links-source) "INDEXED BY")))))
+
+(test-equal "statements: insert-link is a plain INSERT and delete-link a plain DELETE: no OR, no ON CONFLICT; and the link statements are all listed"
+  (list #f #f #t '(link-of insert-link delete-link links-out links-out-typed links-in links-in-typed
+                   purge-links-source purge-links-target))
+  (attempt
+   (lambda ()
+     (let ((s (statement-of 'insert-link)))
+       (list (or (contains? s "OR IGNORE") (contains? s "OR REPLACE") (contains? s "OR "))
+             (contains? s "ON CONFLICT")
+             (starts? (statement-of 'delete-link) "DELETE FROM links WHERE owner = ?")
+             (filter (lambda (n) (contains? (statement-of n) "links"))
+                     (map car node-store-statements)))))))
+
+;;; purge-node! and a node's links
+
+;; nodes-and-changes : Tx -> (List ...)
+;; The rows of nodes and changes. Not revisions: a purge deletes the snapshots
+;; first, and in its job they stay deleted until the job rolls back.
+(define (nodes-and-changes tx)
+  (list (raw tx "SELECT * FROM nodes ORDER BY num")
+        (raw tx "SELECT owner, seq, node, revision, op, created FROM changes ORDER BY owner, seq")))
+
+;; purge-fixture : Tx -> Void     link-set-up!, then node 1 is trashed (revision 2)
+(define (purge-links-set-up! tx)
+  (link-set-up! tx)
+  (set-node-state! tx (nid 1) acct-a 1 "trashed" "trash" 30))
+
+(test-equal "purge-node!: a node linked both ways loses every link of it and no other link; one purge change row however many; no other node's row changed"
+  (list (list 12 2) '(0 0) '(((2 3 "related") . 1)) 1 "purge" #t)
+  (attempt
+   (lambda ()
+     (with-store "purge-links.db"
+       (lambda (w r p)
+         ;; node 1 has 6 links out and 4 in; the others are A's 2 -> 3 and B's 20 -> 21
+         (w purge-links-set-up!)
+         (let* ((others-before (ok-of (r (lambda (tx) (raw tx "SELECT * FROM nodes WHERE id <> ? ORDER BY num" (nid 1))))))
+                (n-before (ok-of (r (lambda (tx) (count-of tx "links")))))
+                (cb (ok-of (r (lambda (tx) (length (changes-of tx acct-a))))))
+                (res (w (lambda (tx) (purge-node! tx (nid 1) acct-a 2 40))))
+                (cs (ok-of (r (lambda (tx) (changes-of tx acct-a)))))
+                (l (car (reverse cs)))
+                (left (ok-of (r (lambda (tx) (raw tx "SELECT source, target, type FROM links WHERE owner = ?" acct-a))))))
+           (list (list n-before (ok-of (r (lambda (tx) (count-of tx "links")))))
+                 (ok-of (r (lambda (tx) (list (length (raw tx "SELECT 1 FROM links WHERE source = ?" (nid 1)))
+                                               (length (raw tx "SELECT 1 FROM links WHERE target = ?" (nid 1)))))))
+                 (list (cons (list (bytevector-u8-ref (car (car left)) 0) (bytevector-u8-ref (cadr (car left)) 0) (caddr (car left)))
+                             (length left)))
+                 (- (length cs) cb)
+                 (cadddr l)
+                 (equal? others-before
+                         (ok-of (r (lambda (tx) (raw tx "SELECT * FROM nodes WHERE id <> ? ORDER BY num" (nid 1)))))))))))))
+
+(test-equal "purge-node!: a stale revision on a node with exactly one OUTGOING link raises as before; within the job the node is not purged and the link is still there (the deletes come after the check)"
+  (list (list 'raised (list (nid 1) 1)) #t #t #t)
+  (attempt
+   (lambda ()
+     (with-store "purge-stale-out.db"
+       (lambda (w r p)
+         (w (lambda (tx) (set-up! tx)
+                         (insert-node! tx (nid 1) acct-a "note" "T1" "B1" "a/a" "{}" #f 10)
+                         (insert-node! tx (nid 2) acct-a "note" "T2" "B2" "a/a" "{}" #f 10)
+                         (insert-link! tx acct-a (nid 1) "related" (nid 2) 1 50)
+                         (set-node-state! tx (nid 1) acct-a 1 "trashed" "trash" 60)))
+         (ok-of (w (lambda (tx)
+                     (let* ((before (list (link-rows tx) (nodes-and-changes tx)))
+                            (c (caught (lambda () (purge-node! tx (nid 1) acct-a 1 70)))))
+                       (list (raised-with c)
+                             (equal? (link-rows tx) (car before))
+                             (equal? (nodes-and-changes tx) (cadr before))
+                             (equal? (raw tx "SELECT state, revision FROM nodes WHERE id = ?" (nid 1)) '(("trashed" 2)))))))))))))
+
+(test-equal "purge-node!: a stale revision on a node with exactly one INCOMING link raises as before and leaves the link (a delete placed before the check would let the check read the delete's count)"
+  (list (list 'raised (list (nid 2) 1)) #t #t #t)
+  (attempt
+   (lambda ()
+     (with-store "purge-stale-in.db"
+       (lambda (w r p)
+         (w (lambda (tx) (set-up! tx)
+                         (insert-node! tx (nid 1) acct-a "note" "T1" "B1" "a/a" "{}" #f 10)
+                         (insert-node! tx (nid 2) acct-a "note" "T2" "B2" "a/a" "{}" #f 10)
+                         (insert-link! tx acct-a (nid 1) "related" (nid 2) 1 50)
+                         (set-node-state! tx (nid 2) acct-a 1 "trashed" "trash" 60)))
+         (ok-of (w (lambda (tx)
+                     (let* ((before (list (link-rows tx) (nodes-and-changes tx)))
+                            (c (caught (lambda () (purge-node! tx (nid 2) acct-a 1 70)))))
+                       (list (raised-with c)
+                             (equal? (link-rows tx) (car before))
+                             (equal? (nodes-and-changes tx) (cadr before))
+                             (equal? (raw tx "SELECT state, revision FROM nodes WHERE id = ?" (nid 2)) '(("trashed" 2)))))))))))))
+
+(test-equal "purge-node!: a node that is not trashed, and another owner's node, with links: each raises and keeps every link, within the job"
+  (list 12 (list 'raised (list (nid 2) 1)) #t (list 'raised (list (nid 1) 2)) #t)
+  (attempt
+   (lambda ()
+     (with-store "purge-refused-links.db"
+       (lambda (w r p)
+         (w purge-links-set-up!)
+         (cons (ok-of (r (lambda (tx) (count-of tx "links"))))
+          (ok-of (w (lambda (tx)
+                     (let* ((b1 (link-rows tx))
+                            (c1 (caught (lambda () (purge-node! tx (nid 2) acct-a 1 70))))
+                            (k1 (equal? b1 (link-rows tx)))
+                            (c2 (caught (lambda () (purge-node! tx (nid 1) acct-b 2 70))))
+                            (k2 (equal? b1 (link-rows tx))))
+                       (list (raised-with c1) k1 (raised-with c2) k2)))))))))))
 
 (test-end "node-store")
 

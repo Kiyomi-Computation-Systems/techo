@@ -402,13 +402,88 @@ curl -X POST -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json'
 
 There is no way yet to delete a folder and everything in it in one request.
 
+### Links
+
+A link says one node points at another. A node can have any number, to nodes in
+any folder. **Techo never reads a body, so it finds no links itself:** you make
+each one.
+
+| Type | Means |
+|---|---|
+| `mentions` | this node names that one |
+| `related` | the two belong together. It still has a direction: to see all of a node's, list both `out` and `in`, or make it both ways |
+| `blocks` | this one must be done before that one |
+
+Techo treats the three alike. The type only lets you ask for one sort.
+
+**Make a link** from the first node to the second:
+
+```sh
+curl -X PUT -H "Authorization: Bearer $KEY" \
+  http://127.0.0.1:8080/v1/nodes/0193a5c0-9000-7000-8000-000000000001/links/mentions/0193a5c0-9000-7000-8000-000000000002
+```
+
+```json
+{"source":"0193a5c0-9000-7000-8000-000000000001","type":"mentions",
+ "target":"0193a5c0-9000-7000-8000-000000000002","created":1795515226123}
+```
+
+- No body and no `If-Match`. Sending `If-Match` is a `400`: it would guard
+  nothing.
+- `201` when the link is made. `200` when it was already there, with the time
+  it was first made. **So sending it twice is safe.**
+- A link has a direction. From B to A is another link, and so is the same pair
+  with another type.
+- A node cannot link to itself: `400`.
+- **Neither node's revision changes,** and neither `ETag`. A link is no part of
+  a node's history: restoring an old revision brings back no old links.
+
+**Remove it** with `DELETE` on the same path. It answers `204`. A `404` means
+there is no such link, **so after an answer that never arrived, a `404` on the
+second try means it is done.**
+
+**List a node's links:** `GET /v1/nodes/{id}/links`.
+
+```json
+{"items":[{"type":"mentions","created":1795515226123,
+           "node":{"id":"0193a5c0-9000-7000-8000-000000000002","kind":"contact","state":"active",
+                   "parent":null,"title":"Ada","content_type":"text/org","props":{},
+                   "revision":4,"created":1795515200000,"updated":1795515220000}}],
+ "next":null}
+```
+
+- `direction=out` (the default) lists what the node points at. `direction=in`
+  lists what points at it: its backlinks.
+- `type=mentions` shows one type. Without it you get all three.
+- `node` is the node at the other end, without its body.
+- The order is by type (`blocks`, `mentions`, `related`), then by the other
+  node's id.
+- It is [paged](#paging). `next` looks like
+  `mentions:0193a5c0-9000-7000-8000-000000000002`; pass it back as `after`. With
+  `type=`, the `after` must be of that type.
+- There is no route that reads one link. To look without making it, list the
+  node's links with its `type`.
+
+**Links and the trash:**
+
+- **No new link is made to or from a node in the trash:** `409` `wrong_state`.
+  The answer does not say which end it was.
+- A `PUT` of a link that is already there still answers `200`, trash or not:
+  nothing is made.
+- Links made before stay, and can be removed. The list shows them with the
+  other node's `state`: hide the trashed ones if you want to.
+- A node inside a trashed folder is not itself in the trash (see above), so it
+  can be linked.
+- **Deleting a node deletes every link to and from it.** The nodes at the
+  other ends do not change, and get no new revision.
+
 ### What can go wrong with a node
 
 | Status | `code` | When |
 |---|---|---|
 | 400 | `invalid_json` | The body is there and is not JSON. |
 | 400 | `invalid_request` | Anything else wrong with the request. The list is below. |
-| 404 | `not_found` | No such node or revision. **Another account's node looks the same,** and so does a deleted one. |
+| 404 | `not_found` | No such node, revision or link. **Another account's node looks the same,** and so does a deleted one. |
 | 409 | `kind_fixed` | A replace named another kind. |
 | 409 | `wrong_state` | The node's state does not allow this. See [putting a node away](#putting-a-node-away). |
 | 409 | `invalid_parent` | The parent cannot hold this node. See [folders](#folders). |
@@ -421,9 +496,11 @@ There is no way yet to delete a folder and everything in it in one request.
 
 A `400` `invalid_request` is one of:
 
-- a bad id, revision, `limit`, `after`, `state` or `parent`;
+- a bad id, revision, `limit`, `after`, `state`, `parent`, `direction` or link
+  type, or a link from a node to itself;
 - a bad `If-Match` or `If-None-Match`: both at once, `If-None-Match` that is not
-  `*`, or `If-None-Match` on a restore, a change of state, a move or a `DELETE`;
+  `*`, `If-None-Match` on a restore, a change of state, a move or a `DELETE`,
+  or either on a link's `PUT` or `DELETE`;
 - no body, or a body that is not one JSON object;
 - a field missing, unknown, given twice or of the wrong type;
 - a `kind` that is not one of the five, or `props` that is not `{}`;
@@ -467,14 +544,15 @@ other key. To replace a key's secret, use that key.
 
 ## Paging
 
-`GET /v1/keys`, `GET /v1/nodes` and a node's revisions take:
+`GET /v1/keys`, `GET /v1/nodes`, a node's revisions and a node's links take:
 
 - `limit`: how many, 1 or more. Default `50`. Over `100` counts as `100`. Anything
   else is a `400`.
 - `after`: an id. The page starts after it. Use the last answer's `next`.
 
 `next` is the id to pass as `after`, or `null` on the last page. For a node's
-revisions both are revision numbers, and the page starts below `after`.
+revisions both are revision numbers, and the page starts below `after`. For a
+node's links both are a type and an id, as `mentions:<id>`.
 
 ## Times
 

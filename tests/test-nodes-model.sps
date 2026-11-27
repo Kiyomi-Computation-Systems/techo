@@ -1,23 +1,27 @@
 #!r6rs
 ;;; The nodes model suite: ADR-0007's third layer for D5's versioned write
-;;; (slice 4, task 5a), the node lifecycle (slice 4b, task 4a) and the tree
-;;; (slice 5a, task 4a). Seeded random sequences of requests by two
-;;; accounts run against the real handlers (make-app inside wrap-server,
-;;; raw HTTP through a test host) and real SQLite (the test doorway on a
-;;; migrated file), with a wall clock the sequence steps. After every request the answer is compared with the
+;;; (slice 4, task 5a), the node lifecycle (slice 4b, task 4a), the tree
+;;; (slice 5a, task 4a) and links (slice 5b, task 4a). Seeded random
+;;; sequences of requests by two accounts run against the real handlers
+;;; (make-app inside wrap-server, raw HTTP through a test host) and real
+;;; SQLite (the test doorway on a migrated file), with a wall clock the
+;;; sequence steps. After every request the answer is compared with the
 ;;; model's, which is the plan's rules written again in (nodes-model), never
-;;; the tables of (techo nodes); the answers are held to laws that need no
-;;; model; the three tables and every key's last_used are read whole and
-;;; held to laws that need no model (H1 to H6, H11, H2', H3', H15', H16,
-;;; G3, G6, G9, G11, G12, G16; P1 to P4, P8, P11, P12, P15, P16) and to the
-;;; model's world.
+;;; the tables of (techo nodes) nor (techo links)' link-command; the answers
+;;; are held to laws that need no model; the four tables and every key's
+;;; last_used are read whole and held to laws that need no model (H1 to H6,
+;;; H11, H2', H3', H15'', H16, G3', G6', G7', G9, G11, G12, G16; P1 to P4,
+;;; P8, P11, P12, P15, P16; H1', H4'', H14', Q1, Q2, Q8, Q9) and to the
+;;; model's world, its links among it.
 ;;;
 ;;;   1. the oracle on hand-made worlds, pure: the lifecycle's, then a tree
-;;;      on it, then a chain to the depth's boundary
-;;;   2. the run: SEQUENCES seeds of 60 to 87 requests, every one to agree;
-;;;      a family seed (ending in 3 or 7) first makes a mixed tree; a deep
-;;;      seed (a multiple of fifteen) first makes a chain of 65 Projects
-;;;      and runs a script at the depth's boundary, then 10 to 20
+;;;      on it, then a chain to the depth's boundary, then links on it
+;;;   2. the run: SEQUENCES seeds of 82 to 119 requests, every one to agree;
+;;;      a family seed (ending in 3 or 7) first makes a mixed tree; a linked
+;;;      seed (ending in 1 or 9) first makes a hub of links both ways and
+;;;      steps it through the states; a deep seed (a multiple of fifteen)
+;;;      first makes a chain of 65 Projects and runs a script at the
+;;;      depth's boundary, then 14 to 27
 ;;;   3. coverage, printed and held to floors: D5's cells; the lifecycle's
 ;;;      24 (three states by five events, a write and the two moves);
 ;;;      node-command's reachable cells, and no other; requests at purged
@@ -25,9 +29,14 @@
 ;;;      the aims; the tree's: each verdict by each route that can get it,
 ;;;      each kind pairing, the depth's boundary from both sides, loops by
 ;;;      where they close, each bulk move's outcome, has_children by the
-;;;      children's states, and ?parent= by case and by ?state=
+;;;      children's states, and ?parent= by case and by ?state=; the
+;;;      links': link-command's 32 reachable cells, and no other; each
+;;;      outcome by its cause (201, 200 kept, 204, each 404, each 409 by
+;;;      which end, each 400); purges that took links out, in and both
+;;;      ways; lists both ways, typed and not, pages followed
 ;;;   4. teeth: the oracle given a twisted rule disagrees with the handlers;
-;;;      each tree twist on the first seeds whose run reached what it bends
+;;;      each tree and link twist on the first seeds whose run reached
+;;;      what it bends
 ;;;
 ;;; No sequence reaches a bulk move's cap of 1,000 children: the route
 ;;; suite holds it (tests/test-node-routes.sps, "bulk: of 1,005 children").
@@ -600,6 +609,168 @@
            (expectation-status (expect purge-ignores-children tree (life-at tat 'a a1 15 2 'purge)))
            (expectation-status (expect depth-cap-65 chain (make-in cat 'a a1 200 "note" (ref 164))))))))
 
+;;; Links, on the hand world (slice 5b)
+
+(define (lspec type target) (make-link-spec type target #f #f #f))
+(define (put-link at tag n type m)
+  (make-link-event 'link at tag (key-of tag) (nid n) '() #f #f '() (lspec type (if (bytevector? m) m (nid m)))))
+(define (del-link at tag n type m)
+  (make-link-event 'unlink at tag (key-of tag) (nid n) '() #f #f '() (lspec type (if (bytevector? m) m (nid m)))))
+(define (links-at at tag n dir type limit after)
+  (make-link-event 'list-links at tag (key-of tag) (nid n) '() limit #f '() (make-link-spec type #f #f dir after)))
+
+;; answer3 : World Event -> (List Status Code JSON-or-'empty-or-#f)
+(define (answer3 w e)
+  (attempt (lambda () (let ((x (expect as-planned w e)))
+                        (list (expectation-status x) (expectation-code x) (expectation-json x))))))
+
+(define (link-rows w)
+  (map (lambda (l) (list (mlink-tag l) (mlink-source l) (mlink-type l) (mlink-target l) (mlink-created l)))
+       (world-links w)))
+
+(define (last-change w tag)
+  (let ((c (car (reverse (world-changes-of w tag)))))
+    (list (mchange-seq c) (mchange-node c) (mchange-revision c) (mchange-op c) (mchange-created c))))
+
+(define lat (+ t0 60))
+
+;; made : the hand world with a's link from 1 (active at 2) to 3 (archived at 2), related, at lat
+(define made (attempt (lambda () (expectation-world (expect as-planned hand (put-link lat 'a 1 "related" 3))))))
+
+(test-equal "oracle: a link between two live nodes of the account's, neither trashed, is 201 with the link, no ETag, no Location; it is in the world, with a change row link on the source at its revision, and node 1 is as it was (H1')"
+  (list (list 201 #f #f #f)
+        (list (cons "created" lat) (cons "source" (id-of 1)) (cons "target" (id-of 3)) (cons "type" "related"))
+        (list (list 'a (nid 1) "related" (nid 3) lat))
+        (list 10 (nid 1) 2 "link" lat)
+        (list 2 (+ t0 2)))
+  (attempt
+   (lambda ()
+     (let ((x (expect as-planned hand (put-link lat 'a 1 "related" 3))))
+       (list (list (expectation-status x) (expectation-code x) (expectation-etag x) (expectation-location x))
+             (expectation-json x)
+             (link-rows (expectation-world x))
+             (last-change (expectation-world x) 'a)
+             (let ((n (node-in (expectation-world x) 1))) (list (mnode-revision n) (mnode-updated n))))))))
+
+(test-equal "oracle: a PUT of a link that is there is 200 with the first PUT's created, and writes no change row (Q3, Q15)"
+  (list 200 lat 10)
+  (attempt
+   (lambda ()
+     (let ((x (expect as-planned made (put-link (+ lat 5) 'a 1 "related" 3))))
+       (list (expectation-status x) (member-of (expectation-json x) "created")
+             (length (world-changes-of (expectation-world x) 'a)))))))
+
+(test-equal "oracle: a PUT to or from a trashed node is 409 wrong_state; one of a missing, purged or other account's end is 404 at either end, before the 409; a node to itself, a type of another case, a precondition and a v4 target are 400 (K2, K6, K8)"
+  '((409 "wrong_state") (409 "wrong_state") (404 "not_found") (404 "not_found") (404 "not_found")
+    (404 "not_found") (404 "not_found") (404 "not_found") (404 "not_found")
+    (400 "invalid_request") (400 "invalid_request") (400 "invalid_request") (400 "invalid_request"))
+  (map (lambda (e) (attempt (lambda () (let ((x (expect as-planned hand e))) (list (expectation-status x) (expectation-code x))))))
+       (list (put-link lat 'a 1 "related" 4) (put-link lat 'a 4 "related" 1)
+             (put-link lat 'a 1 "related" 2) (put-link lat 'a 1 "related" 5) (put-link lat 'a 1 "related" 99)
+             (put-link lat 'a 5 "related" 1) (put-link lat 'b 2 "related" 1) (put-link lat 'a 4 "related" 99)
+             (put-link lat 'b 1 "related" 3)
+             (put-link lat 'a 1 "related" 1) (put-link lat 'a 1 "Related" 3)
+             (make-link-event 'link lat 'a a1 (nid 1) (list (cons "If-Match" "\"2\"")) #f #f '() (lspec "related" (nid 3)))
+             (make-link-event 'link lat 'a a1 (nid 1) '() #f #f '() (lspec "related" "0198a1b2-c3d4-4e5f-8a6b-7c8d9e0f1a2b")))))
+
+;; made-then-trashed : made, with 3 trashed (at its revision 2)
+(define made-then-trashed (attempt (lambda () (walk-world made (list (life-at (+ lat 1) 'a a1 3 2 'trash))))))
+
+(test-equal "oracle: a link there after an end is trashed: its PUT again is 200, kept, not 409; of another type 409; its DELETE 204 whatever the states"
+  '((200 #f) (409 "wrong_state") (204 #f))
+  (map (lambda (e) (attempt (lambda () (let ((x (expect as-planned made-then-trashed e)))
+                                         (list (expectation-status x) (expectation-code x))))))
+       (list (put-link (+ lat 2) 'a 1 "related" 3) (put-link (+ lat 2) 'a 1 "mentions" 3)
+             (del-link (+ lat 2) 'a 1 "related" 3))))
+
+(test-equal "oracle: a DELETE of a link that is there is 204 and removes it, with a change row unlink on the source at its revision; not there, from another account, of another type or to a target that is no node: 404 (K8)"
+  (list (list 204 #f 'empty) '() (list 11 (nid 1) 2 "unlink" (+ lat 3))
+        '((404 "not_found" #f) (404 "not_found" #f) (404 "not_found" #f) (404 "not_found" #f)))
+  (attempt
+   (lambda ()
+     (let ((x (expect as-planned made (del-link (+ lat 3) 'a 1 "related" 3))))
+       (list (list (expectation-status x) (expectation-code x) (expectation-json x))
+             (link-rows (expectation-world x))
+             (last-change (expectation-world x) 'a)
+             (map (lambda (e) (answer3 made e))
+                  (list (del-link (+ lat 3) 'a 3 "related" 1) (del-link (+ lat 3) 'b 1 "related" 3)
+                        (del-link (+ lat 3) 'a 1 "mentions" 3) (del-link (+ lat 3) 'a 1 "related" 99))))))))
+
+;; linked : hand, with a's 6 (a Note), and 1 mentions 6, 1 related to 3, 1 blocks 6, 6 related to 1, 3 blocks 1
+(define linked
+  (attempt
+   (lambda ()
+     (walk-world hand
+                 (list (create-at (+ lat 10) 'a a1 6 "note" "six")
+                       (put-link (+ lat 11) 'a 1 "mentions" 6) (put-link (+ lat 12) 'a 1 "related" 3)
+                       (put-link (+ lat 13) 'a 1 "blocks" 6) (put-link (+ lat 14) 'a 6 "related" 1)
+                       (put-link (+ lat 15) 'a 3 "blocks" 1))))))
+
+;; listed : World Event -> (U (Listof (List Type Created Id)) (List Status Code))
+(define (listed w e)
+  (attempt (lambda ()
+             (let ((x (expect as-planned w e)))
+               (if (= (expectation-status x) 200)
+                   (map (lambda (i) (list (member-of i "type") (member-of i "created") (member-of (member-of i "node") "id")))
+                        (expectation-items x))
+                   (list (expectation-status x) (expectation-code x)))))))
+
+(define la (+ lat 20))
+
+(test-equal "oracle: a link list is out by default, by type then the other node's id; in; of one type; after a place; an after of another type, a direction or a type of another spelling 400; a purged node's, another account's 404; a trashed node's with none, empty (K3, Q10, Q21)"
+  (list (list (list "blocks" (+ lat 13) (id-of 6)) (list "mentions" (+ lat 11) (id-of 6)) (list "related" (+ lat 12) (id-of 3)))
+        (list (list "blocks" (+ lat 15) (id-of 3)) (list "related" (+ lat 14) (id-of 6)))
+        (list (list "mentions" (+ lat 11) (id-of 6)))
+        (list (list "mentions" (+ lat 11) (id-of 6)) (list "related" (+ lat 12) (id-of 3)))
+        '(400 "invalid_request") '(400 "invalid_request") '(400 "invalid_request")
+        '(404 "not_found") '(404 "not_found") '())
+  (map (lambda (e) (listed linked e))
+       (list (links-at la 'a 1 #f #f #f #f) (links-at la 'a 1 "in" #f #f #f) (links-at la 'a 1 "out" "mentions" #f #f)
+             (links-at la 'a 1 #f #f #f (cons "blocks" (nid 6)))
+             (links-at la 'a 1 #f "related" #f (cons "blocks" (nid 6)))
+             (links-at la 'a 1 "OUT" #f #f #f) (links-at la 'a 1 #f "Related" #f #f)
+             (links-at la 'a 5 #f #f #f #f) (links-at la 'b 1 #f #f #f #f) (links-at la 'a 4 "in" #f #f #f))))
+
+(test-equal "oracle: a link list's node is the other end as the nodes list shows it, without its body (Q14)"
+  #t
+  (attempt
+   (lambda ()
+     (let* ((item (car (expectation-items (expect as-planned linked (links-at la 'a 1 "in" "related" #f #f)))))
+            (node (member-of item "node"))
+            (listed (find (lambda (i) (equal? (member-of i "id") (id-of 6)))
+                          (expectation-items (expect as-planned linked (list-at la 'a #f))))))
+       (and (equal? (member-of node "id") (id-of 6)) (equal? node listed) (eq? (member-of node "body") 'absent))))))
+
+(test-equal "oracle: a purge of 6 takes its three links, both ways, and leaves 1's to and from 3; a trash of 1 leaves every link (K7, Q8, Q9)"
+  (list (list (list 'a (nid 1) "related" (nid 3) (+ lat 12)) (list 'a (nid 3) "blocks" (nid 1) (+ lat 15)))
+        5)
+  (attempt
+   (lambda ()
+     (list (link-rows (walk-world linked (list (life-at la 'a a1 6 1 'trash) (life-at (+ la 1) 'a a1 6 2 'purge))))
+           (length (world-links (walk-world linked (list (life-at la 'a a1 1 2 'trash)))))))))
+
+;; Twisted rules of links, for the oracle and for the teeth below. A
+;; link's twist sees its LinkCell: the source's state, the target's, the
+;; event, whether the link is there.
+
+;; link-to-trashed : a link from an active source to a trashed target is made.
+(define (link-to-trashed cell decision s)
+  (if (equal? cell '(active trashed link #f)) '(link) decision))
+
+;; kept-refused-when-trashed : a PUT of a link that is there, an end trashed, is 409.
+(define (kept-refused-when-trashed cell decision s)
+  (if (and (pair? cell) (= (length cell) 4) (eq? (caddr cell) 'link) (cadddr cell)
+           (or (eq? (car cell) 'trashed) (eq? (cadr cell) 'trashed)))
+      '(refuse 409 "wrong_state")
+      decision))
+
+(test-equal "oracle: each link twist changes the answer it bends: 1 to trashed 4 made, 201; 1's link to 3, there, 3 trashed, refused 409"
+  '(201 409)
+  (attempt
+   (lambda ()
+     (list (expectation-status (expect link-to-trashed hand (put-link lat 'a 1 "related" 4)))
+           (expectation-status (expect kept-refused-when-trashed made-then-trashed (put-link (+ lat 2) 'a 1 "related" 3)))))))
+
 ;;; The store every sequence runs on, emptied by each
 
 (define dir (attempt (lambda () (fresh-dir "test-nodes-model"))))
@@ -848,6 +1019,76 @@
         (cons list-parent-aims 7) (cons list-state-aims 1) (cons other-tree-aims 14)))
 (define tree-aims-all (apply append (map car tree-floors)))
 
+;;; The links' coverage (slice 5b)
+
+(define link-states '(active archived trashed))
+
+;; link-cells : link-command's cells a request reaches, by the model's
+;; reading (link-aims' lc-): a PUT from no source, to a target of each
+;; state or none (no link can be there); from each state to none; between
+;; two of the account's live nodes, the link there or not; a DELETE from
+;; no source, and from each state, there or not (its target not read).
+(define link-cells
+  (append (map (lambda (t) (aim-of "lc-link-none-" t "-absent")) (cons 'none link-states))
+          (map (lambda (s) (aim-of "lc-link-" s "-none-absent")) link-states)
+          (apply append
+                 (map (lambda (s)
+                        (apply append (map (lambda (t) (map (lambda (th) (aim-of "lc-link-" s "-" t "-" th)) '(there absent)))
+                                           link-states)))
+                      link-states))
+          (list 'lc-unlink-none-any-absent)
+          (apply append (map (lambda (s) (map (lambda (th) (aim-of "lc-unlink-" s "-any-" th)) '(there absent)))
+                             link-states))))
+
+(define (lc-aim? a) (let ((s (symbol->string a))) (and (> (string-length s) 3) (string=? (substring s 0 3) "lc-"))))
+
+;; Each outcome the brief names, by its cause: 201, 200 kept (with a
+;; trashed end too), 204 (whatever the states), each 404 by its cause and
+;; the 404 before the 409, each 409 by which end, each 400.
+(define link-outcome-aims
+  '(link-made link-kept link-kept-source-trashed link-kept-target-trashed
+    unlink-removed unlink-removed-source-trashed unlink-removed-source-archived unlink-removed-target-trashed))
+(define link-404-aims
+  '(link-404-source-missing link-404-source-purged link-404-source-other
+    link-404-target-missing link-404-target-purged link-404-target-other
+    link-404-target-missing-source-trashed link-404-target-purged-source-trashed link-404-target-other-source-trashed
+    unlink-404-source-missing unlink-404-source-purged unlink-404-source-other
+    unlink-404-absent unlink-404-absent-target-missing unlink-404-absent-target-purged unlink-404-absent-target-other))
+(define link-409-aims '(link-409-source-trashed link-409-target-trashed link-409-both-trashed))
+(define link-400-aims
+  '(link-400-type link-400-target link-400-self link-400-precondition
+    unlink-400-type unlink-400-target unlink-400-self unlink-400-precondition
+    list-links-400-direction list-links-400-type list-links-400-after-other-type))
+;; A purge that took links out only, in only, and both ways (K7, Q8, Q17)
+(define purge-link-aims '(purge-links-out purge-links-in purge-links-both))
+;; Lists both ways, typed and not, pages followed, Q21's limits, the 404s,
+;; an after's place, an ignored If-Match, trashed and archived nodes and
+;; other ends, an empty page, the other account's linked node
+(define list-link-aims
+  '(list-links-out-typed list-links-out-untyped list-links-in-typed list-links-in-untyped
+    list-links-out-pages-followed list-links-in-pages-followed list-links-limit-1-followed list-links-limit-100
+    list-links-404-missing list-links-404-purged list-links-404-other
+    list-links-after-place list-links-precondition-ignored list-links-of-trashed list-links-of-archived
+    list-links-item-trashed list-links-item-archived list-links-empty list-links-of-other-linked))
+;; last_used with links (H4'', D6); the other account's link asked by this
+;; one (G7'); every write that leaves links as they are, of a linked node (Q9)
+(define link-other-aims
+  '(link-refused-while-due link-last-used-set link-link-pair-other-link unlink-link-pair-other-link
+    linked-trash linked-archive linked-unarchive linked-untrash linked-replace linked-restore linked-move
+    linked-move-children))
+
+;; link-floors : (Listof (Pair (Listof Symbol) Natural))
+;; Each group's floor is about half the fewest seen over seeds 1 to 300 and
+;; five other runs of 300 (FIRST 1001 to 5001): a cell 15 (an unlink of an
+;; archived source's link), an outcome 15 (the same), a 404 15 (a purged
+;; target from a trashed source), a 409 92, a 400 28, a purge's links 12
+;; (out only), a list's 41 (an archived other end), the rest 11 (an
+;; unarchive of a linked node).
+(define link-floors
+  (list (cons link-cells 7) (cons link-outcome-aims 7) (cons link-404-aims 7) (cons link-409-aims 45)
+        (cons link-400-aims 14) (cons purge-link-aims 6) (cons list-link-aims 20) (cons link-other-aims 5)))
+(define link-aims-all (apply append (map car link-floors)))
+
 (define (at-least floor n) (if (>= n floor) (list 'at-least floor) (list 'only n)))
 
 (define (cell-name c) (format "~a x ~a x ~a" (car c) (or (cadr c) "-") (caddr c)))
@@ -863,10 +1104,11 @@
 
   (test-equal "the run: at least 20,000 requests" '(at-least 20000) (at-least 20000 steps))
 
-  (test-equal "the run: one seed in fifteen is deep, one in five a family"
-    (list (/ sequences 15) (/ sequences 5))
+  (test-equal "the run: one seed in fifteen is deep, one in five a family, one in five linked"
+    (list (/ sequences 15) (/ sequences 5) (/ sequences 5))
     (list (length (filter (lambda (v) (eq? (verdict-style v) 'deep)) agreed))
-          (length (filter (lambda (v) (eq? (verdict-style v) 'family)) agreed))))
+          (length (filter (lambda (v) (eq? (verdict-style v) 'family)) agreed))
+          (length (filter (lambda (v) (eq? (verdict-style v) 'linked)) agreed))))
 
   ;;; 3. Coverage
 
@@ -946,12 +1188,17 @@
           (list 'at-least (cdr group))
           (at-least (cdr group) (hashtable-ref aims-hit aim 0))))
       (car group)))
-   tree-floors)
+   (append tree-floors link-floors))
 
-  (display (format "nodes-model: seeds ~a to ~a: ~a sequences (~a deep, ~a families), ~a requests made, ~a HTTP requests sent, the shortest ~a, in ~a ms\n"
+  (test-equal "coverage: the model steps no cell of link-command's but the reachable ones"
+    '()
+    (filter (lambda (a) (and (lc-aim? a) (not (memq a link-cells)))) (vector->list (hashtable-keys aims-hit))))
+
+  (display (format "nodes-model: seeds ~a to ~a: ~a sequences (~a deep, ~a families, ~a linked), ~a requests made, ~a HTTP requests sent, the shortest ~a, in ~a ms\n"
                    first-seed (+ first-seed sequences -1) (length agreed)
                    (length (filter (lambda (v) (eq? (verdict-style v) 'deep)) agreed))
                    (length (filter (lambda (v) (eq? (verdict-style v) 'family)) agreed))
+                   (length (filter (lambda (v) (eq? (verdict-style v) 'linked)) agreed))
                    steps requests shortest run-ms))
   (display "  the cells of D5 stepped:\n")
   (for-each (lambda (row)
@@ -980,11 +1227,16 @@
               (display (format "   at least ~a:\n" (cdr group)))
               (for-each (lambda (aim) (display (format "    ~a: ~a\n" aim (hashtable-ref aims-hit aim 0)))) (car group)))
             tree-floors)
+  (display "  the links' (slice 5b):\n")
+  (for-each (lambda (group)
+              (display (format "   at least ~a:\n" (cdr group)))
+              (for-each (lambda (aim) (display (format "    ~a: ~a\n" aim (hashtable-ref aims-hit aim 0)))) (car group)))
+            link-floors)
   (display "  and with no floor:\n")
   (for-each (lambda (aim) (display (format "    ~a: ~a\n" aim (hashtable-ref aims-hit aim 0))))
             (list-sort (lambda (x y) (string<? (symbol->string x) (symbol->string y)))
                        (filter (lambda (aim) (not (or (memq aim aims) (memq aim some-aims) (memq aim rare-aims)
-                                                      (memq aim tree-aims-all))))
+                                                      (memq aim tree-aims-all) (memq aim link-aims-all))))
                                (vector->list (hashtable-keys aims-hit))))))
 
 ;;; 4. Teeth: the oracle with a twisted rule, the handlers as they are
@@ -1061,7 +1313,17 @@
 
   (test-equal "teeth: a rule that lets a parent have 64 ancestors disagrees with the handlers' 409"
     #t
-    (bites? depth-cap-65 '(depth-64-create depth-64-move depth-64-move-children) '("the handlers answered 409"))))
+    (bites? depth-cap-65 '(depth-64-create depth-64-move depth-64-move-children) '("the handlers answered 409")))
+
+  (test-equal "teeth: a rule that links to a trashed target disagrees with the handlers' 409"
+    #t
+    (bites? link-to-trashed '(lc-link-active-trashed-absent)
+            '("link-command's active x trashed x link x absent" "status: the model has 201, the handlers answered 409")))
+
+  (test-equal "teeth: a rule that refuses a kept link with a trashed end disagrees with the handlers' 200"
+    #t
+    (bites? kept-refused-when-trashed '(link-kept-source-trashed link-kept-target-trashed)
+            '("x link x there" "status: the model has 409, the handlers answered 200"))))
 
 (unless (raised? store) (close-test-store! store))
 

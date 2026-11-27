@@ -297,6 +297,11 @@ Three files live side by side: the database, `-wal` and `-shm`.
   200 MiB of history needs 200 MiB more while it is deleted.
 - **A large delete holds every other write** while it runs: about half a second
   for 200 MiB on a quiet disk, three times that on a busy one. Reads carry on.
+- **Deleting a node with very many links is the same kind of write,** and
+  nothing caps how many a node has. Measured: 0.2 s for 110,000 links, 2.6 s
+  and 360 MB of `-wal` for 1 million, 6 s and 500 MB for 3 million. Every
+  account's writes wait meanwhile. Past 10 seconds the answer is a `504`, and
+  the delete still finishes.
 - A deleted node's text is overwritten in the database file at once. It can
   stay in the `-wal` until the next write, and it stays in any backup you took.
 

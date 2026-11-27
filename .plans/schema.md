@@ -17,12 +17,12 @@ whole milliseconds since 1970, UTC; JSON as text with a `json_valid` check; a
 | 3 | nodes, revisions and changes | Creates `nodes`, `revisions`, `changes` and the index `nodes_owner`. |
 | 4 | a node's state | Adds `nodes.state`. Every node there is becomes `active`. |
 | 5 | a node's parent | Adds `nodes.parent` and the index `nodes_parent`. Every node there is has none. |
+| 6 | links | Creates `links` and the index `links_target`. |
 
 ## The tables to come
 
 | Table | Slice | State |
 |---|---|---|
-| `links` | 5 | sketched |
 | `tags`, or a column | 7 | open |
 | `nodes_fts` | 7 | sketched, from the spike |
 | attachments | not in v1 | shape fixed (ADR-0010) |
@@ -158,10 +158,12 @@ CREATE TABLE changes (
   the write's own transaction.
 - **Decided:** `op` has no `CHECK`: SQLite cannot change one. Today's values are
   `create`, `update`, `restore`, `archive`, `unarchive`, `trash`, `untrash`,
-  `purge` and `move`; the code's list is the truth. A `purge` row is the node's tombstone,
+  `purge`, `move`, `link` and `unlink`; the code's list is the truth. A `link` or
+  `unlink` row is on the link's source, at the source's present revision: two rows
+  of a node can carry one revision. A `purge` row is the node's tombstone,
   and its last row.
 
-### links (slice 5b; ADR-0003)
+### links (migration 6, slice 5b; ADR-0003)
 
 ```sql
 CREATE TABLE links (
@@ -175,8 +177,14 @@ CREATE TABLE links (
 CREATE INDEX links_target ON links(owner, target, type, source);
 ```
 
-- **Open:** the link types, and whether they are fixed. Whether a link change bumps
-  either node's revision.
+- **Decided:** three types, `related`, `mentions`, `blocks`. `type` has no `CHECK`:
+  the code's list is the truth.
+- **Decided:** a link bumps neither node's revision (ADR-0004, amended).
+- **Decided:** both ends are live nodes of the owner, and only the code keeps it so.
+  The foreign keys take a purged row, a self link and another account's owner.
+  A purge deletes the node's links, both ways.
+- **Decided:** a read or delete by target names `links_target`; one by source never
+  does (traps.md).
 
 ### tags (slice 7)
 

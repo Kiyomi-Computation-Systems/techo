@@ -58,7 +58,7 @@ close-out under **Close-outs**, newest first.
   ([the plan](2026-11-25-slice-4b-node-lifecycle.md); ADR-0002, ADR-0004,
   ADR-0007 and ADR-0008, amended 2026-11-25 and 26). A person can now put a note
   away, and delete it for good.
-- **Slice 5a is built**, on `slice-5a-tree`, not merged: migration 5, folders,
+- **Slice 5a is merged** (#19, `93bb42a`): migration 5, folders,
   a move and a bulk move of children, the list by parent
   ([the plan](2026-11-26-slice-5a-tree.md); ADR-0002, ADR-0003, ADR-0004 and
   ADR-0007, amended 2026-11-26). A person can now keep notes in Projects and
@@ -70,9 +70,18 @@ close-out under **Close-outs**, newest first.
 
 ## Next
 
-**Slice 5b: links.** Not planned yet. Its plan decides the link types, whether
-a link bumps either node's revision, what a trash or a purge does to a node's
-links, and whether links block a purge as children do.
+**Slice 6: kinds and props; task transitions.** Not planned yet.
+
+**Slice 5b is built,** on `slice-5b-links`, not merged: migration 6, three
+link routes ([the plan](2026-11-26-slice-5b-links.md); ADR-0002, ADR-0003,
+ADR-0004 and ADR-0007, amended 2026-11-26). A person can now link one note to
+another and read a note's backlinks.
+
+**Kept ready, from slice 5b (2026-11-27):**
+
+- **A cap on a node's links,** or a purge in steps. Nothing caps them (K7): a
+  purge of 3 million holds every account's writes 6 s, and past 10 s answers
+  504 though it lands.
 
 **Kept ready, from slice 5a (owner, 2026-11-26):**
 
@@ -91,6 +100,14 @@ bound, 1024 bytes, is under its 64 KiB cap, so nothing changes.
 **Watch for:** the Akku index gaining chez-http-server 0.12.0 and a chez-websocket
 that admits it. That ends the server's submodule (ADR-0011, amended 2026-11-23).
 Nothing fails when it happens.
+
+**Run on the owner's Mac, by hand, 2026-11-27, before slice 5b's merge:**
+`make test` passed 36 of 36 suites, and twenty steps by hand against the
+server matched: a link made (201) and made again (200, the first time kept);
+a node's links and its backlinks, one a page with `next`; no revision changed
+by a link; a self link and an `If-Match` refused (400); no new link to a
+trashed node (409) while the old one is kept (200) and listed as trashed; a
+link removed (204, then 404); and a purge taking the node's links with it.
 
 **Still GNU-only, found by the macOS audit and left:** `make test` needs `timeout` or
 `gtimeout`; `make help`'s awk pattern `.*?` is untested on BSD awk; `check-pins` and
@@ -136,8 +153,8 @@ by a Journal (409 `invalid_parent`), a Project refused under its own child (409
 | 3b | `techo user add`, login, the rate limit, the hashing worker | merged (PR #12) | |
 | 4 | Node create, read, update; revisions; `If-Match` | merged, #15 | |
 | 4b | The node lifecycle: archive, trash, purge | merged, #18 | |
-| 5a | The tree and move | built, on `slice-5a-tree` | |
-| 5b | Links | not planned | |
+| 5a | The tree and move | merged, #19 | |
+| 5b | Links | built, on `slice-5b-links` | |
 | 6 | Kinds and props; task transitions | not planned | |
 | 7 | Tags and search | not planned | |
 | 8 | The change feed | not planned | |
@@ -162,7 +179,7 @@ From [outline.md](outline.md) §14, each for the slice named:
 
 | Question | Slice |
 |---|---|
-| The link types; whether links block a purge | 5b |
+| What the feed says of a link: a `link` row names no target, two rows of a node can carry one revision, and a purge's row means every link of the node is gone | 8 |
 | Whether a move into a Journal checks a Note's timestamp, and what of Notes moved in before | 6 |
 | A kind that holds some kinds but not all, in the bulk move's filter | 6 |
 | Whether a search shows what is inside a trashed folder | 7 |
@@ -177,7 +194,36 @@ From [outline.md](outline.md) §14, each for the slice named:
 
 ## Close-outs
 
-### Slice 5a: the tree and move (built 2026-11-26)
+### Slice 5b: links (built 2026-11-27)
+
+- **Built:** migration 6 (`links`, `links_target`); a new pure `(techo links)`
+  with `link-command`; two events more in the lifecycle's table; nine
+  statements and four procedures in the store, and the purge's two deletes;
+  three routes. One new suite: 36. The model runs about 34,800 requests in
+  33 s (it was 24,400 in 22 s).
+- **Answered:** three fixed types; directed, one per source, type and target;
+  no bump, no `If-Match`, a change row on the source; no new link at a trashed
+  end, a kept one still 200; a purge takes the node's links and is not blocked
+  by them (K1 to K8).
+- **Moved on:** what the feed says of a link, to slice 8. A cap on a node's
+  links, kept ready.
+- **What the reviews caught that the builders could not:**
+  - the plan's: my store split was an import cycle; a change row with no bump
+    broke seven of the model's laws; `INSERT OR IGNORE` read a null as "already
+    there"; a typed page with the cursor's row value left its index (39 ms a
+    page); the two events would have made `node-command` raise; a page figure
+    of mine was of 6 rows, not 51;
+  - the build's: no bug, in 100 rounds of races and 42 mutants. Two test gaps
+    (a 204's headers, the time read once), three false or thin sentences in
+    the guide, and K7's price at size: seconds for every account, and a 504
+    that lands.
+- **CI's first run failed one test:** a plan line that reads differently in
+  CI's SQLite 3.45.1 than in the container's 3.53.1. The test now drops the
+  one word that differs.
+- **Run on the owner's Mac, by hand, before the merge:** see "Run on the owner's
+  Mac" above.
+
+### Slice 5a: the tree and move (merged 2026-11-26, #19)
 
 - **Built:** migration 5 (`nodes.parent`, `nodes_parent`); `may-hold?`,
   `parent-verdict` and two more events in `(techo nodes)`; `ancestors`,

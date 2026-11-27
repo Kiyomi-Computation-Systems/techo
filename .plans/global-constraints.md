@@ -45,7 +45,8 @@ disagree, the record wins and this file gets fixed.
 - **Every write to a node carries `If-Match`,** or `If-None-Match: *` to make it.
   Stale answers 412, neither 428 (ADR-0004, amended 2026-11-25). The one
   exception: a bulk move's children, moved on the node's `If-Match` (ADR-0004,
-  amended 2026-11-26).
+  amended 2026-11-26). A link is no write to a node and takes no precondition
+  (ADR-0004, amended 2026-11-26, links).
 - **`If-Match` is one revision in quotes.** `*`, a list and a weak tag are refused
   (ADR-0004, amended).
 - **A node's id is a UUID of version 7** (ADR-0004, amended).
@@ -61,6 +62,17 @@ disagree, the record wins and this file gets fixed.
 - **Every change to a node bumps its revision,** and a change of content appends
   a snapshot, in one transaction. A change of state appends none (ADR-0004,
   amended 2026-11-25).
+- **A link made or removed changes no node's row.** It writes one change row
+  on its source, at the source's present revision (ADR-0004, amended
+  2026-11-26, links).
+- **Both ends of a link are live nodes of its owner,** and only the code keeps
+  it so. A purge removes the node's links, both ways (ADR-0003, amended
+  2026-11-26, links).
+- **A link's answer is `link-command`'s.** The job reads whether the link is
+  there first; no `INSERT OR IGNORE` (ADR-0007, amended 2026-11-26; traps.md).
+- **A statement that reads or deletes links by target names `links_target`;**
+  one by source never does; a typed page compares the id alone. A test holds
+  each plan (traps.md).
 - **History is append-only,** but for a purge, which removes a node's. A restore
   is a new revision (ADR-0004, amended).
 - **A node's content is its newest snapshot's** (ADR-0004, amended).

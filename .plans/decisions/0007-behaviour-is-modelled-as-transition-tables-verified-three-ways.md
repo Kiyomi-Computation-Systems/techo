@@ -67,3 +67,18 @@ Plan: [slice 5a](../2026-11-26-slice-5a-tree.md)
 - **The one function takes two facts more:** the verdict on the new parent, and
   whether the node has children. The order is: stale, the state, the parent,
   the children.
+
+## Amendment, 2026-11-26: links in the lifecycle
+
+Status: accepted (owner, 2026-11-26, as slice 5b's K6)
+Plan: [slice 5b](../2026-11-26-slice-5b-links.md)
+
+- **The lifecycle's table gains `link`,** refused for a trashed node, and
+  `unlink`, allowed in every state. They are not among the events
+  `node-command` answers.
+- **A second pure function, `link-command`, answers a link's request:** from
+  the two ends' states, the event, and whether the link is there. It asks the
+  lifecycle's table of each end. Both 404s come before any 409, and a link
+  that is there is kept before a state is asked.
+- **The handler performs the command it names,** and reads whether the link is
+  there before it writes: the write's own count decides no answer.
