@@ -11,7 +11,8 @@ disagree, the record wins and this file gets fixed.
   (ADR-0001, amended 2026-11-24).
 - **Chez Scheme 10.4.1 or later, threaded** (ADR-0001).
 - **The stack is fixed:** circuit, chez-sqlite3, chez-curl, threading, SRFI-64,
-  chez-sodium, unique-id. A new dependency needs a decision record (ADR-0001).
+  chez-sodium, unique-id; and from the index, jsonparse and chez-uri (ADR-0001,
+  amended 2026-11-27). A new dependency needs a decision record (ADR-0001).
 - **Akku 1.2.0** manages what the Akku index holds (ADR-0001).
 - **The owner's libraries outside the index are git submodules under `vendor/`,** each
   pinned at a commit. Techo's `Akku.manifest` names the index dependencies each one
@@ -41,6 +42,9 @@ disagree, the record wins and this file gets fixed.
 - **Every list is paged, with a server-side cap:** `limit` (50, at most 100) and
   `after` (ADR-0002, amended; ADR-0008).
 - **A time in the API is whole milliseconds since 1970, UTC** (ADR-0002, amended).
+  The one exception is a When in props: a date, a local time or a moment, as a
+  string, never converted or compared by the server (ADR-0002, amended
+  2026-11-27).
 - **Routes live under `/v1`,** but `/health` (ADR-0002, amended).
 - **Every write to a node carries `If-Match`,** or `If-None-Match: *` to make it.
   Stale answers 412, neither 428 (ADR-0004, amended 2026-11-25). The one
@@ -109,8 +113,20 @@ disagree, the record wins and this file gets fixed.
   2026-11-25).
 - **A node's integer key never leaves the database** (ADR-0004, amended).
 - **A large column is its table's last** (ADR-0004, amended; traps.md).
-- **No raise in a node's job carries a title or a body:** a job's raise is logged
-  whole (ADR-0013).
+- **No raise in a node's job carries a title, a body or props:** a job's raise is
+  logged whole (ADR-0013).
+- **Props are judged before the job,** on the loop's thread, in time linear in
+  the request. A job compares a Task's `status` and `closed` and nothing more
+  (slice 6's plan review).
+- **Props only grow:** a member is added, optional, with a default, last in its
+  object; no rule on a value is tightened (ADR-0003, amended 2026-11-27).
+- **Stored props are canonical:** one text for one value, at most 4,096 bytes
+  (ADR-0003, amended 2026-11-27).
+- **A Task's status changes only by a command,** and `closed` is there exactly
+  when it is not `TODO` (ADR-0004 and ADR-0007, amended 2026-11-27).
+- **A replace with no `props` keeps them** (ADR-0004, amended 2026-11-27).
+- **A Task's command answers no body, and reads one only once it is
+  accepted** (slice 6's plan review).
 - **The five kinds are fixed,** and props are validated per kind before any write
   (ADR-0003).
 

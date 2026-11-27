@@ -784,6 +784,42 @@
                                             (snapshots-page tx acct-a (nid 4) #f 10)))))
                (ok-of (r (lambda (tx) (list (node-head tx acct-a (nid 1)) (and (node-of-owner tx acct-a (nid 1)) #t)))))))))))
 
+;;; A node's props (slice 6): props-of, the one statement a replace, a
+;;; restore and a transition of a Task need, since node-head reads none
+
+(test-equal "props-of: the stored text as written, for each kind; after a write the new text; an archived and a trashed node's too"
+  (list "{\"status\":\"DONE\",\"closed\":5}" "{\"at\":\"2026-12-01\"}" "{}"
+        "{\"deadline\":\"2026-12-24\"}" "{\"emails\":{\"e1\":{\"address\":\"a@b\"}}}" "{}")
+  (attempt
+   (lambda ()
+     (with-store "props-of.db"
+       (lambda (w r p)
+         (w (lambda (tx)
+              (set-up! tx)
+              (insert-node! tx A1 acct-a "task" "t" "b" "a/a" "{\"status\":\"DONE\",\"closed\":5}" #f 10)
+              (insert-node! tx A2 acct-a "note" "t" "b" "a/a" "{\"at\":\"2026-12-01\"}" #f 10)
+              (insert-node! tx A3 acct-a "project" "t" "b" "a/a" "{}" #f 10)
+              (insert-node! tx (nid 5) acct-a "task" "t" "b" "a/a" "{}" #f 10)
+              (write-node! tx (nid 5) acct-a 1 "t" "b" "a/a" "{\"deadline\":\"2026-12-24\"}" "update" 20)
+              (set-node-state! tx (nid 5) acct-a 2 "archived" "archive" 30)
+              (insert-node! tx (nid 6) acct-a "contact" "t" "b" "a/a" "{\"emails\":{\"e1\":{\"address\":\"a@b\"}}}" #f 10)
+              (set-node-state! tx (nid 6) acct-a 1 "trashed" "trash" 30)
+              (insert-node! tx (nid 7) acct-a "journal" "t" "b" "a/a" "{}" #f 10)))
+         (ok-of (r (lambda (tx) (map (lambda (n) (props-of tx acct-a (nid n))) '(1 2 3 5 6 7))))))))))
+
+(test-equal "props-of: owner-scoped: B's node, A's purged node and an id no one holds are each #f; B reads B's own"
+  '(#f #f #f #f "{\"at\":\"2026-12-02\"}")
+  (attempt
+   (lambda ()
+     (with-store "props-of-owner.db"
+       (lambda (w r p)
+         (w (lambda (tx)
+              (lc-set-up! tx)
+              (write-node! tx (nid 7) acct-b 1 "T7" "B7" "a/a" "{\"at\":\"2026-12-02\"}" "update" 40)))
+         (ok-of (r (lambda (tx) (list (props-of tx acct-a (nid 7)) (props-of tx acct-a (nid 4))
+                                      (props-of tx acct-b (nid 4)) (props-of tx acct-a (nid 99))
+                                      (props-of tx acct-b (nid 7)))))))))))
+
 ;;; The statements (H12, H19)
 ;;;
 ;;; node-store-statements is every statement (techo node-store) runs, by
@@ -890,7 +926,21 @@
    ancestors has-children count-children children-heads children-heads-kind
    set-node-state move-node purge-snapshots purge-node
    link-of insert-link delete-link links-out links-out-typed links-in links-in-typed
-   purge-links-source purge-links-target))
+   purge-links-source purge-links-target props-of))
+
+;; SQLite searches the id's own unique index for both, the owner's terms
+;; then checked on the one row: as fast as nodes_owner, and one row at most.
+(test-equal "statements: props-of's plan is node-head's, one search of nodes by an index on the id, no scan and no other table; it selects props alone, from nodes"
+  '(#t #t "SELECT props FROM nodes WHERE owner = ? AND id = ? AND state <> 'purged'")
+  (attempt
+   (lambda ()
+     (let* ((p (fresh "plan-props.db"))
+            (plan (plan-of p (statement-of 'props-of) acct-a A1)))
+       (list (and (= (length plan) 1)
+                  (starts? (car plan) "SEARCH nodes USING ")
+                  (contains? (car plan) "id=?"))
+             (equal? plan (plan-of p (statement-of 'node-head) acct-a A1))
+             (statement-of 'props-of))))))
 
 (test-equal "statements: node-in-use's plan is one search of a covering index: it reads the id alone (H19)"
   #t
@@ -975,7 +1025,7 @@
                (let ((s (statement-of name)))
                  (not (and s (or (contains? s "state <> 'purged'") (contains? s "state = 'trashed'")
                                  (contains? s "state IN ('active','archived')"))))))
-             '(node-head node-of-owner snapshot-exists snapshot-of snapshots-page snapshots-page-before
+             '(node-head props-of node-of-owner snapshot-exists snapshot-of snapshots-page snapshots-page-before
                write-node set-node-state move-node purge-node)))))
 
 (test-equal "statements: nodes-page and nodes-page-after filter by state, and node-of-owner reads the newest snapshot"

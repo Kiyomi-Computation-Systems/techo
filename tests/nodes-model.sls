@@ -1,9 +1,10 @@
 #!r6rs
 ;;; (nodes-model): the model-based test of nodes, ADR-0007's third layer,
 ;;; for tests/test-nodes-model.sps: D5's versioned write (slice 4, task 5a),
-;;; the node lifecycle (slice 4b, task 4a), the tree (slice 5a, task 4a) and
-;;; links (slice 5b, task 4a). Test-only: it lives in tests/, which make
-;;; test puts on Chez's library path.
+;;; the node lifecycle (slice 4b, task 4a), the tree (slice 5a, task 4a),
+;;; links (slice 5b, task 4a), and props and a Task's commands (slice 6,
+;;; task 4a). Test-only: it lives in tests/, which make test puts on Chez's
+;;; library path.
 ;;;
 ;;; The model (pure)
 ;;; ----------------
@@ -65,6 +66,32 @@
 ;;; reading (the source's state, the target's, the event, whether the link
 ;;; is there), which the suite counts with the outcomes (link-aims).
 ;;;
+;;; Props and a Task's commands (slice 6) are the plan's rules written
+;;; again here too, never (techo props), (techo tasks), (techo contact) or
+;;; (techo when). Props are data, not a second parser: props-corpus is a
+;;; list of values as a request sends them, each with its verdict for each
+;;; of the five kinds written out by hand (the canonical text stored, or a
+;;; 400, or a 413; for a Task, the members it claims). A PUT's props are
+;;; judged before its job for the kind it names, or for every kind when a
+;;; replace names none (400 when none takes them, 413 when one finds them
+;;; over the cap); in the job, after 404, 412, wrong_state and kind_fixed,
+;;; a replace that named no kind is the 400 when the stored kind refuses
+;;; them, and a Task's claim of a status or a closed other than its own is
+;;; 409 status_fixed. A replace with no props keeps them (P11). A create of
+;;; a Task takes its status, and when it is not TODO the closed given or
+;;; the write's time (P14). A restore copies the snapshot's props, but a
+;;; Task keeps its status and closed (P10). POST done, wontdo and reopen:
+;;; 404, 412, wrong_state, not_a_task, then the model's task table (P7):
+;;; done from TODO or WONTDO, wontdo from TODO or DONE, reopen from DONE or
+;;; WONTDO, else 409 wrong_status; closed set when a Task leaves TODO, kept
+;;; between DONE and WONTDO, removed by a reopen. A command is a write of
+;;; content: a snapshot with the title, body and content type copied, and a
+;;; change row named for it. Each node's props are held as their canonical
+;;; text, with a Task's status, closed, deadline and scheduled; an answer
+;;; shows the text's value with a Task's status filled in, TODO when none
+;;; is stored (P9). A plain seed's file first holds some Tasks written
+;;; straight into its tables, as a file from before this slice: props {}.
+;;;
 ;;; A Twist stands between the decision and its performance. The run uses
 ;;; `as-planned`, which changes nothing; the suite's teeth pass a twisted
 ;;; rule, and the model must then disagree with the handlers. A Twist sees
@@ -83,21 +110,28 @@
 ;;; The run (the shell)
 ;;; -------------------
 ;;; `run-sequence` empties one migrated file, seeds the two accounts and
-;;; their four keys through the store, generates a seeded sequence of 82 to
-;;; 119 requests (xorshift32; 60 to 87 before links took a quarter of
-;;; them), and sends each as raw HTTP through make-app inside wrap-server,
+;;; their four keys through the store, generates a seeded sequence of 88 to
+;;; 127 requests (xorshift32; 82 to 119 before slice 6's commands took a
+;;; tenth of them, 60 to 87 before links took a quarter), and sends each as raw HTTP through make-app inside wrap-server,
 ;;; in a test host, with a wall clock the sequence steps. After every
 ;;; request it compares the status, the code of a refusal, the ETag,
 ;;; Location and the body of a 2xx (every page of a list, for the ?state=
-;;; and ?parent= asked, and of a link list) with the model's; holds the answer to laws that need no model (G14, H6, H14,
+;;; and ?parent= asked, and of a link list) with the model's, and the write
+;;; jobs it made with the model's (R15: none for a refusal before the job);
+;;; holds the answer to laws that need no model (G14, H6, H14,
 ;;; H14', H18', and P12: every refusal of one code in a sequence has one
 ;;; body); reads the four tables and every key's last_used whole, and holds
 ;;; them to laws that need no model (H1 to H6, H11, H2', H3', H15'', H16,
 ;;; G3', G6', G7', G9, G11, G12, G16, P4, P15, P16, H1', H4'', Q9, and the
 ;;; bulk move's, against the tables before the request; P1, P2, P3 and P8
-;;; on every row, by its own walk; Q1, Q2 and Q8 on every link) and to the
-;;; model's world, its links among it. The first request with a difference
-;;; ends the sequence with a report that replays from its seed.
+;;; on every row, by its own walk; Q1, Q2 and Q8 on every link; R1, R2, R5
+;;; and R9 on every row's and snapshot's props, by its own reading of the
+;;; text; G11', R4, R13 and R14 on an accepted write's) and to the model's
+;;; world, its links and props among it. The first request with a
+;;; difference ends the sequence with a report that replays from its seed.
+;;; A plain seed (neither deep, a family nor linked) first writes the Tasks
+;;; seed-world makes straight into the emptied file, as rows from before
+;;; slice 6, and the model starts from that world.
 ;;;
 ;;; One seed in fifteen (a multiple of fifteen) is deep: it first makes a
 ;;; chain of 65 Projects by creates with a parent, one under the last, so
@@ -108,9 +142,9 @@
 ;;; costs four of another's). One in five (ending in 3 or 7) is a family:
 ;;; it first makes a mixed tree (family-event), so that bulk moves meet
 ;;; children of every state and kind and loops close two and three levels
-;;; down; then its 82 to 119. One in five more (ending in 1 or 9) is
+;;; down; then its 88 to 127. One in five more (ending in 1 or 9) is
 ;;; linked: it first makes a hub of links both ways (linked-event), so that
-;;; link lists page and a purge takes links both ways; then its 82 to 119.
+;;; link lists page and a purge takes links both ways; then its 88 to 127.
 ;;; No sequence reaches a bulk move's cap of 1,000 children: the route
 ;;; suite holds it.
 (library (nodes-model)
@@ -129,12 +163,15 @@
           link-type-names make-link-spec make-link-event world-links
           mlink-tag mlink-source mlink-type mlink-target mlink-created
           run-sequence verdict-seed verdict-steps verdict-requests verdict-cells
-          verdict-aims verdict-report verdict-style deep-seed? family-seed? linked-seed?)
+          verdict-aims verdict-report verdict-style deep-seed? family-seed? linked-seed?
+          task-events props-corpus entry-name entry-sent entry-verdict props-entry claim
+          good-whens corpus-self-breaks corpus-breaks msnap-props mprops-text mprops-status
+          mprops-closed expectation-jobs)
   (import (rnrs)
           (only (chezscheme) format)
           (only (chez-sqlite3) sql-null?)
           (only (chez-sodium) blake2b)
-          (only (jsonparse easy) json->string)
+          (only (jsonparse easy) json->string string->json)
           (techo-testing)
           (http-support)
           (only (techo keys) key-secret)
@@ -275,9 +312,45 @@
       (if k (mkey-label k) "no key")))
   (define (key-secret-of id) (mkey-secret (find (lambda (k) (bytevector=? (mkey-id k) id)) start-keys)))
 
+  ;; MProps: a snapshot's props (slice 6): text status closed deadline scheduled
+  ;;   text       the canonical text stored, the model's
+  ;;   status     a Task's status, "TODO", "DONE" or "WONTDO"; #f for another kind
+  ;;   closed     a Task's closed, milliseconds, or #f
+  ;;   deadline, scheduled   a Task's Whens as stored, or #f
+  ;; mprops-text : MProps -> String
+  ;; mprops-status : MProps -> (U String #f)
+  ;; mprops-closed : MProps -> (U Natural #f)
+  (define-record-type mprops (fields text status closed deadline scheduled))
+
+  ;; plain-props : String -> MProps     a Project's, a Journal's, a Note's or a Contact's text
+  (define (plain-props text) (make-mprops text #f #f #f #f))
+
+  ;; task-text : String (U Natural #f) (U String #f) (U String #f) -> String
+  ;; A Task's canonical text, in the model's own writing: status (but TODO,
+  ;; the default, is not stored), closed, deadline, scheduled, each when
+  ;; there, in that order, with no white space. A When is ASCII digits and
+  ;; punctuation: it needs no escape.
+  (define (task-text status closed deadline scheduled)
+    (string-append
+     "{"
+     (join (append (if (string=? status "TODO") '() (list (string-append "\"status\":\"" status "\"")))
+                   (if closed (list (string-append "\"closed\":" (number->string closed))) '())
+                   (if deadline (list (string-append "\"deadline\":\"" deadline "\"")) '())
+                   (if scheduled (list (string-append "\"scheduled\":\"" scheduled "\"")) '()))
+           ",")
+     "}"))
+
+  ;; task-props : String (U Natural #f) (U String #f) (U String #f) -> MProps
+  (define (task-props status closed deadline scheduled)
+    (make-mprops (task-text status closed deadline scheduled) status closed deadline scheduled))
+
+  ;; empty-props : String -> MProps     a node of KIND's props stored {}: a Task's are TODO (P9)
+  (define (empty-props kind) (if (string=? kind "task") (task-props "TODO" #f #f #f) (plain-props "{}")))
+
   ;; MSnap: revision title body type props created author (a tag)
   ;; msnap-revision, msnap-created : MSnap -> Natural
   ;; msnap-title, msnap-body, msnap-type : MSnap -> String
+  ;; msnap-props : MSnap -> MProps
   (define-record-type msnap (fields revision title body type props created author))
 
   ;; MNode: id tag label kind created state revision updated snaps (newest first) parent
@@ -305,13 +378,14 @@
   ;; as now), changes (an alist of tag to that owner's rows, oldest first),
   ;; held (the id of every node that has had a child, for the generator and
   ;; the counts alone: no answer depends on it), links (each account's, in
-  ;; the order made)
+  ;; the order made), seeded (the id of every Task a plain seed wrote
+  ;; straight into its file, for the generator and the counts alone)
   ;; world-nodes : World -> (Listof MNode)
   ;; world-links : World -> (Listof MLink)
-  (define-record-type world (fields nodes keys changes held links))
+  (define-record-type world (fields nodes keys changes held links seeded))
 
   ;; model-start : World      no node, no change, no key used, no link
-  (define model-start (make-world '() start-keys '((a) (b)) '() '()))
+  (define model-start (make-world '() start-keys '((a) (b)) '() '() '()))
 
   ;;; The plan's rules, in the model's own words (L1, L2, L5, L6, L8)
 
@@ -335,7 +409,7 @@
   ;; lifecycle-events : (Listof Symbol)    the five, each its own route (L3)
   (define lifecycle-events (map car lifecycle-moves))
 
-  (define write-kinds (append '(put restore) lifecycle-events '(move move-children)))
+  (define write-kinds (append '(put restore) lifecycle-events '(move move-children done wontdo reopen)))
   (define (write-kind? k) (and (memq k write-kinds) #t))
   (define (life-kind? k) (and (memq k lifecycle-events) #t))
 
@@ -376,7 +450,7 @@
                 (world-keys w) (world-changes w)
                 (let ((p (mnode-parent n)))
                   (if (and p (not (member p (world-held w)))) (cons p (world-held w)) (world-held w)))
-                (world-links w)))
+                (world-links w) (world-seeded w)))
 
   ;; world-with-change : World Tag Bytevector Natural String Natural -> World
   ;; The owner's next change row: one more than the rows it has (H4).
@@ -387,7 +461,7 @@
                   (map (lambda (p) (if (eq? (car p) tag) (cons tag (append old (list c))) p))
                        (world-changes w))
                   (world-held w)
-                  (world-links w))))
+                  (world-links w) (world-seeded w))))
 
   (define (world-touched w id now)
     (make-world (world-nodes w)
@@ -399,11 +473,19 @@
                      (world-keys w))
                 (world-changes w)
                 (world-held w)
-                (world-links w)))
+                (world-links w) (world-seeded w)))
 
   ;; world-with-links : World (Listof MLink) -> World     W with LINKS as its links
   (define (world-with-links w links)
-    (make-world (world-nodes w) (world-keys w) (world-changes w) (world-held w) links))
+    (make-world (world-nodes w) (world-keys w) (world-changes w) (world-held w) links (world-seeded w)))
+
+  ;; world-with-seeded : World Bytevector -> World     W with ID among the seeded
+  (define (world-with-seeded w id)
+    (make-world (world-nodes w) (world-keys w) (world-changes w) (world-held w) (world-links w)
+                (cons id (world-seeded w))))
+
+  ;; seeded? : World Bytevector -> Boolean     a Task a plain seed wrote straight into its file
+  (define (seeded? w id) (and (member id (world-seeded w)) #t))
 
   ;; with-snap : MNode String String String String Natural -> MNode
   ;; N at its next revision, the content given as its newest snapshot, made
@@ -550,6 +632,421 @@
   (define (link<? t1 id1 t2 id2)
     (or (string<? t1 t2) (and (string=? t1 t2) (bytevector<? id1 id2))))
 
+  ;;; Props, as data (slice 6)
+  ;;;
+  ;;; Each entry is a props value as a request sends it, and its verdict
+  ;;; for each of the five kinds, written out by hand: never computed by
+  ;;; the code under test, nor by a parser of the model's own. A text is
+  ;;; written with ' for ", and q turns it to JSON: no text here holds an
+  ;;; apostrophe.
+
+  ;; q : String -> String     ' to ", nothing else
+  (define (q s) (list->string (map (lambda (c) (if (char=? c #\') #\" c)) (string->list s))))
+
+  ;; Claim: what a Task's props value claims, each member as sent and
+  ;; checked, or #f: (claim status closed deadline scheduled)
+  ;; claim : (U String #f) (U Natural #f) (U String #f) (U String #f) -> Claim
+  (define (claim status closed deadline scheduled) (list 'claim status closed deadline scheduled))
+  (define (claim? v) (and (pair? v) (eq? (car v) 'claim)))
+  (define (claim-status v) (list-ref v 1))
+  (define (claim-closed v) (list-ref v 2))
+  (define (claim-deadline v) (list-ref v 3))
+  (define (claim-scheduled v) (list-ref v 4))
+
+  ;; Verdict = (U String Claim 'invalid 'too-large)
+  ;;   a String   a Project's, a Journal's, a Note's or a Contact's canonical
+  ;;              text, as it is stored
+  ;;   a Claim    a Task's: what the value says of status, closed, deadline
+  ;;              and scheduled; the text stored is the model's to make
+  ;;              (task-text), as a create or a replace and the stored
+  ;;              status decide
+  ;;   'invalid   the 400
+  ;;   'too-large valid, but over 4,096 bytes as stored: the 413
+  ;; taken? : Verdict -> Boolean
+  (define (taken? v) (or (string? v) (claim? v)))
+
+  ;; Entry: name sent verdicts
+  ;;   name      for reports and counts
+  ;;   sent      the props' JSON text, exactly as the request sends it
+  ;;   verdicts  each kind's Verdict, in kinds' order
+  ;; entry-name : Entry -> Symbol
+  ;; entry-sent : Entry -> String
+  (define-record-type entry (fields name sent verdicts))
+
+  ;; props-entry : Symbol String (U String Claim Symbol) ... -> Entry
+  ;; NAME and the text SENT (' for "), then a kind and its verdict by turns,
+  ;; a text again with ' for "; a kind not named refuses the value: 'invalid.
+  (define (props-entry name sent . pairs)
+    (let loop ((ps pairs) (acc '()))
+      (if (null? ps)
+          (make-entry name (q sent)
+                      (map (lambda (k) (cons k (let ((p (assoc k acc))) (if p (cdr p) 'invalid)))) kinds))
+          (loop (cddr ps) (cons (cons (car ps) (let ((v (cadr ps))) (if (string? v) (q v) v))) acc)))))
+
+  ;; entry-verdict : Entry String -> Verdict
+  (define (entry-verdict e kind) (cdr (assoc kind (entry-verdicts e))))
+
+  ;; good-whens : (Listof String)
+  ;; Every When a taken entry holds, each checked by hand to be one of the
+  ;; three forms and a real date (R9 by the corpus): 29 February 2024 and
+  ;; 2000 are leap days; 0001 and 9999 the years' ends.
+  (define good-whens
+    '("2026-12-01" "2026-12-02" "2024-02-29" "0001-01-01" "2026-12-01T15:00" "2000-02-29T23:59"
+      "2026-11-30T09:00" "2026-12-01T20:00:00Z" "9999-12-31T23:59:59Z"))
+
+  ;; capped-contact : Natural Boolean -> String
+  ;; A Contact's props of five emails whose canonical text is exactly
+  ;; BYTES bytes of UTF-8, four of the labels 400 e-acutes (two bytes, one
+  ;; character each), the fifth padded with x. SENT? #t: as a request sends
+  ;; it, the emails in the reverse order, each entry's label first, every
+  ;; e-acute as é: six bytes where the store has two. #f: the canonical
+  ;; text, written here by the model, not computed by the code under test.
+  (define (capped-contact bytes sent?)
+    (let* ((acute (make-string 400 #\xe9))
+           (entry (lambda (i label)
+                    (let ((key (string-append "e" (number->string i)))
+                          (address (string-append "a" (number->string i) "@example.com")))
+                      (if sent?
+                          (string-append "'" key "':{'label':'" label "','address':'" address "'}")
+                          (string-append "'" key "':{'address':'" address "','label':'" label "'}")))))
+           (escaped (lambda (s) (apply string-append (map (lambda (c) (if (char=? c #\xe9) "\\u00e9" (string c)))
+                                                          (string->list s)))))
+           (text (lambda (pad)
+                   (let ((labels (list acute acute acute acute (make-string pad #\x))))
+                     (q (string-append "{'emails':{"
+                                       (join (map (lambda (i l) (entry i (if sent? (escaped l) l)))
+                                                  (if sent? '(5 4 3 2 1) '(1 2 3 4 5))
+                                                  (if sent? (reverse labels) labels))
+                                             ",")
+                                       "}}")))))
+           (base (bytevector-length (string->utf8 (capped-contact-canonical acute 0)))))
+      (text (- bytes base))))
+
+  ;; capped-contact-canonical : String Natural -> String     the canonical text, PAD x's in the fifth label
+  (define (capped-contact-canonical acute pad)
+    (let ((entry (lambda (i label)
+                   (string-append "\"e" (number->string i) "\":{\"address\":\"a" (number->string i)
+                                  "@example.com\",\"label\":\"" label "\"}"))))
+      (string-append "{\"emails\":{"
+                     (join (map entry '(1 2 3 4 5) (list acute acute acute acute (make-string pad #\x))) ",")
+                     "}}")))
+
+  ;; at-cap-text, over-cap-text : String     the canonical texts of 4,096 and 4,097 bytes
+  (define at-cap-text (capped-contact 4096 #f))
+  (define over-cap-text (capped-contact 4097 #f))
+
+  ;; The plan's rich contact: a name, three emails, three phones, two
+  ;; addresses, an organisation, a title, pronouns, two links, a birthday.
+  ;; Sent in no order and with an explicit default (kind individual).
+  (define rich-sent
+    (string-append
+     "{'speakToAs':{'pronouns':{'p1':{'pronouns':'she/her'}}},"
+     "'emails':{'work':{'pref':1,'address':'ada@analytical.example','contexts':{'work':true}},"
+     "'home':{'address':'ada@home.example','contexts':{'private':true}},"
+     "'old':{'label':'retired','address':'a.lovelace@old.example'}},"
+     "'name':{'isOrdered':true,'components':[{'kind':'title','value':'Countess'},{'value':'Augusta','kind':'given'},"
+     "{'kind':'given2','value':'Ada'},{'kind':'surname','value':'King'},{'kind':'generation','value':'II'}]},"
+     "'phones':{'mobile':{'number':'+44 20 7946 0000','features':{'text':true,'mobile':true},'pref':1},"
+     "'desk':{'contexts':{'work':true},'number':'+44 20 7946 0001','features':{'voice':true}},"
+     "'fax':{'number':'+44 20 7946 0002','label':'office fax','features':{'fax':true}}},"
+     "'addresses':{'work':{'contexts':{'work':true},'full':'Analytical Engine Works\\nMarylebone','countryCode':'GB'},"
+     "'home':{'pref':1,'countryCode':'GB','contexts':{'private':true},'components':[{'kind':'number','value':'12'},"
+     "{'kind':'name','value':'St James Square'},{'kind':'locality','value':'London'},{'kind':'postcode','value':'SW1Y 4LB'}]}},"
+     "'organizations':{'ae':{'units':[{'name':'Programming'}],'name':'Analytical Engines'}},"
+     "'titles':{'t1':{'organizationId':'ae','name':'Programmer'}},"
+     "'links':{'site':{'label':'site','uri':'https://ada.example/'},'card':{'kind':'contact','uri':'https://ada.example/card.vcf'}},"
+     "'anniversaries':{'born':{'date':{'day':10,'month':12,'year':1815},'kind':'birth'}},"
+     "'kind':'individual'}"))
+
+  (define rich-canonical
+    (string-append
+     "{'name':{'components':[{'kind':'title','value':'Countess'},{'kind':'given','value':'Augusta'},"
+     "{'kind':'given2','value':'Ada'},{'kind':'surname','value':'King'},{'kind':'generation','value':'II'}],'isOrdered':true},"
+     "'organizations':{'ae':{'name':'Analytical Engines','units':[{'name':'Programming'}]}},"
+     "'titles':{'t1':{'name':'Programmer','organizationId':'ae'}},"
+     "'emails':{'home':{'address':'ada@home.example','contexts':{'private':true}},"
+     "'old':{'address':'a.lovelace@old.example','label':'retired'},"
+     "'work':{'address':'ada@analytical.example','contexts':{'work':true},'pref':1}},"
+     "'phones':{'desk':{'number':'+44 20 7946 0001','features':{'voice':true},'contexts':{'work':true}},"
+     "'fax':{'number':'+44 20 7946 0002','features':{'fax':true},'label':'office fax'},"
+     "'mobile':{'number':'+44 20 7946 0000','features':{'mobile':true,'text':true},'pref':1}},"
+     "'addresses':{'home':{'components':[{'kind':'number','value':'12'},{'kind':'name','value':'St James Square'},"
+     "{'kind':'locality','value':'London'},{'kind':'postcode','value':'SW1Y 4LB'}],'countryCode':'GB','contexts':{'private':true},'pref':1},"
+     "'work':{'countryCode':'GB','full':'Analytical Engine Works\\nMarylebone','contexts':{'work':true}}},"
+     "'anniversaries':{'born':{'kind':'birth','date':{'year':1815,'month':12,'day':10}}},"
+     "'links':{'card':{'uri':'https://ada.example/card.vcf','kind':'contact'},'site':{'uri':'https://ada.example/','label':'site'}},"
+     "'speakToAs':{'pronouns':{'p1':{'pronouns':'she/her'}}}}"))
+
+  ;; a-claim : the Task's verdict of a value that claims nothing: {}
+  (define no-claim (claim #f #f #f #f))
+
+  ;; props-corpus : (Listof Entry)
+  (define props-corpus
+    (list
+     ;; Every kind takes {}, and only {}: so a Project and a Journal take nothing else.
+     (props-entry 'empty "{}" "project" "{}" "journal" "{}" "note" "{}" "task" no-claim "contact" "{}")
+     (props-entry 'empty-spaced " { } " "project" "{}" "journal" "{}" "note" "{}" "task" no-claim "contact" "{}")
+     ;; A Note: each form of at, and what is no When
+     (props-entry 'note-date "{'at':'2026-12-01'}" "note" "{'at':'2026-12-01'}")
+     (props-entry 'note-local "{'at':'2026-12-01T15:00'}" "note" "{'at':'2026-12-01T15:00'}")
+     (props-entry 'note-moment "{'at':'2026-12-01T20:00:00Z'}" "note" "{'at':'2026-12-01T20:00:00Z'}")
+     (props-entry 'note-leap-day "{ 'at' : '2024-02-29' }" "note" "{'at':'2024-02-29'}")
+     (props-entry 'note-leap-2000 "{'at':'2000-02-29T23:59'}" "note" "{'at':'2000-02-29T23:59'}")
+     (props-entry 'note-short "{'at':'2026-12-1'}")
+     (props-entry 'note-30-february "{'at':'2026-02-30'}")
+     (props-entry 'note-1900-leap "{'at':'1900-02-29'}")
+     (props-entry 'note-hour-24 "{'at':'2026-12-01T24:00'}")
+     (props-entry 'note-second-60 "{'at':'2026-12-01T20:00:60Z'}")
+     (props-entry 'note-lower-t "{'at':'2026-12-01t15:00'}")
+     (props-entry 'note-lower-z "{'at':'2026-12-01T20:00:00z'}")
+     (props-entry 'note-space "{'at':'2026-12-01 15:00'}")
+     (props-entry 'note-offset "{'at':'2026-12-01T20:00:00+01:00'}")
+     (props-entry 'note-fraction "{'at':'2026-12-01T20:00:00.5Z'}")
+     (props-entry 'note-sign "{'at':'+026-12-01'}")
+     (props-entry 'note-year-0 "{'at':'0000-01-01'}")
+     (props-entry 'note-arabic-digit "{'at':'\x662;026-12-01'}")
+     (props-entry 'note-number "{'at':20261201}")
+     (props-entry 'note-null "{'at':null}")
+     (props-entry 'note-at-twice "{'at':'2026-12-01','at':'2026-12-02'}")
+     (props-entry 'note-other-member "{'at':'2026-12-01','tz':'UTC'}")
+     (props-entry 'note-when-named "{'when':'2026-12-01'}")
+     ;; A Task: deadline and scheduled in each form; each status with and
+     ;; without closed; what is no status, no closed, no When
+     (props-entry 'task-deadline-date "{'deadline':'2026-12-01'}" "task" (claim #f #f "2026-12-01" #f))
+     (props-entry 'task-deadline-local "{'deadline':'2026-12-01T15:00'}" "task" (claim #f #f "2026-12-01T15:00" #f))
+     (props-entry 'task-deadline-moment "{'deadline':'2026-12-01T20:00:00Z'}" "task"
+                  (claim #f #f "2026-12-01T20:00:00Z" #f))
+     (props-entry 'task-scheduled-date "{'scheduled':'0001-01-01'}" "task" (claim #f #f #f "0001-01-01"))
+     (props-entry 'task-scheduled-local "{'scheduled':'2026-11-30T09:00'}" "task" (claim #f #f #f "2026-11-30T09:00"))
+     (props-entry 'task-scheduled-moment "{'scheduled':'9999-12-31T23:59:59Z'}" "task"
+                  (claim #f #f #f "9999-12-31T23:59:59Z"))
+     (props-entry 'task-both "{'deadline':'2026-12-02','scheduled':'2026-11-30T09:00'}" "task"
+                  (claim #f #f "2026-12-02" "2026-11-30T09:00"))
+     (props-entry 'task-both-reversed "{'scheduled':'2026-11-30T09:00','deadline':'2026-12-02'}" "task"
+                  (claim #f #f "2026-12-02" "2026-11-30T09:00"))
+     (props-entry 'task-todo "{'status':'TODO'}" "task" (claim "TODO" #f #f #f))
+     (props-entry 'task-todo-deadline "{'deadline':'2024-02-29','status':'TODO'}" "task" (claim "TODO" #f "2024-02-29" #f))
+     (props-entry 'task-done "{'status':'DONE'}" "task" (claim "DONE" #f #f #f))
+     (props-entry 'task-wontdo-deadline "{'status':'WONTDO','deadline':'2026-12-01'}" "task"
+                  (claim "WONTDO" #f "2026-12-01" #f))
+     (props-entry 'task-done-closed "{'closed':1795515226000,'status':'DONE'}" "task" (claim "DONE" 1795515226000 #f #f))
+     (props-entry 'task-wontdo-closed-0 "{'status':'WONTDO','closed':0}" "task" (claim "WONTDO" 0 #f #f))
+     (props-entry 'task-done-closed-max "{'status':'DONE','closed':9007199254740991}" "task"
+                  (claim "DONE" 9007199254740991 #f #f))
+     (props-entry 'task-all "{'status':'DONE','closed':1795515226123,'deadline':'2026-12-01','scheduled':'2026-11-30T09:00'}"
+                  "task" (claim "DONE" 1795515226123 "2026-12-01" "2026-11-30T09:00"))
+     (props-entry 'task-all-shuffled
+                  "{'scheduled':'2026-11-30T09:00','closed':1795515226123,'deadline':'2026-12-01','status':'DONE'}"
+                  "task" (claim "DONE" 1795515226123 "2026-12-01" "2026-11-30T09:00"))
+     (props-entry 'task-todo-closed "{'status':'TODO','closed':1795515226000}" "task" (claim "TODO" 1795515226000 #f #f))
+     (props-entry 'task-closed-only "{'closed':1795515226000}" "task" (claim #f 1795515226000 #f #f))
+     (props-entry 'task-closed-flonum "{'status':'DONE','closed':1.0}")
+     (props-entry 'task-closed-exponent "{'status':'DONE','closed':1.7e12}")
+     (props-entry 'task-closed-over "{'status':'DONE','closed':9007199254740992}")
+     (props-entry 'task-closed-negative "{'status':'DONE','closed':-1}")
+     (props-entry 'task-closed-null "{'status':'DONE','closed':null}")
+     (props-entry 'task-closed-text "{'status':'DONE','closed':'1795515226000'}")
+     (props-entry 'task-status-lower "{'status':'done'}")
+     (props-entry 'task-status-other "{'status':'CANCELLED'}")
+     (props-entry 'task-status-null "{'status':null}")
+     (props-entry 'task-deadline-bad "{'deadline':'2026-02-30'}")
+     (props-entry 'task-scheduled-bad "{'scheduled':'2026-11-30T9:00'}")
+     (props-entry 'task-deadline-number "{'deadline':20261201}")
+     (props-entry 'task-deadline-twice "{'deadline':'2026-12-01','deadline':'2026-12-02'}")
+     (props-entry 'task-member-unknown "{'status':'DONE','priority':'A'}")
+     (props-entry 'task-five-members
+                  "{'status':'DONE','closed':1,'deadline':'2026-12-01','scheduled':'2026-12-01','deadline2':'x'}")
+     ;; A Contact: what is taken, and its one text (R17: two orderings, one
+     ;; text; @type and explicit defaults dropped; \/ and \u escapes written
+     ;; raw); then each rule that refuses
+     (props-entry 'contact-small "{'name':{'components':[{'kind':'given','value':'Ada'}]}}"
+                  "contact" "{'name':{'components':[{'kind':'given','value':'Ada'}]}}")
+     (props-entry 'contact-typed
+                  "{'name':{'@type':'Name','isOrdered':false,'components':[{'value':'Ada','@type':'NameComponent','kind':'given'}]}}"
+                  "contact" "{'name':{'components':[{'kind':'given','value':'Ada'}]}}")
+     (props-entry 'contact-ordered
+                  "{'name':{'isOrdered':true,'components':[{'value':'Lovelace','kind':'surname'},{'kind':'given','value':'Ada'}]}}"
+                  "contact" "{'name':{'components':[{'kind':'surname','value':'Lovelace'},{'kind':'given','value':'Ada'}],'isOrdered':true}}")
+     (props-entry 'contact-order-a
+                  "{'emails':{'w':{'pref':2,'address':'ada@work.example','contexts':{'work':true}},'h':{'address':'ada@home.example','contexts':{'private':true,'work':true}}},'kind':'org'}"
+                  "contact" "{'kind':'org','emails':{'h':{'address':'ada@home.example','contexts':{'private':true,'work':true}},'w':{'address':'ada@work.example','contexts':{'work':true},'pref':2}}}")
+     (props-entry 'contact-order-b
+                  "{'kind':'org','emails':{'h':{'contexts':{'work':true,'private':true},'address':'ada@home.example'},'w':{'address':'ada@work.example','contexts':{'work':true},'pref':2}}}"
+                  "contact" "{'kind':'org','emails':{'h':{'address':'ada@home.example','contexts':{'private':true,'work':true}},'w':{'address':'ada@work.example','contexts':{'work':true},'pref':2}}}")
+     (props-entry 'contact-defaults
+                  "{'kind':'individual','titles':{'t1':{'kind':'title','name':'Countess'}},'name':{'components':[{'kind':'surname','value':'Lovelace'}],'isOrdered':false}}"
+                  "contact" "{'name':{'components':[{'kind':'surname','value':'Lovelace'}]},'titles':{'t1':{'name':'Countess'}}}")
+     (props-entry 'contact-kind-individual "{'kind':'individual'}" "contact" "{}")
+     (props-entry 'contact-kind-org "{'kind':'org'}" "contact" "{'kind':'org'}")
+     (props-entry 'contact-org-title
+                  "{'titles':{'t1':{'organizationId':'o1','kind':'role','name':'Engineer'}},'organizations':{'o1':{'units':[{'name':'Engines'}],'name':'Babbage & Co'}}}"
+                  "contact" "{'organizations':{'o1':{'name':'Babbage & Co','units':[{'name':'Engines'}]}},'titles':{'t1':{'name':'Engineer','kind':'role','organizationId':'o1'}}}")
+     (props-entry 'contact-address-lines
+                  "{'addresses':{'a1':{'full':'1 Main St\\nSpringfield','countryCode':'GB','contexts':{'delivery':true,'billing':true}}}}"
+                  "contact" "{'addresses':{'a1':{'countryCode':'GB','full':'1 Main St\\nSpringfield','contexts':{'billing':true,'delivery':true}}}}")
+     (props-entry 'contact-phones
+                  "{'phones':{'p2':{'number':'+44 20 7946 0001','features':{'text':true,'mobile':true}},'p1':{'label':'desk','contexts':{'work':true},'features':{'voice':true},'number':'+44 20 7946 0000'}}}"
+                  "contact" "{'phones':{'p1':{'number':'+44 20 7946 0000','features':{'voice':true},'contexts':{'work':true},'label':'desk'},'p2':{'number':'+44 20 7946 0001','features':{'mobile':true,'text':true}}}}")
+     (props-entry 'contact-anniversaries
+                  "{'anniversaries':{'w':{'kind':'wedding','date':{'day':29,'month':2}},'birth':{'date':{'day':10,'month':12,'year':1815},'kind':'birth'}}}"
+                  "contact" "{'anniversaries':{'birth':{'kind':'birth','date':{'year':1815,'month':12,'day':10}},'w':{'kind':'wedding','date':{'month':2,'day':29}}}}")
+     (props-entry 'contact-speak
+                  "{'speakToAs':{'pronouns':{'k1':{'pref':1,'pronouns':'she/her'}},'grammaticalGender':'feminine'}}"
+                  "contact" "{'speakToAs':{'grammaticalGender':'feminine','pronouns':{'k1':{'pronouns':'she/her','pref':1}}}}")
+     (props-entry 'contact-links-escaped
+                  "{'onlineServices':{'s1':{'user':'@ada','service':'Mastodon'}},'links':{'l1':{'kind':'contact','uri':'https:\\/\\/example.com\\/ada'}}}"
+                  "contact" "{'links':{'l1':{'uri':'https://example.com/ada','kind':'contact'}},'onlineServices':{'s1':{'service':'Mastodon','user':'@ada'}}}")
+     (props-entry 'contact-escaped-script
+                  "{'addresses':{'tokyo':{'countryCode':'JP','components':[{'kind':'locality','value':'\\u6771\\u4eac'}]}}}"
+                  "contact" "{'addresses':{'tokyo':{'components':[{'kind':'locality','value':'\x6771;\x4eac;'}],'countryCode':'JP'}}}")
+     (props-entry 'contact-email "{'emails':{'e1':{'address':'a@b'}}}" "contact" "{'emails':{'e1':{'address':'a@b'}}}")
+     (props-entry 'contact-rich rich-sent "contact" rich-canonical)
+     (props-entry 'contact-at-cap (capped-contact 4096 #t) "contact" at-cap-text)
+     (props-entry 'contact-over-cap (capped-contact 4097 #t) "contact" 'too-large)
+     (props-entry 'contact-large
+                  (string-append "{'emails':{"
+                                 (join (map (lambda (i) (string-append "'e" (number->string i) "':{'address':'a@b','label':'"
+                                                                       (make-string 900 #\y) "'}"))
+                                            '(1 2 3 4 5 6))
+                                       ",")
+                                 "}}")
+                  "contact" 'too-large)
+     (props-entry 'contact-type-wrong "{'name':{'@type':'Card','components':[{'kind':'given','value':'Ada'}]}}")
+     (props-entry 'contact-type-top "{'@type':'Card','name':{'components':[{'kind':'given','value':'Ada'}]}}")
+     (props-entry 'contact-version "{'version':'1.0'}")
+     (props-entry 'contact-empty-string "{'name':{'components':[{'kind':'given','value':''}]}}")
+     (props-entry 'contact-label-line-feed "{'emails':{'e1':{'address':'a@b','label':'two\\nlines'}}}")
+     (props-entry 'contact-control-bel "{'phones':{'p1':{'number':'555\\u0007'}}}")
+     (props-entry 'contact-control-c1 "{'phones':{'p1':{'number':'555\\u0085'}}}")
+     (props-entry 'contact-noncharacter "{'emails':{'e1':{'address':'a@b','label':'\\ufffe'}}}")
+     (props-entry 'contact-empty-map "{'emails':{}}")
+     (props-entry 'contact-empty-list "{'name':{'components':[]}}")
+     (props-entry 'contact-empty-set "{'emails':{'e1':{'address':'a@b','contexts':{}}}}")
+     (props-entry 'contact-set-false "{'emails':{'e1':{'address':'a@b','contexts':{'work':false}}}}")
+     (props-entry 'contact-dangling-org "{'organizations':{'o1':{'name':'X'}},'titles':{'t1':{'name':'CEO','organizationId':'o9'}}}")
+     (props-entry 'contact-dangling-org-none "{'titles':{'t1':{'name':'CEO','organizationId':'o1'}}}")
+     (props-entry 'contact-uri-word "{'links':{'l1':{'uri':'hello'}}}")
+     (props-entry 'contact-uri-non-ascii "{'links':{'l1':{'uri':'https://ex.com/\xe9;'}}}")
+     (props-entry 'contact-email-dots "{'emails':{'e1':{'address':'a..b@c'}}}")
+     (props-entry 'contact-email-at "{'emails':{'e1':{'address':'@'}}}")
+     (props-entry 'contact-email-space "{'emails':{'e1':{'address':'a b@c'}}}")
+     (props-entry 'contact-unknown-member "{'nicknames':{'n1':{'name':'Addie'}}}")
+     (props-entry 'contact-pref-flonum "{'emails':{'e1':{'address':'a@b','pref':1.0}}}")
+     (props-entry 'contact-pref-101 "{'emails':{'e1':{'address':'a@b','pref':101}}}")
+     (props-entry 'contact-id-space "{'emails':{'e 1':{'address':'a@b'}}}")
+     (props-entry 'contact-id-twice "{'emails':{'e1':{'address':'a@b'},'e1':{'address':'c@d'}}}")
+     (props-entry 'contact-name-twice "{'kind':'org','kind':'org'}")
+     (props-entry 'contact-day-alone "{'anniversaries':{'d':{'kind':'death','date':{'day':10}}}}")
+     (props-entry 'contact-1900-leap "{'anniversaries':{'d':{'kind':'death','date':{'year':1900,'month':2,'day':29}}}}")
+     (props-entry 'contact-country-lower "{'addresses':{'a1':{'countryCode':'gb'}}}")
+     (props-entry 'contact-kind-group "{'kind':'group'}")
+     ;; No kind takes these
+     (props-entry 'nothing-colour "{'colour':'blue'}")
+     (props-entry 'nothing-note-and-task "{'at':'2026-12-01','deadline':'2026-12-01'}")
+     (props-entry 'nothing-task-and-contact "{'status':'DONE','emails':{'e1':{'address':'a@b'}}}")
+     (props-entry 'nothing-array "[]")
+     (props-entry 'nothing-null "null")
+     (props-entry 'nothing-string "'{}'")
+     (props-entry 'nothing-number "0")))
+
+  ;; empty-entry : Entry     {}, as a create with no props is taken (request-props: "as {}")
+  (define empty-entry (car props-corpus))
+
+  ;; corpus-of : (Entry -> Boolean) -> (Listof Entry)
+  (define (corpus-of pred) (filter pred props-corpus))
+
+  ;; taken-by, refused-by : (Listof (Pair String (Listof Entry)))
+  ;; Each kind's entries it takes; those it refuses that another kind takes.
+  (define taken-by
+    (map (lambda (k) (cons k (corpus-of (lambda (e) (taken? (entry-verdict e k)))))) kinds))
+  (define refused-by
+    (map (lambda (k) (cons k (corpus-of (lambda (e) (and (not (taken? (entry-verdict e k)))
+                                                         (exists (lambda (j) (taken? (entry-verdict e j))) kinds))))))
+         kinds))
+  ;; nobody-takes : (Listof Entry)     no kind takes them: a 400, or a 413 where one finds them over the cap
+  (define nobody-takes (corpus-of (lambda (e) (not (exists (lambda (k) (taken? (entry-verdict e k))) kinds)))))
+
+  ;; json-of : String -> Any     the JSON reader's value of TEXT, remembered: the texts repeat
+  (define json-memo (make-hashtable string-hash string=?))
+  (define (json-of text)
+    (or (hashtable-ref json-memo text #f)
+        (let ((j (string->json text)))
+          (hashtable-set! json-memo text j)
+          j)))
+
+  ;; whens-in : String String -> (Listof Any)
+  ;; The Whens a KIND's stored TEXT holds, as the JSON reader reads them: a
+  ;; Note's at; a Task's deadline and scheduled; none for another kind.
+  (define (whens-in kind text)
+    (let ((j (json-of text))
+          (names (cond ((string=? kind "note") '("at")) ((string=? kind "task") '("deadline" "scheduled")) (else '()))))
+      (if (list? j)
+          (filter (lambda (x) x) (map (lambda (n) (let ((p (assoc n j))) (and p (cdr p)))) names))
+          '())))
+
+  ;; corpus-self-breaks : -> (Listof String)
+  ;; The corpus held to what it says of itself, with no server: names once
+  ;; each; every verdict of its forms; no value is over the cap for one
+  ;; kind and taken by another (so the job's 413 cannot happen, as the
+  ;; build found); every text taken is at most 4,096 bytes and a JSON
+  ;; object, every When in it a good one (R9), every claim of a status one
+  ;; of the three and of a closed a whole number in I-JSON's range; the cap's
+  ;; texts exactly 4,096 and 4,097 bytes, their sent text over 4,096; R17's
+  ;; two orderings one text, sent two ways.
+  (define (corpus-self-breaks)
+    (let ((names (map entry-name props-corpus)))
+      (append
+       (let loop ((ns names) (acc '()))
+         (cond ((null? ns) (reverse acc))
+               ((memq (car ns) (cdr ns)) (loop (cdr ns) (cons (format "corpus: ~a is named twice" (car ns)) acc)))
+               (else (loop (cdr ns) acc))))
+       (apply append
+              (map (lambda (e)
+                     (append
+                      (if (and (exists (lambda (k) (eq? (entry-verdict e k) 'too-large)) kinds)
+                               (exists (lambda (k) (taken? (entry-verdict e k))) kinds))
+                          (list (format "corpus: ~a is over the cap for one kind and taken by another" (entry-name e)))
+                          '())
+                      (apply append
+                             (map (lambda (k)
+                                    (let ((v (entry-verdict e k)))
+                                      (cond
+                                       ((memq v '(invalid too-large)) '())
+                                       ((and (string? v) (not (string=? k "task")))
+                                        (append
+                                         (if (<= (bytevector-length (string->utf8 v)) 4096) '()
+                                             (list (format "corpus: ~a's ~a text is over 4,096 bytes" (entry-name e) k)))
+                                         (if (list? (guard (c (#t #f)) (json-of v))) '()
+                                             (list (format "corpus: ~a's ~a text is no JSON object" (entry-name e) k)))
+                                         (if (for-all (lambda (x) (member x good-whens)) (whens-in k v)) '()
+                                             (list (format "corpus: ~a's ~a text holds a When not of good-whens" (entry-name e) k)))))
+                                       ((and (claim? v) (string=? k "task"))
+                                        (append
+                                         (if (member (claim-status v) '(#f "TODO" "DONE" "WONTDO")) '()
+                                             (list (format "corpus: ~a claims the status ~s" (entry-name e) (claim-status v))))
+                                         (if (or (not (claim-closed v)) (natural? (claim-closed v))) '()
+                                             (list (format "corpus: ~a claims the closed ~s" (entry-name e) (claim-closed v))))
+                                         (if (for-all (lambda (x) (or (not x) (member x good-whens)))
+                                                      (list (claim-deadline v) (claim-scheduled v)))
+                                             '()
+                                             (list (format "corpus: ~a claims a When not of good-whens" (entry-name e))))))
+                                       (else (list (format "corpus: ~a's verdict for a ~a is ~s" (entry-name e) k v))))))
+                                  kinds))))
+                   props-corpus))
+       (if (and (= (bytevector-length (string->utf8 at-cap-text)) 4096)
+                (= (bytevector-length (string->utf8 over-cap-text)) 4097)
+                (< (string-length over-cap-text) 4096)
+                (let ((e (find (lambda (e) (eq? (entry-name e) 'contact-at-cap)) props-corpus)))
+                  (and e (> (bytevector-length (string->utf8 (entry-sent e))) 4096))))
+           '()
+           (list "corpus: the cap's texts are not 4,096 and 4,097 bytes, under 4,096 characters, the one taken sent over 4,096"))
+       (let ((a (find (lambda (e) (eq? (entry-name e) 'contact-order-a)) props-corpus))
+             (b (find (lambda (e) (eq? (entry-name e) 'contact-order-b)) props-corpus)))
+         (if (and a b (equal? (entry-verdict a "contact") (entry-verdict b "contact"))
+                  (not (equal? (entry-sent a) (entry-sent b))))
+             '()
+             (list "corpus: R17's two orderings are not one text sent two ways"))))))
+
   ;;; Requests
 
   ;; ParentRef: a parent as a request names it.
@@ -574,10 +1071,11 @@
           ((and (pair? r) (eq? (car r) 'bad)) (cadr r))
           (else "null")))
 
-  ;; Content: kind (U String #f), title, body, type, whether `"props": {}`
-  ;; is sent, and a create's parent (a ParentRef, 'absent for none).
-  ;; make-content : (U String #f) String String String Boolean ParentRef -> Content
-  (define-record-type content (fields kind title body type props? parent))
+  ;; Content: kind (U String #f), title, body, type, the props sent (an
+  ;; Entry of the corpus, or #f for no props member), and a create's parent
+  ;; (a ParentRef, 'absent for none).
+  ;; make-content : (U String #f) String String String (U Entry #f) ParentRef -> Content
+  (define-record-type content (fields kind title body type props parent))
 
   ;; Event: kind now tag key id pre headers content snap limit query upper? aims parent
   ;;   kind      put, restore, archive, unarchive, trash, untrash, purge,
@@ -679,8 +1177,12 @@
   ;; expectation-cells : Expectation -> (Listof Cell)
   ;; expectation-touched : Expectation -> Boolean
   ;; expectation-situation : Expectation -> Situation
+  ;; expectation-jobs : Expectation -> Natural
+  ;;   jobs           the write jobs the request makes (R15): none for a
+  ;;                  read, and for a write refused before its job (a 400,
+  ;;                  413 or 428 there); one for every other write
   (define-record-type expectation
-    (fields status code etag location json items world cells problem touched clause situation))
+    (fields status code etag location json items world cells problem touched clause situation jobs))
 
   ;; Situation: what the model read of the tree for a write
   ;;   verdict    judge's verdict on the new parent, #f for a write that has none
@@ -706,13 +1208,34 @@
   (define no-situation (make-situation #f #f #f #f #f 0 #f '() '()))
 
   (define (refused w cells status code clause s)
-    (make-expectation status code #f #f #f #f w cells #f #f clause s))
-  (define (cannot w cells why) (make-expectation #f #f #f #f #f #f w cells why #f #f no-situation))
+    (make-expectation status code #f #f #f #f w cells #f #f clause s 0))
+  (define (cannot w cells why) (make-expectation #f #f #f #f #f #f w cells why #f #f no-situation 0))
   (define (read-answer w json items etag clause)
-    (make-expectation 200 #f etag #f json items w '() #f #f clause no-situation))
+    (make-expectation 200 #f etag #f json items w '() #f #f clause no-situation 0))
 
-  ;; props-json : String -> Any     the stored text "{}" is the empty object
-  (define (props-json text) (if (string=? text "{}") '() (list 'props text)))
+  ;; refused-as : World Cells Decision String Situation -> Expectation
+  ;; A write's refusal, DECISION (refuse status code [in-job]): no write job
+  ;; for a 400, a 413 or a 428, which are answered before it, but the props'
+  ;; 400 a replace that named no kind meets in its job (in-job); one for
+  ;; every other.
+  (define (refused-as w cells decision clause s)
+    (make-expectation (cadr decision) (caddr decision) #f #f #f #f w cells #f #f clause s
+                      (if (and (memv (cadr decision) '(400 413 428)) (not (memq 'in-job decision))) 0 1)))
+
+  ;; props-shown : String MProps -> Any
+  ;; What an answer shows of a KIND's props: as stored, with the kind's
+  ;; defaults filled in (the plan). A Task's status, TODO when none is
+  ;; stored (P9), and its closed, deadline and scheduled when there;
+  ;; another kind's text as the JSON reader reads it, nothing filled in
+  ;; (JSContact's defaults are the RFC's to imply). Members sorted, as
+  ;; answers are compared.
+  (define (props-shown kind p)
+    (if (string=? kind "task")
+        (sorted (append (list (cons "status" (mprops-status p)))
+                        (if (mprops-closed p) (list (cons "closed" (mprops-closed p))) '())
+                        (if (mprops-deadline p) (list (cons "deadline" (mprops-deadline p))) '())
+                        (if (mprops-scheduled p) (list (cons "scheduled" (mprops-scheduled p))) '())))
+        (sorted-json (json-of (mprops-text p)))))
 
   ;; node-json : MNode Boolean -> Alist
   ;; A live node as the plan shows it: its title, content type, props and
@@ -726,15 +1249,17 @@
                             (cons "parent" (if (mnode-parent n) (id-text (mnode-parent n)) 'null))
                             (cons "title" (msnap-title s)))
                       (if body? (list (cons "body" (msnap-body s))) '())
-                      (list (cons "content_type" (msnap-type s)) (cons "props" (props-json (msnap-props s)))
+                      (list (cons "content_type" (msnap-type s)) (cons "props" (props-shown (mnode-kind n) (msnap-props s)))
                             (cons "revision" (node-rev n)) (cons "created" (mnode-created n))
                             (cons "updated" (mnode-updated n)))))))
 
-  ;; snap-json : MSnap Boolean -> Alist
-  (define (snap-json s body?)
+  ;; snap-json : String MSnap Boolean -> Alist
+  ;; A snapshot of a KIND's node: its props shown by its node's kind (a
+  ;; Task's stored {} is TODO in every snapshot too: R8).
+  (define (snap-json kind s body?)
     (sorted (append (list (cons "revision" (msnap-revision s)) (cons "title" (msnap-title s)))
                     (if body? (list (cons "body" (msnap-body s))) '())
-                    (list (cons "content_type" (msnap-type s)) (cons "props" (props-json (msnap-props s)))
+                    (list (cons "content_type" (msnap-type s)) (cons "props" (props-shown kind (msnap-props s)))
                           (cons "created" (msnap-created s))))))
 
   ;; Cell = (List Found (U Symbol #f) Symbol)
@@ -819,6 +1344,182 @@
                                                           " that holds no kind) is 409 invalid_parent (T2)")))
       (else (values invalid-parent "a new parent with more than 63 ancestors is 409 invalid_parent (T5)"))))
 
+  ;;; The props' rules and the task table, in the model's own words (slice 6)
+
+  ;; props-refusal : Event -> (U (List Natural String String) #f)
+  ;; A PUT's props refused before its job (the plan's order, steps 4 and
+  ;; 5), as (status code clause), or #f. A create with no props is as {};
+  ;; a replace with none passes to its job (P11). The kind named judges
+  ;; them; a replace that names none is refused only when no kind takes
+  ;; them: 413 when one finds them over the cap, else 400. A create of a
+  ;; Task that claims closed and no status but TODO is the 400 (P14).
+  (define (props-refusal e)
+    (let* ((c (event-content e))
+           (create? (eq? (event-pre e) 'create))
+           (entry (or (content-props c) (and create? empty-entry)))
+           (kind (content-kind c)))
+      (cond
+       ((not entry) #f)
+       (kind
+        (let ((v (entry-verdict entry kind)))
+          (cond ((eq? v 'invalid)
+                 (list 400 "invalid_request" (format "props a ~a does not take are 400, before the job" kind)))
+                ((eq? v 'too-large)
+                 (list 413 "props_too_large" (format "props a ~a takes but over 4,096 bytes stored are 413, before the job" kind)))
+                ((and create? (claim? v) (claim-closed v) (member (claim-status v) '(#f "TODO")))
+                 (list 400 "invalid_request" "a create of a Task claiming closed with no status but TODO is 400, before the job (P14)"))
+                (else #f))))
+       (else
+        (let ((vs (map (lambda (k) (entry-verdict entry k)) kinds)))
+          (cond ((exists taken? vs) #f)
+                ((memq 'too-large vs)
+                 (list 413 "props_too_large" "props no kind takes, that one takes but over the cap, are 413, before the job"))
+                (else (list 400 "invalid_request" "props no kind takes are 400, before the job, whatever the node"))))))))
+
+  ;; claim-differs? : Claim MProps -> (U Symbol #f)
+  ;; Whether a replace's CLAIM of a Task's status or closed is not what is
+  ;; stored, P (the stored status with its default, TODO): status, closed,
+  ;; or #f when each is left out or equal.
+  (define (claim-differs? v p)
+    (cond ((and (claim-status v) (not (string=? (claim-status v) (mprops-status p)))) 'status)
+          ((and (claim-closed v) (not (eqv? (claim-closed v) (mprops-closed p)))) 'closed)
+          (else #f)))
+
+  ;; replace-decision : MNode Content -> (values Decision String)
+  ;; In the job, after 404, 412, wrong_state and kind_fixed: no props keep
+  ;; the node's (P11); props the stored kind refuses (only a replace that
+  ;; named no kind gets here with them) are the 400 in the job; a Task's
+  ;; claim of another status or closed is 409 status_fixed; else the write.
+  (define (replace-decision own c)
+    (let ((entry (content-props c)))
+      (if (not entry)
+          (values '(write) "a replace with no props keeps the node's (P11): its next revision, in the same state and parent")
+          (let ((v (entry-verdict entry (mnode-kind own))) (p (msnap-props (node-top own))))
+            (cond ((not (taken? v))
+                   (values (list 'refuse 400 "invalid_request" 'in-job)
+                           (string-append "a replace that names no kind, with props only another kind takes, is 400 in"
+                                          " the job, after 404, 412, wrong_state and kind_fixed")))
+                  ((and (claim? v) (claim-differs? v p))
+                   (values (refusal 409 "status_fixed")
+                           "a replace's status or closed that is not the Task's own is 409 status_fixed, the last check"))
+                  (else (values '(write) "a replace at the node's revision is its next, in the same state and parent")))))))
+
+  ;; create-props : String (U Entry #f) Natural -> MProps
+  ;; What a create of KIND stores: the entry's text; for a Task, the status
+  ;; claimed (TODO when none) and, when that is not TODO, the closed given
+  ;; or NOW, the write's time (P14); deadline and scheduled as given.
+  (define (create-props kind entry now)
+    (let ((v (entry-verdict (or entry empty-entry) kind)))
+      (if (claim? v)
+          (let ((status (or (claim-status v) "TODO")))
+            (task-props status (and (not (string=? status "TODO")) (or (claim-closed v) now))
+                        (claim-deadline v) (claim-scheduled v)))
+          (plain-props v))))
+
+  ;; replace-props : MNode Content -> MProps
+  ;; What a replace stores: the node's own when none are sent (P11); the
+  ;; entry's text for the stored kind; for a Task, its status and closed
+  ;; kept, deadline and scheduled as sent (absent ones removed).
+  (define (replace-props own c)
+    (let ((entry (content-props c)) (p (msnap-props (node-top own))))
+      (if (not entry)
+          p
+          (let ((v (entry-verdict entry (mnode-kind own))))
+            (if (claim? v)
+                (task-props (mprops-status p) (mprops-closed p) (claim-deadline v) (claim-scheduled v))
+                (plain-props v))))))
+
+  ;; restore-props : String MProps MProps -> MProps
+  ;; What a restore of a KIND's snapshot SNAP stores over its PRESENT props:
+  ;; the snapshot's; for a Task, the snapshot's deadline and scheduled with
+  ;; the present status and closed (P10: only a command changes a status).
+  (define (restore-props kind snap present)
+    (if (string=? kind "task")
+        (task-props (mprops-status present) (mprops-closed present) (mprops-deadline snap) (mprops-scheduled snap))
+        snap))
+
+  ;; task-moves : (Listof (List Symbol (Listof String) String))
+  ;; P7's table, in the model's own words: each command, the statuses it is
+  ;; taken from, and where it lands. From any other status it is 409
+  ;; wrong_status: done on DONE, wontdo on WONTDO, reopen on TODO.
+  (define task-moves
+    '((done ("TODO" "WONTDO") "DONE")
+      (wontdo ("TODO" "DONE") "WONTDO")
+      (reopen ("DONE" "WONTDO") "TODO")))
+
+  ;; task-events : (Listof Symbol)     the three commands, each its own route
+  (define task-events (map car task-moves))
+  (define (task-kind? k) (and (memq k task-events) #t))
+
+  ;; closed-rule : String String -> Symbol
+  ;; What a move from FROM to TO does to closed (P7): leaving TODO, close
+  ;; (the write's time); landing on TODO, open (removed); between DONE and
+  ;; WONTDO, keep.
+  (define (closed-rule from to)
+    (cond ((string=? from "TODO") 'close) ((string=? to "TODO") 'open) (else 'keep)))
+
+  ;; TaskCell = (List 'task Found (U Symbol #f) (U String #f) (U String #f) Symbol)
+  ;;   what the job finds, the node's state, its kind, a Task's status, the command
+  ;; task-cell : World Event -> TaskCell
+  (define (task-cell w e)
+    (let* ((own (own-node w (event-tag e) (event-id e)))
+           (pre (event-pre e))
+           (kind (and own (mnode-kind own))))
+      (list 'task
+            (cond ((not own) 'none) ((and (integer? pre) (= (node-rev own) pre)) 'match) (else 'differ))
+            (and own (mnode-state own))
+            kind
+            (and own (string=? kind "task") (mprops-status (msnap-props (node-top own))))
+            (event-kind e))))
+
+  ;; job-task-cell : World Event -> (U TaskCell #f)     #f for a command refused before its job
+  (define (job-task-cell w e)
+    (and (not (memq (event-pre e) '(missing invalid))) (task-cell w e)))
+
+  (define (task-cell-text cell)
+    (if cell
+        (format "~a x ~a x ~a x ~a x ~a" (list-ref cell 1) (or (list-ref cell 2) "-") (or (list-ref cell 3) "-")
+                (or (list-ref cell 4) "-") (list-ref cell 5))
+        "no cell"))
+
+  ;; decide-task : World Event -> (values (U TaskCell #f) Decision String)
+  ;; TaskDecision = (List 'refuse Natural String) | (List 'transition String Symbol)
+  ;; A command's answer by the plan's rules, the first that applies: no
+  ;; precondition 428, a bad one (If-None-Match among them) 400, before its
+  ;; job; no live node of the account's 404; stale 412, whatever the state
+  ;; and the kind; a trashed node 409 wrong_state, whatever its kind; a node
+  ;; that is no Task 409 not_a_task; a status the command is not taken from
+  ;; 409 wrong_status; else the transition, to where the table lands, with
+  ;; closed-rule's closed.
+  (define (decide-task w e)
+    (let ((pre (event-pre e)))
+      (cond
+       ((eq? pre 'missing)
+        (values #f (refusal 428 "precondition_required") "a command with no precondition is 428, before its job"))
+       ((eq? pre 'invalid)
+        (values #f (refusal 400 "invalid_request")
+                "a command's precondition of any other shape, If-None-Match among them, is 400"))
+       (else
+        (let* ((cell (task-cell w e))
+               (found (list-ref cell 1)) (state (list-ref cell 2)) (kind (list-ref cell 3)) (status (list-ref cell 4))
+               (move (assq (event-kind e) task-moves)))
+          (cond
+           ((eq? found 'none)
+            (values cell not-found "a command on a node the account has not got, another's or a purged one, is 404"))
+           ((eq? found 'differ)
+            (values cell stale "a command at a revision the node is not at is 412, whatever its state, kind and status"))
+           ((eq? state 'trashed)
+            (values cell wrong-state "a command on a trashed node is 409 wrong_state, before its kind"))
+           ((not (string=? kind "task"))
+            (values cell (refusal 409 "not_a_task") "a command on a node that is no Task is 409 not_a_task"))
+           ((not (member status (cadr move)))
+            (values cell (refusal 409 "wrong_status")
+                    (format "~a on a ~a Task is 409 wrong_status: it changes nothing" (event-kind e) status)))
+           (else
+            (values cell (list 'transition (caddr move) (closed-rule status (caddr move)))
+                    (format "~a moves a ~a Task to ~a, closed ~a: its next revision, the content copied"
+                            (event-kind e) status (caddr move) (closed-rule status (caddr move)))))))))))
+
   ;; decide : World Event -> (values (U Cell #f) Decision String Situation)
   ;; A write's answer by the plan's rules, the first that applies, the
   ;; clause that gives it, and what the model read of the tree.
@@ -832,6 +1533,8 @@
         (values #f (refusal 400 "invalid_request")
                 "a precondition of any other shape, If-None-Match on any route but a PUT among them, is 400"
                 no-situation))
+       ((and (eq? (event-kind e) 'put) (props-refusal e))
+        => (lambda (r) (values #f (refusal (car r) (cadr r)) (caddr r) no-situation)))
        ((eq? pre 'create)
         (if (world-node w id)
             (values (list 'differ #f 'create) stale
@@ -881,7 +1584,8 @@
            ((eq? ev 'restore-unknown)
             (values cell not-found "a restore of a revision with no snapshot is 404" s))
            ((eq? ev 'replace)
-            (values cell '(write) "a replace at the node's revision is its next, in the same state and parent" s))
+            (let-values (((decision clause) (replace-decision own (event-content e))))
+              (values cell decision clause s)))
            (else
             (values cell '(copy) "a restore of a snapshot the node has, at its revision, is its next, in the same state and parent" s))))))))
 
@@ -890,7 +1594,10 @@
   ;; A link's request is twisted as a write is: the twist sees its
   ;; LinkCell (#f for a 400) and decision, and no Situation.
   (define (expect twist w e)
-    (cond ((write-kind? (event-kind e))
+    (cond ((task-kind? (event-kind e))
+           (let-values (((cell decision clause) (decide-task w e)))
+             (perform w e #f (twist cell decision no-situation) clause no-situation)))
+          ((write-kind? (event-kind e))
            (let-values (((cell decision clause s) (decide w e)))
              (perform w e cell (twist cell decision s) clause s)))
           ((link-kind? (event-kind e))
@@ -990,7 +1697,7 @@
            (due (touch-due? (world-key-last-used w (event-key e)) now))
            (touched (lambda (w) (if due (world-touched w (event-key e) now) w))))
       (case (car decision)
-        ((refuse) (refused w '() (cadr decision) (caddr decision) clause no-situation))
+        ((refuse) (refused-as w '() decision clause no-situation))
         ((link)
          (cond ((not (and cell (eq? kind 'link))) (cannot w '() (string-append at ", which only a link's PUT performs")))
                ((not (and own (own-node w tag target))) (cannot w '() (string-append at ", but an end is no live node of the account's")))
@@ -999,11 +1706,11 @@
                 (let ((w1 (world-with-change (world-with-links w (append (world-links w) (list (make-mlink tag source type target now))))
                                              tag source (node-rev own) "link" now)))
                   (make-expectation 201 #f #f #f (link-json source type target now) #f (touched w1) '() #f due
-                                    clause no-situation)))))
+                                    clause no-situation 1)))))
         ((keep)
          (if (and there (eq? kind 'link))
              (make-expectation 200 #f #f #f (link-json source type target (mlink-created there)) #f (touched w) '() #f
-                               due clause no-situation)
+                               due clause no-situation 1)
              (cannot w '() (string-append at ", but no such link of the account's is there, or this is no PUT"))))
         ((unlink)
          (cond ((not (and there (eq? kind 'unlink) own))
@@ -1011,7 +1718,7 @@
                (else
                 (let ((w1 (world-with-change (world-with-links w (filter (lambda (l) (not (eq? l there))) (world-links w)))
                                              tag source (node-rev own) "unlink" now)))
-                  (make-expectation 204 #f #f #f 'empty #f (touched w1) '() #f due clause no-situation)))))
+                  (make-expectation 204 #f #f #f 'empty #f (touched w1) '() #f due clause no-situation 1)))))
         (else (cannot w '() (string-append at ", which no link's request performs"))))))
 
   ;; perform : World Event (U Cell #f) Decision String Situation -> Expectation
@@ -1028,7 +1735,7 @@
            (at-pre? (and own (integer? pre) (= (node-rev own) pre)))
            (off-pre (string-append at ", but the account's node is not at the revision given")))
       (case (car decision)
-        ((refuse) (refused w cells (cadr decision) (caddr decision) clause s))
+        ((refuse) (refused-as w cells decision clause s))
         ((insert)
          (cond ((not (and (eq? kind 'put) (eq? pre 'create)))
                 (cannot w cells (string-append at ", which only a create performs")))
@@ -1037,7 +1744,9 @@
                 (let ((c (event-content e)))
                   (accepted w e (make-mnode id tag (next-label w) (content-kind c) now 'active 1 now
                                             (list (make-msnap 1 (content-title c) (content-body c)
-                                                              (content-type c) "{}" now tag))
+                                                              (content-type c)
+                                                              (create-props (content-kind c) (content-props c) now)
+                                                              now tag))
                                             (event-parent-id e))
                             "create" 201 #t cells clause s)))))
         ((write)
@@ -1045,7 +1754,8 @@
                ((not at-pre?) (cannot w cells off-pre))
                (else
                 (let ((c (event-content e)))
-                  (accepted w e (with-snap own (content-title c) (content-body c) (content-type c) "{}" now)
+                  (accepted w e (with-snap own (content-title c) (content-body c) (content-type c)
+                                           (replace-props own c) now)
                             "update" 200 #t cells clause s)))))
         ((copy)
          (let ((snap (and own (eq? kind 'restore) (snap-of own (event-snap e)))))
@@ -1054,8 +1764,23 @@
                  ((not snap) (cannot w cells (string-append at " of a snapshot the node does not have")))
                  (else
                   (accepted w e (with-snap own (msnap-title snap) (msnap-body snap) (msnap-type snap)
-                                           (msnap-props snap) now)
+                                           (restore-props (mnode-kind own) (msnap-props snap)
+                                                          (msnap-props (node-top own)))
+                                           now)
                             "restore" 200 #t cells clause s)))))
+        ((transition)
+         (cond ((not (task-kind? kind)) (cannot w cells (string-append at ", which only a Task's command performs")))
+               ((not at-pre?) (cannot w cells off-pre))
+               ((not (string=? (mnode-kind own) "task")) (cannot w cells (string-append at " of a node that is no Task")))
+               ((not (member (cadr decision) '("TODO" "DONE" "WONTDO")))
+                (cannot w cells (string-append at ", a status no Task has")))
+               (else
+                (let* ((top (node-top own)) (p (msnap-props top))
+                       (closed (case (caddr decision) ((close) now) ((keep) (mprops-closed p)) (else #f))))
+                  (accepted w e (with-snap own (msnap-title top) (msnap-body top) (msnap-type top)
+                                           (task-props (cadr decision) closed (mprops-deadline p) (mprops-scheduled p))
+                                           now)
+                            (symbol->string kind) 200 #f cells clause s)))))
         ((set-state)
          (cond ((not (and (life-kind? kind) (not (eq? kind 'purge))))
                 (cannot w cells (string-append at ", which only a state change performs")))
@@ -1094,10 +1819,10 @@
            (due (touch-due? (world-key-last-used w (event-key e)) (event-now e)))
            (w3 (if due (world-touched w2 (event-key e) (event-now e)) w2)))
       (if (= status 204)
-          (make-expectation 204 #f #f #f 'empty #f w3 cells #f due clause s)
+          (make-expectation 204 #f #f #f 'empty #f w3 cells #f due clause s 1)
           (make-expectation status #f (etag-of (node-rev n))
                             (and (= status 201) (string-append "/v1/nodes/" (id-text (mnode-id n))))
-                            (node-json n body?) #f w3 cells #f due clause s))))
+                            (node-json n body?) #f w3 cells #f due clause s 1))))
 
   ;; bulk-accepted : World Event MNode (Listof Bytevector) Cells String Situation -> Expectation
   ;; The children IDS of N, in id order, each under the bulk move's new
@@ -1119,7 +1844,7 @@
       (make-expectation 200 #f #f #f
                         (sorted (list (cons "moved" (length ids))
                                       (cons "left" (length (children-of w2 (mnode-id n))))))
-                        #f w2 cells #f due clause s)))
+                        #f w2 cells #f due clause s 1)))
 
   ;; list-state : (U String 'twice #f) -> (U Symbol 'invalid)
   ;; L6 and the review: no ?state= is active; a live state's name is that
@@ -1166,13 +1891,13 @@
                                      (cond ((eq? p 'any) "") ((not p) " at the top level") (else " under the parent"))))))))
         ((list-revisions)
          (if own
-             (read-answer w #f (map (lambda (s) (snap-json s #f)) (mnode-snaps own)) #f
+             (read-answer w #f (map (lambda (s) (snap-json (mnode-kind own) s #f)) (mnode-snaps own)) #f
                           "a node's snapshots, newest first, gaps where its state changed")
              (refused w '() 404 "not_found" gone no-situation)))
         ((get-snapshot)
          (let ((s (and own (snap-of own (event-snap e)))))
            (if s
-               (read-answer w (snap-json s #t) #f #f "a snapshot of the account's own node is shown")
+               (read-answer w (snap-json (mnode-kind own) s #t) #f #f "a snapshot of the account's own node is shown")
                (refused w '() 404 "not_found"
                         "a snapshot no live node of the account's has, a gap's among them, is 404" no-situation))))
         ((list-links) (expect-links w e own))
@@ -1286,7 +2011,8 @@
   (define (content-text w c)
     (if c
         (format " ~a~s ~s ~s~a~a" (if (content-kind c) (string-append (content-kind c) " ") "")
-                (content-title c) (content-body c) (content-type c) (if (content-props? c) " {}" "")
+                (content-title c) (content-body c) (content-type c)
+                (let ((p (content-props c))) (if p (format " props ~a ~a" (entry-name p) (entry-sent p)) ""))
                 (if (eq? (content-parent c) 'absent) "" (string-append ", parent " (ref-label w (content-parent c)))))
         ""))
 
@@ -1302,6 +2028,8 @@
         ((archive unarchive trash untrash)
          (format "~a POST ~a /~a, ~a" at target (event-kind e) (headers-text (event-headers e))))
         ((purge) (format "~a DELETE ~a, ~a" at target (headers-text (event-headers e))))
+        ((done wontdo reopen)
+         (format "~a POST ~a /~a, ~a" at target (event-kind e) (headers-text (event-headers e))))
         ((get-node) (format "~a GET ~a" at target))
         ((move move-children)
          (format "~a POST ~a /~a to ~a, ~a" at target (event-kind e) (ref-label w (event-parent e))
@@ -1367,13 +2095,12 @@
             ((< r 94) (values (+ now day-ms 1) 'wait-a-day-and-a-ms))
             (else (values (+ now (* 2 day-ms) long) 'wait-days)))))
 
-  ;; random-content : Rng (U String #f) ParentRef -> Content
-  (define (random-content rng kind parent)
+  ;; random-content : Rng (U String #f) ParentRef (U Entry #f) -> Content
+  (define (random-content rng kind parent props)
     (let* ((title (rng-pick! rng title-pool))
            (body (rng-pick! rng body-pool))
-           (type (rng-pick! rng type-pool))
-           (props? (= 0 (rng-below! rng 2))))
-      (make-content kind title body type props? parent)))
+           (type (rng-pick! rng type-pool)))
+      (make-content kind title body type props parent)))
 
   ;; Forest: the world's tree as the generator walks it, built once a request.
   ;;   depth   Bytevector -> Natural          how many ancestors
@@ -1457,7 +2184,7 @@
                                            (if (pair? hold) '((60 . holder)) '())
                                            (if (pair? leaf) '((26 . leaf)) '())
                                            (if (pair? trashed) '((6 . trashed)) '())
-                                           (if (pair? archived) '((6 . archived)) '())
+                                           (if (pair? archived) '((10 . archived)) '())
                                            '((4 . missing) (2 . self))
                                            (if (pair? gone) '((6 . purged)) '())
                                            (if (pair? theirs) '((6 . other)) '())
@@ -1564,7 +2291,7 @@
                                            (if (pair? journals) '((14 . journal)) '())
                                            (if (pair? leaf) '((8 . leaf)) '())
                                            (if mine '((5 . self)) '())
-                                           (if (pair? kids) '((7 . child)) '())
+                                           (if (pair? kids) '((10 . child)) '())
                                            (if (pair? deep) '((9 . descendant)) '())
                                            (if (pair? trashed) '((5 . trashed)) '())
                                            (if (pair? archived) '((4 . archived)) '())
@@ -1748,15 +2475,18 @@
                                               (let ((c (list (case route
                                                                ((restore) 'create-on-restore)
                                                                ((move move-children) 'create-on-move)
+                                                               ((done wontdo reopen) 'create-on-task)
                                                                (else 'create-on-lifecycle))
                                                              (cons "If-None-Match" "*"))))
                                                 (list c c c)))))))
       (values (cdr choice) (sym "bad-" (car choice)))))
 
   ;; The routes a write is sent to with no precondition, or a bad one: a
-  ;; PUT most, then a restore, then each state change, and each move.
+  ;; PUT most, then a restore, then each state change, each move, and each
+  ;; of a Task's commands.
   (define bare-routes
-    '(put put put put put restore restore archive unarchive trash untrash purge move move-children))
+    '(put put put put put restore restore archive unarchive trash untrash purge move move-children
+      done wontdo reopen))
 
   ;; list-aim : (U String 'twice #f) -> Symbol
   (define (list-aim q)
@@ -1774,7 +2504,8 @@
   ;; A create of a fresh id, of KIND, under PARENT.
   (define (create-of rng w now tag key kind parent aims)
     (let* ((id (fresh-node-id rng w))
-           (c (random-content rng kind parent)))
+           (props (safe-props rng kind))
+           (c (random-content rng kind parent props)))
       (make-event 'put now tag key id 'create (list (cons "If-None-Match" "*")) c #f #f #f #f aims 'absent)))
 
   ;; chore-options : World Forest Tag -> (Listof (Pair Symbol (Listof MNode)))
@@ -2046,6 +2777,194 @@
       (at-revision (if (eq? (car chore) 'chore-trash-linked) 'trash 'purge) now tag key n (list (car chore) wait)
                    'absent)))
 
+  ;;; The generator's props and commands (slice 6)
+
+  ;; create-refused? : Entry String -> Boolean
+  ;; Whether a create of KIND refuses ENTRY before its job: a value it does
+  ;; not take, or a Task's claim of closed with no status but TODO (P14).
+  (define (create-refused? entry kind)
+    (let ((v (entry-verdict entry kind)))
+      (or (not (taken? v)) (and (claim? v) (claim-closed v) (member (claim-status v) '(#f "TODO")) #t))))
+
+  ;; create-safe : (Listof (Pair String (Listof Entry)))     each kind's entries a create takes
+  (define create-safe
+    (map (lambda (k) (cons k (filter (lambda (e) (not (create-refused? e k))) (cdr (assoc k taken-by))))) kinds))
+
+  ;; safe-props : Rng String -> (U Entry #f)
+  ;; A scripted create's props (the chain's, a family's, a hub's): none (as
+  ;; {}) half the time, else one a create of KIND takes, so the script's
+  ;; nodes are made.
+  (define (safe-props rng kind)
+    (if (= 0 (rng-below! rng 2)) #f (rng-pick! rng (cdr (assoc kind create-safe)))))
+
+  ;; too-large-for : (Listof (Pair String (Listof Entry)))     each kind's entries valid but over the cap
+  (define too-large-for
+    (map (lambda (k) (cons k (corpus-of (lambda (e) (eq? (entry-verdict e k) 'too-large))))) kinds))
+
+  ;; status-claims : (Listof Entry)     a Task's entries that claim a status, TODO, DONE or WONTDO
+  (define status-claims
+    (corpus-of (lambda (e) (let ((v (entry-verdict e "task"))) (and (claim? v) (claim-status v) #t)))))
+
+  ;; too-large-anywhere : (Listof Entry)     every entry a kind finds valid but over the cap
+  (define too-large-anywhere (corpus-of (lambda (e) (exists (lambda (k) (eq? (entry-verdict e k) 'too-large)) kinds))))
+
+  ;; r17-pair : (Listof Entry)     R17's two orderings of one Contact
+  (define r17-pair (corpus-of (lambda (e) (memq (entry-name e) '(contact-order-a contact-order-b)))))
+
+  ;; choose-create-props : Rng String -> (values (U Entry #f) Symbol)
+  ;; A create's props: none (as {}); for a Task, often one that claims a
+  ;; status (P14: a finished Task brought in, with closed or without; TODO
+  ;; with a closed, the 400); for a Contact, often one of R17's two
+  ;; orderings; an entry KIND takes; one over the cap a kind finds valid
+  ;; (413 for it); one only another kind takes (400); one no kind takes
+  ;; (400).
+  (define (choose-create-props rng kind)
+    (let ((r (rng-below! rng 100)) (large (cdr (assoc kind too-large-for))))
+      (cond ((< r 12) (values #f 'props-none))
+            ((and (string=? kind "task") (< r 52)) (values (rng-pick! rng status-claims) 'props-status-claim))
+            ((and (string=? kind "contact") (< r 32)) (values (rng-pick! rng r17-pair) 'props-r17))
+            ((and (pair? large) (< r 40)) (values (rng-pick! rng large) 'props-too-large))
+            ((< r 86) (values (rng-pick! rng (cdr (assoc kind taken-by))) 'props-own-kind))
+            ((< r 94) (values (rng-pick! rng (cdr (assoc kind refused-by))) 'props-other-kind))
+            (else (values (rng-pick! rng nobody-takes) 'props-no-kind)))))
+
+  ;; claim-entry : Symbol (U String #f) (U Natural #f) (U String #f) (U String #f) -> Entry
+  ;; A Task's props as the model writes them, each member given, status
+  ;; first even when it is TODO, as a client sends back what it read. Its
+  ;; verdict: the claim for a Task; for every other kind none, as none has
+  ;; these members; but {} (no member given) is every kind's.
+  (define (claim-entry name status closed deadline scheduled)
+    (let ((members (append (if status (list (string-append "\"status\":\"" status "\"")) '())
+                           (if closed (list (string-append "\"closed\":" (number->string closed))) '())
+                           (if deadline (list (string-append "\"deadline\":\"" deadline "\"")) '())
+                           (if scheduled (list (string-append "\"scheduled\":\"" scheduled "\"")) '()))))
+      (make-entry name (string-append "{" (join members ",") "}")
+                  (map (lambda (k)
+                         (cons k (cond ((string=? k "task") (claim status closed deadline scheduled))
+                                       ((null? members) (entry-verdict empty-entry k))
+                                       (else 'invalid))))
+                       kinds))))
+
+  ;; sent-back-props : Rng MProps -> (values Entry Symbol)
+  ;; A Task's props P sent back by a replace: as read (status and closed as
+  ;; they are, TODO written out), the status alone, the closed alone (each
+  ;; left out is kept), with a new deadline; or with another status, or
+  ;; another closed (a closed while TODO among them; still a whole number
+  ;; from 0 to 2^53 - 1, so a valid claim): 409 status_fixed.
+  (define (sent-back-props rng p)
+    (let* ((s (mprops-status p)) (c (mprops-closed p)) (d (mprops-deadline p)) (sc (mprops-scheduled p))
+           (how (rng-pick! rng '(as-read as-read status-only closed-only new-when other-status other-closed))))
+      (values
+       (case how
+         ((as-read) (claim-entry 'sent-back-as-read s c d sc))
+         ((status-only) (claim-entry 'sent-back-status-only s #f d sc))
+         ((closed-only) (claim-entry 'sent-back-closed-only #f c d sc))
+         ((new-when) (claim-entry 'sent-back-new-when s c (rng-pick! rng good-whens) sc))
+         ((other-status) (claim-entry 'sent-back-other-status (rng-pick! rng (remove s '("TODO" "DONE" "WONTDO"))) c d sc))
+         (else (claim-entry 'sent-back-other-closed s
+                            (cond ((not c) 1795515226000) ((< c 9007199254740991) (+ c 1)) (else (- c 1)))
+                            d sc)))
+       (sym "props-" how))))
+
+  ;; choose-replace-props : Rng (U MNode #f) (U String #f) -> (values (U Entry #f) Symbol)
+  ;; A replace's props for N, the account's live node (#f for none), the
+  ;; request naming NAMED (#f for no kind): half the time when it names
+  ;; another kind, one that kind takes (so the job answers kind_fixed); else
+  ;; none (P11); one over the cap (the 413 before the job, whatever the
+  ;; node); for a Task of its, often its props sent back; for a Contact,
+  ;; sometimes one of R17's two orderings; an entry N's
+  ;; kind takes; one over the cap; one only another kind takes (400 before
+  ;; the job when the kind is named, in it when not, more often then); one
+  ;; no kind takes.
+  (define (choose-replace-props rng n named)
+    (let* ((kind (if n (mnode-kind n) "note"))
+           (r (rng-below! rng 100)))
+      (cond ((and named (not (string=? named kind)) (< r 50))
+             (values (rng-pick! rng (cdr (assoc named taken-by))) 'props-named-kind))
+            ((< r 20) (values #f 'props-none))
+            ((< r 25) (values (rng-pick! rng too-large-anywhere) 'props-too-large))
+            ((and n (string=? kind "task") (< r 50)) (sent-back-props rng (msnap-props (node-top n))))
+            ((and (string=? kind "contact") (< r 33)) (values (rng-pick! rng r17-pair) 'props-r17))
+            ((< r (if named 66 56)) (values (rng-pick! rng (cdr (assoc kind taken-by))) 'props-own-kind))
+            ((< r 90) (values (rng-pick! rng (cdr (assoc kind refused-by))) 'props-other-kind))
+            (else (values (rng-pick! rng nobody-takes) 'props-no-kind)))))
+
+  ;; empty-task? : World MNode -> Boolean     a live Task whose props are stored {} (P9's)
+  (define (empty-task? w n)
+    (and (live? n) (string=? (mnode-kind n) "task") (string=? (mprops-text (msnap-props (node-top n))) "{}")))
+
+  ;; choose-task-target : Rng World Tag -> (values Bytevector (U MNode #f) Symbol)
+  ;; A command's node: most often the account's own Task, its state chosen
+  ;; first (archived the most, as it is rarer; trashed the least); a
+  ;; seeded Task still {};
+  ;; the account's node of another kind, any state; else choose-target's:
+  ;; its own, the other account's, a purged id, a fresh one.
+  (define (choose-task-target rng w tag)
+    (let* ((own (nodes-of w tag))
+           (tasks (of-kind "task" own))
+           (others (filter (lambda (n) (not (string=? (mnode-kind n) "task"))) own))
+           (seeds (filter (lambda (n) (and (seeded? w (mnode-id n)) (empty-task? w n))) tasks))
+           (aim (rng-weighted! rng (append (if (pair? tasks) '((60 . task)) '())
+                                           (if (pair? seeds) '((10 . seeded)) '())
+                                           (if (pair? others) '((14 . other-kind)) '())
+                                           '((22 . elsewhere))))))
+      (case aim
+        ((task)
+         (let* ((states (filter (lambda (s) (exists (lambda (n) (eq? (mnode-state n) s)) tasks)) live-states))
+                (s (rng-weighted! rng (map (lambda (s) (cons (case s ((trashed) 1) ((archived) 3) (else 2)) s)) states)))
+                (n (rng-pick! rng (in-state s tasks))))
+           (values (mnode-id n) n 'own)))
+        ((seeded) (let ((n (rng-pick! rng seeds))) (values (mnode-id n) n 'own)))
+        ((other-kind) (let ((n (rng-pick! rng others))) (values (mnode-id n) n 'own)))
+        (else (choose-target rng w tag by-revisions)))))
+
+  ;; choose-task-event : Rng (U MNode #f) Symbol -> Symbol
+  ;; For the account's own live Task, 11 times in 20 a command its
+  ;; status is taken from, so Tasks move through the table; else, and at any
+  ;; other node, any of the three.
+  (define (choose-task-event rng n where)
+    (let ((status (and n (eq? where 'own) (live? n) (string=? (mnode-kind n) "task")
+                       (mprops-status (msnap-props (node-top n))))))
+      (if (and status (< (rng-below! rng 20) 11))
+          (rng-pick! rng (map car (filter (lambda (m) (member status (cadr m))) task-moves)))
+          (rng-pick! rng task-events))))
+
+  ;; task-restore-pick : Rng World Tag -> (U (Pair MNode Natural) #f)
+  ;; One of the account's live Tasks with a snapshot whose status or closed
+  ;; is not its own now, and that snapshot's revision: P10's restore.
+  (define (task-restore-pick rng w tag)
+    (let ((pairs (apply append
+                        (map (lambda (n)
+                               (let ((p (msnap-props (node-top n))))
+                                 (map (lambda (s) (cons n (msnap-revision s)))
+                                      (filter (lambda (s) (let ((sp (msnap-props s)))
+                                                            (not (and (equal? (mprops-status sp) (mprops-status p))
+                                                                      (equal? (mprops-closed sp) (mprops-closed p))))))
+                                              (mnode-snaps n)))))
+                             (of-kind "task" (nodes-of w tag))))))
+      (and (pair? pairs) (rng-pick! rng pairs))))
+
+  ;; own-task-target : Rng World Tag -> (U MNode #f)
+  ;; One of the account's live Tasks, any state, or #f when it has none.
+  (define (own-task-target rng w tag)
+    (let ((tasks (of-kind "task" (nodes-of w tag))))
+      (and (pair? tasks) (rng-pick! rng tasks))))
+
+  ;; own-contact-target : Rng World Tag -> (U MNode #f)
+  ;; One of the account's live Contacts, or #f: they are the fewest nodes,
+  ;; and hold the most props.
+  (define (own-contact-target rng w tag)
+    (let ((cs (of-kind "contact" (nodes-of w tag))))
+      (and (pair? cs) (rng-pick! rng cs))))
+
+  ;; own-kind-first-target : Rng World Tag -> (U MNode #f)
+  ;; One of the account's live nodes, its kind chosen first among the kinds
+  ;; it has, so a Contact is replaced as often as a Project; #f for none.
+  (define (own-kind-first-target rng w tag)
+    (let* ((own (nodes-of w tag))
+           (present (filter (lambda (k) (exists (lambda (n) (string=? (mnode-kind n) k)) own)) kinds)))
+      (and (pair? present) (let ((k (rng-pick! rng present))) (rng-pick! rng (of-kind k own))))))
+
   ;; next-event : Rng World Natural -> Event
   (define (next-event rng w now0)
     (let*-values (((tag) (rng-pick! rng '(a b)))
@@ -2060,11 +2979,12 @@
              (kind (rng-weighted! rng (append (list (cons (cond ((< many 6) 30) ((< many 14) 16) (else 6)) 'create)
                                                     '(31 . replace) '(22 . restore) '(38 . lifecycle)
                                                     '(5 . no-pre) '(13 . bad-pre)
-                                                    '(7 . get-node) '(12 . list-nodes) '(8 . list-revisions)
+                                                    '(12 . get-node) '(12 . list-nodes) '(12 . list-revisions)
                                                     '(16 . get-snapshot) '(16 . move) '(10 . move-children))
                                               (if (pair? chores) '((8 . chore)) '())
                                               '((36 . link) (12 . unlink) (18 . list-links))
-                                              (if (pair? link-chores) '((6 . link-chore)) '())))))
+                                              (if (pair? link-chores) '((6 . link-chore)) '())
+                                              '((34 . task))))))
         (case kind
           ((link unlink) (link-write-event rng w now tag key kind wait upper? degree))
           ((list-links) (links-list-event rng w now tag key wait upper? degree))
@@ -2086,27 +3006,58 @@
                         ((create-purged-other) (mnode-id (rng-pick! rng gone-theirs)))
                         (else (fresh-node-id rng w))))
                   (k0 (rng-pick! rng kinds)))
-             (let*-values (((parent p-aim) (choose-create-parent rng w f tag id)))
-               (let* ((k (create-kind rng w tag parent k0))
-                      (c (random-content rng k parent)))
+             (let*-values (((parent p-aim) (choose-create-parent rng w f tag id))
+                           ((k) (create-kind rng w tag parent k0))
+                           ((props props-aim) (choose-create-props rng k)))
+               (let ((c (random-content rng k parent props)))
                  (make-event 'put now tag key id 'create (list (cons "If-None-Match" "*")) c #f #f #f upper?
-                             (list aim p-aim wait) 'absent)))))
+                             (list aim p-aim props-aim wait) 'absent)))))
           ((replace)
-           (let*-values (((id n where) (choose-target rng w tag by-revisions))
+           (let*-values (((r) (rng-below! rng 100))
+                         ((task) (cond ((< r 25) (own-task-target rng w tag))
+                                       ((< r 40) (own-contact-target rng w tag))
+                                       ((< r 60) (own-kind-first-target rng w tag))
+                                       (else #f)))
+                         ((id n where) (if task (values (mnode-id task) task 'own) (choose-target rng w tag by-revisions)))
                          ((rev rev-aim) (choose-revision rng n (memq where '(other purged))))
-                         ((k kind-aim) (choose-kind rng n)))
-             (let ((c (random-content rng k 'absent)))
+                         ((k kind-aim) (choose-kind rng n))
+                         ((props props-aim) (choose-replace-props rng (and (eq? where 'own) n) k))
+                         ;; props over the cap, sent naming a kind: half the time the kind that
+                         ;; takes them, a Contact, so the 413 is met naming the kind as well as
+                         ;; naming none (another kind's name is the 400)
+                         ((k kind-aim) (if (and (eq? props-aim 'props-too-large) k (not (equal? k "contact"))
+                                                (= 0 (rng-below! rng 2)))
+                                           (values "contact" (if (and n (equal? (mnode-kind n) "contact")) 'kind-same 'kind-other))
+                                           (values k kind-aim))))
+             (let ((c (random-content rng k 'absent props)))
                (make-event 'put now tag key id rev (list (cons "If-Match" (etag-of rev))) c #f #f #f upper?
-                           (append (list (sym "replace-" where "-" rev-aim) kind-aim wait)
+                           (append (list (sym "replace-" where "-" rev-aim) kind-aim props-aim wait)
                                    (if (eq? where 'own) (list (sym "replace-own-" (mnode-state n))) '()))
                            'absent))))
           ((restore)
-           (let*-values (((id n where) (choose-target rng w tag by-snapshots))
-                         ((rev rev-aim) (choose-revision rng n (memq where '(other purged))))
-                         ((k snap-aim) (choose-snapshot rng n)))
-             (make-event 'restore now tag key id rev (list (cons "If-Match" (etag-of rev))) #f k #f #f upper?
-                         (append (list (sym "restore-" where "-" rev-aim) (sym "restore-" snap-aim) wait)
-                                 (if (eq? where 'own) (list (sym "restore-own-" (mnode-state n))) '()))
+           (let ((pick (and (< (rng-below! rng 100) 25) (task-restore-pick rng w tag))))
+             (if pick
+                 (let*-values (((n) (car pick))
+                               ((rev rev-aim) (choose-revision rng n #f)))
+                   (make-event 'restore now tag key (mnode-id n) rev (list (cons "If-Match" (etag-of rev))) #f (cdr pick)
+                               #f #f upper?
+                               (list 'restore-task-status-changed (sym "restore-own-" rev-aim)
+                                     (sym "restore-own-" (mnode-state n)) wait)
+                               'absent))
+                 (let*-values (((id n where) (choose-target rng w tag by-snapshots))
+                               ((rev rev-aim) (choose-revision rng n (memq where '(other purged))))
+                               ((k snap-aim) (choose-snapshot rng n)))
+                   (make-event 'restore now tag key id rev (list (cons "If-Match" (etag-of rev))) #f k #f #f upper?
+                               (append (list (sym "restore-" where "-" rev-aim) (sym "restore-" snap-aim) wait)
+                                       (if (eq? where 'own) (list (sym "restore-own-" (mnode-state n))) '()))
+                               'absent)))))
+          ((task)
+           (let*-values (((id n where) (choose-task-target rng w tag))
+                         ((ev) (choose-task-event rng n where))
+                         ((rev rev-aim) (choose-revision rng n (memq where '(other purged)))))
+             (make-event ev now tag key id rev (list (cons "If-Match" (etag-of rev))) #f #f #f #f upper?
+                         (append (list (sym ev "-" where "-" rev-aim) wait)
+                                 (if (eq? where 'own) (list (sym ev "-own-" (mnode-state n))) '()))
                          'absent)))
           ((lifecycle)
            (let*-values (((id n where) (choose-target rng w tag by-revisions))
@@ -2135,14 +3086,18 @@
           ((no-pre)
            (let*-values (((id n where) (choose-target rng w tag by-revisions)))
              (let* ((route (rng-pick! rng bare-routes))
-                    (c (and (eq? route 'put) (random-content rng (rng-pick! rng kinds) 'absent))))
+                    (k (rng-pick! rng kinds))
+                    (props (and (= 0 (rng-below! rng 2)) (rng-pick! rng props-corpus)))
+                    (c (and (eq? route 'put) (random-content rng k 'absent props))))
                (make-event route now tag key id 'missing '() c (and (eq? route 'restore) 1) #f #f upper?
                            (list (sym "no-precondition-" route) wait) 'null))))
           ((bad-pre)
            (let*-values (((id n where) (choose-target rng w tag by-revisions)))
              (let* ((route (rng-pick! rng bare-routes)))
                (let*-values (((hs aim) (bad-headers rng route (if n (node-rev n) 1))))
-                 (let ((c (and (eq? route 'put) (random-content rng (rng-pick! rng kinds) 'absent))))
+                 (let* ((k (rng-pick! rng kinds))
+                        (props (and (= 0 (rng-below! rng 2)) (rng-pick! rng props-corpus)))
+                        (c (and (eq? route 'put) (random-content rng k 'absent props))))
                    (make-event route now tag key id 'invalid hs c (and (eq? route 'restore) 1) #f #f upper?
                                (list aim (sym "bad-precondition-" route) wait) 'null))))))
           ((get-node)
@@ -2432,13 +3387,20 @@
     (let ((t (id-text (event-id e)))) (if (event-upper? e) (string-upcase t) t)))
   (define (node-path e) (string-append "/v1/nodes/" (path-id e)))
 
-  ;; content->text : Content -> String     the PUT's JSON
+  ;; content->text : Content -> String
+  ;; The PUT's JSON, with the props entry's text, when there is one, spliced
+  ;; in last exactly as the corpus writes it: so a name twice, a flonum and
+  ;; an escape reach the server as sent.
   (define (content->text c)
-    (json->string (append (if (content-kind c) (list (cons "kind" (content-kind c))) '())
-                          (list (cons "title" (content-title c)) (cons "body" (content-body c))
-                                (cons "content_type" (content-type c)))
-                          (if (content-props? c) (list (cons "props" '())) '())
-                          (if (eq? (content-parent c) 'absent) '() (list (cons "parent" (ref-text (content-parent c))))))))
+    (let ((base (json->string (append (if (content-kind c) (list (cons "kind" (content-kind c))) '())
+                                      (list (cons "title" (content-title c)) (cons "body" (content-body c))
+                                            (cons "content_type" (content-type c)))
+                                      (if (eq? (content-parent c) 'absent) '()
+                                          (list (cons "parent" (ref-text (content-parent c)))))))))
+      (if (content-props c)
+          (string-append (substring base 0 (- (string-length base) 1))
+                         ",\"props\":" (entry-sent (content-props c)) "}")
+          base)))
 
   (define (cursor-text x) (if (number? x) (number->string x) (format "~a" x)))
 
@@ -2512,6 +3474,9 @@
          (single (exchange h 'POST (string-append (node-path e) "/" (symbol->string (event-kind e)))
                            (cons auth (event-headers e)))))
         ((purge) (single (exchange h 'DELETE (node-path e) (cons auth (event-headers e)))))
+        ((done wontdo reopen)
+         (single (exchange h 'POST (string-append (node-path e) "/" (symbol->string (event-kind e)))
+                           (cons auth (event-headers e)))))
         ((move move-children)
          (single (exchange h 'POST (string-append (node-path e) "/" (symbol->string (event-kind e)))
                            (append (list auth (cons "Content-Type" "application/json")) (event-headers e))
@@ -2587,7 +3552,8 @@
   ;; law-breaks : World Event Obs -> (Listof String)
   ;; An answer held to laws that need no model. A node's answer shows a
   ;; live state (G14) and its revision as its ETag (H14); a state change's
-  ;; answer and a move's have no body (the plan's choice); a bulk move's
+  ;; answer, a move's and a Task's command's have no body (the plan's
+  ;; choice; P7); a bulk move's
   ;; has no ETag and is {"moved": N, "left": M} alone (H14); a purge's 204
   ;; has neither body nor ETag (G6); a list shows only the account's own
   ;; live nodes (H6, G14), each in the state asked (G8) and under the
@@ -2604,7 +3570,7 @@
                   (list (format "G14: a node's answer shows the state ~s" s)))
               (if (and (integer? r) (equal? (obs-etag o) (etag-of r))) '()
                   (list (format "H14: the ETag ~s is not the answer's revision ~s" (obs-etag o) r)))
-              (if (and (or (life-kind? kind) (eq? kind 'move)) (assoc "body" j))
+              (if (and (or (life-kind? kind) (task-kind? kind) (eq? kind 'move)) (assoc "body" j))
                   (list (format "the plan: a ~a's answer shows a body" kind))
                   '())))
            '())
@@ -2719,6 +3685,7 @@
   (define (s-type r) (list-ref r 4))
   (define (s-props r) (list-ref r 5))
   (define (s-created r) (list-ref r 6))
+  (define (s-body r) (list-ref r 7))
   (define (c-owner r) (list-ref r 0))
   (define (c-seq r) (list-ref r 1))
   (define (c-node r) (list-ref r 2))
@@ -2757,8 +3724,12 @@
   (define (find-node rows id) (find (lambda (r) (bytevector=? (n-id r) id)) rows))
   (define (but-node rows id) (filter (lambda (r) (not (bytevector=? (n-id r) id))) rows))
 
-  ;; The ops that write content, and so a snapshot.
-  (define content-ops '("create" "update" "restore"))
+  ;; The ops that write content, and so a snapshot: a Task's three
+  ;; commands among them (P7: a transition writes a snapshot).
+  (define content-ops '("create" "update" "restore" "done" "wontdo" "reopen"))
+
+  ;; task-ops : the change rows a Task's commands write, each its own name
+  (define task-ops '("done" "wontdo" "reopen"))
 
   ;; link-ops : the change rows a link writes on its source (K5)
   (define link-ops '("link" "unlink"))
@@ -2766,14 +3737,14 @@
 
   ;; feed-state : (Listof String) -> (U String #f)
   ;; The state a node's change rows leave it in, oldest first: a create
-  ;; makes it active, an update, a restore, a move, a link or an unlink
-  ;; keeps it (G3'), a change of state lands where lifecycle-moves says. #f
-  ;; for an op none of these is.
+  ;; makes it active, an update, a restore, a move, a link, an unlink and
+  ;; a Task's done, wontdo and reopen keep it (G3'), a change of state
+  ;; lands where lifecycle-moves says. #f for an op none of these is.
   (define (feed-state ops)
     (fold-left (lambda (state op)
                  (cond ((not state) #f)
                        ((string=? op "create") "active")
-                       ((member op '("update" "restore" "move" "link" "unlink")) state)
+                       ((member op '("update" "restore" "move" "link" "unlink" "done" "wontdo" "reopen")) state)
                        ((find (lambda (m) (string=? (symbol->string (car m)) op)) lifecycle-moves)
                         => (lambda (m) (symbol->string (caddr m))))
                        (else #f)))
@@ -2923,12 +3894,62 @@
                    acc)))
        '() links)))
 
+  ;; text-breaks : String String -> (Listof String)
+  ;; A KIND's stored props TEXT held to R1, R2, R5 and R9 by the model's
+  ;; own reading (the JSON reader, never (techo props)): at most 4,096
+  ;; bytes and a JSON object (R1); a Task's never holds the default TODO
+  ;; (R2), a status only DONE or WONTDO, and closed, a whole number, exactly
+  ;; when the status, TODO when none is stored, is not TODO (R5);
+  ;; every When a Note's or a Task's holds is one of the corpus's good ones
+  ;; (R9, by the corpus). Remembered by kind and text: the texts repeat.
+  (define text-memo (make-hashtable equal-hash equal?))
+  (define (text-breaks kind text)
+    (let ((key (cons kind text)))
+      (or (hashtable-ref text-memo key #f)
+          (let ((b (text-breaks* kind text))) (hashtable-set! text-memo key b) b))))
+  (define (text-breaks* kind text)
+    (let ((j (guard (c (#t 'not-json)) (json-of text))))
+      (append
+       (if (<= (bytevector-length (string->utf8 text)) 4096) '() (list "R1: its props are over 4,096 bytes"))
+       (cond ((not (list? j)) (list "R1: its props are no JSON object"))
+             ((string=? kind "task")
+              (let ((status (assoc "status" j)) (closed (assoc "closed" j)))
+                (append
+                 (if (and status (equal? (cdr status) "TODO")) (list "R2: a Task's props store the default TODO") '())
+                 (if (or (not status) (member (cdr status) '("TODO" "DONE" "WONTDO"))) '()
+                     (list (format "R5: a Task's status is ~s" (cdr status))))
+                 (if (eq? (and status (not (equal? (cdr status) "TODO")) #t) (and closed #t)) '()
+                     (list "R5: a Task's closed is there while it is TODO, or not there while it is not"))
+                 (if (or (not closed) (natural? (cdr closed))) '() (list "R5: a Task's closed is no whole number")))))
+             (else '()))
+       (if (and (list? j) (for-all (lambda (x) (member x good-whens)) (whens-in kind text))) '()
+           (list "R9: its props hold a When that is not one of the corpus's good ones")))))
+
+  ;; props-table-breaks : (Listof Row) (Listof Row) -> (Listof String)
+  ;; Every row of nodes and every snapshot, its props by text-breaks, a
+  ;; snapshot by its node's kind.
+  (define (props-table-breaks nodes snaps)
+    (let ((kind-of (make-id-table)))
+      (for-each (lambda (r) (hashtable-set! kind-of (n-id r) (n-kind r))) nodes)
+      (append
+       (apply append (map (lambda (r) (map (lambda (b) (format "node ~a: ~a: ~s" (id-text (n-id r)) b (n-props r)))
+                                           (text-breaks (n-kind r) (n-props r))))
+                          nodes))
+       (apply append (map (lambda (s) (let ((k (hashtable-ref kind-of (s-node s) #f)))
+                                        (if k
+                                            (map (lambda (b) (format "node ~a's snapshot ~a: ~a: ~s" (id-text (s-node s))
+                                                                     (s-rev s) b (s-props s)))
+                                                 (text-breaks k (s-props s)))
+                                            '())))
+                          snaps)))))
+
   ;; always-breaks : Db -> (Listof String)
   (define (always-breaks db)
     (let* ((nodes (car db)) (snaps (cadr db)) (changes (caddr db))
            (snaps-of (grouped snaps s-node))
            (changes-of (grouped changes c-node)))
       (append
+       (props-table-breaks nodes snaps)
        (forest-breaks nodes)
        (link-table-breaks nodes (db-links db))
        (fold-right (lambda (r acc)
@@ -3149,7 +4170,55 @@
                  (list (format "H4, G6': an accepted ~a adds one change row, (~a ~a ~a ~a ~s ~a); the rows before were ~a, after ~a"
                                op (event-tag e) (+ m0 1) name rev op now
                                (length (caddr db0)) (length changes1))))
+             (if r0 (props-change-breaks e op name r0 r1 mine0 mine1 rev) '())
              (key-breaks e op db0 db1))))))
+
+  ;; status-and-closed : String -> (List String (U Any #f))
+  ;; A Task's stored text read by the model: its status, TODO when none is
+  ;; stored, and its closed, or #f.
+  (define (status-and-closed text)
+    (let* ((j (guard (c (#t '())) (json-of text)))
+           (s (and (list? j) (assoc "status" j)))
+           (c (and (list? j) (assoc "closed" j))))
+      (list (if s (cdr s) "TODO") (and c (cdr c)))))
+
+  ;; props-change-breaks : Event String String Row Row (Listof Row) (Listof Row) Natural -> (Listof String)
+  ;; An accepted write of a node that was there, R0 before and R1 after,
+  ;; its snapshots MINE0 and MINE1, at REV, held to what it may do to
+  ;; props. G11': a command changes only props: its snapshot's title, body
+  ;; and content type are the newest snapshot's before, the row's title and
+  ;; content type are as they were, and its status after is the command's
+  ;; (done DONE, wontdo WONTDO, reopen TODO). R13: a replace with no props
+  ;; leaves them as they were. R4: a replace leaves a Task's status and
+  ;; closed; R14: so does a restore.
+  (define (props-change-breaks e op name r0 r1 mine0 mine1 rev)
+    (let* ((task? (equal? (n-kind r0) "task"))
+           (before (status-and-closed (n-props r0)))
+           (after (status-and-closed (n-props r1))))
+      (append
+       (if (member op task-ops)
+           (let ((top0 (fold-left (lambda (best s) (if (or (not best) (> (s-rev s) (s-rev best))) s best)) #f mine0))
+                 (added (find (lambda (s) (= (s-rev s) rev)) mine1))
+                 (lands (cdr (assoc op '(("done" . "DONE") ("wontdo" . "WONTDO") ("reopen" . "TODO"))))))
+             (append
+              (if (and top0 added (equal? (s-title added) (s-title top0)) (equal? (s-type added) (s-type top0))
+                       (equal? (s-body added) (s-body top0)))
+                  '()
+                  (list (format "G11', R6: a ~a of ~a wrote a snapshot whose title, body or content type is not its newest's before"
+                                op name)))
+              (if (and (equal? (n-title r1) (n-title r0)) (equal? (n-type r1) (n-type r0))) '()
+                  (list (format "G11': a ~a of ~a changed its title or content type" op name)))
+              (if (and task? (equal? (car after) lands)) '()
+                  (list (format "G11', P7: a ~a of ~a (a ~a) left its status ~s, not ~s" op name (n-kind r0) (car after) lands)))))
+           '())
+       (if (and (string=? op "update") (not (content-props (event-content e))) (not (equal? (n-props r1) (n-props r0))))
+           (list (format "R13: a replace of ~a with no props changed them from ~s to ~s" name (n-props r0) (n-props r1)))
+           '())
+       (if (and task? (member op '("update" "restore")) (not (equal? before after)))
+           (list (format "~a: a~a of Task ~a moved its status and closed from ~s to ~s"
+                         (if (string=? op "update") "R4" "R14") (if (string=? op "update") " replace" " restore")
+                         name before after))
+           '()))))
 
   ;; link-breaks : Event Db Db -> (Listof String)
   ;; H1': an accepted link (201) or unlink (204), between the tables
@@ -3259,7 +4328,7 @@
     (map (lambda (n)
            (let ((owner (account-id-of (mnode-tag n)))
                  (content (if (live? n)
-                              (let ((s (node-top n))) (list (msnap-title s) (msnap-type s) (msnap-props s)))
+                              (let ((s (node-top n))) (list (msnap-title s) (msnap-type s) (mprops-text (msnap-props s))))
                               (list "" purged-type "{}"))))
              (append (list (mnode-id n) owner owner (mnode-kind n))
                      content
@@ -3272,7 +4341,7 @@
            (map (lambda (n)
                   (map (lambda (s)
                          (list (mnode-id n) (msnap-revision s) (account-id-of (msnap-author s)) (msnap-title s)
-                               (msnap-type s) (msnap-props s) (msnap-created s) (msnap-body s)))
+                               (msnap-type s) (mprops-text (msnap-props s)) (msnap-created s) (msnap-body s)))
                        (reverse (mnode-snaps n))))
                 (by-id (world-nodes w)))))
 
@@ -3557,6 +4626,193 @@
                (list (cond ((and outs ins) 'purge-links-both) (outs 'purge-links-out) (else 'purge-links-in)))))
             (else (list (sym "linked-" (route-name e))))))))))
 
+  ;;; A file from before this slice: Tasks stored {} (slice 6, P9)
+
+  ;; seed-world : Rng Natural -> World
+  ;; A plain seed's start: one to three Tasks, either account's, as a file
+  ;; written before this slice holds them, every props {}: each made before
+  ;; T0 at the top level, at revision 1 (a create); or 2 (and an update,
+  ;; another snapshot); or 3 (and then an archive or a trash, no snapshot).
+  (define (seed-world rng t0)
+    (let loop ((w model-start) (i 1) (k (+ 1 (rng-below! rng 3))))
+      (if (> i k)
+          w
+          (let* ((tag (rng-pick! rng '(a b)))
+                 (id (fresh-node-id rng w))
+                 (c0 (- t0 (* 100000 (- 4 i))))
+                 (title (rng-pick! rng title-pool))
+                 (body (rng-pick! rng body-pool))
+                 (type (rng-pick! rng type-pool))
+                 (title2 (rng-pick! rng title-pool))
+                 (body2 (rng-pick! rng body-pool))
+                 (r (rng-below! rng 3))
+                 (change (rng-pick! rng '(archive trash)))
+                 (n1 (make-mnode id tag (string-append "s" (number->string i)) "task" c0 'active 1 c0
+                                 (list (make-msnap 1 title body type (empty-props "task") c0 tag)) #f))
+                 (w1 (world-with-seeded (world-with-change (world-with-node w n1) tag id 1 "create" c0) id))
+                 (n2 (and (>= r 1) (with-snap n1 title2 body2 type (empty-props "task") (+ c0 10))))
+                 (w2 (if n2 (world-with-change (world-with-node w1 n2) tag id 2 "update" (+ c0 10)) w1))
+                 (n3 (and (= r 2) (with-state n2 (if (eq? change 'archive) 'archived 'trashed) (+ c0 20))))
+                 (w3 (if n3 (world-with-change (world-with-node w2 n3) tag id 3 (symbol->string change) (+ c0 20)) w2)))
+            (loop w3 (+ i 1) k)))))
+
+  ;; seed-rows! : Store World -> Void
+  ;; W's rows written straight into the tables, as no route writes them:
+  ;; each node's (it has no parent), each snapshot's, each change row.
+  (define (seed-rows! store w)
+    (run-write store
+               (lambda (tx)
+                 (for-each (lambda (r)
+                             (tx-execute! tx (string-append "INSERT INTO nodes (id, owner, author, kind, title, content_type,"
+                                                            " props, revision, created, updated, state)"
+                                                            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+                                          (n-id r) (n-owner r) (n-author r) (n-kind r) (n-title r) (n-type r) (n-props r)
+                                          (n-rev r) (n-created r) (n-updated r) (n-state r)))
+                           (model-node-rows w))
+                 (for-each (lambda (s)
+                             (tx-execute! tx (string-append "INSERT INTO revisions (node, revision, author, title, content_type,"
+                                                            " props, created, body) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+                                          (s-node s) (s-rev s) (s-author s) (s-title s) (s-type s) (s-props s) (s-created s)
+                                          (s-body s)))
+                           (model-snap-rows w))
+                 (for-each (lambda (c)
+                             (tx-execute! tx "INSERT INTO changes (owner, seq, node, revision, op, created) VALUES (?, ?, ?, ?, ?, ?)"
+                                          (c-owner c) (c-seq c) (c-node c) (c-rev c) (c-op c) (c-created c)))
+                           (model-change-rows w)))))
+
+  ;;; What slice 6's rules looked at
+
+  ;; shown-empty-task? : Alist -> Boolean     an answer's node or snapshot item showing a Task stored {}: TODO, nothing else
+  (define (shown-empty-task? item)
+    (let ((p (assoc "props" item)))
+      (and p (equal? (cdr p) '(("status" . "TODO"))))))
+
+  ;; props-aims : World Event Expectation -> (Listof Symbol)
+  ;; What the props' rules, the task table and P9 looked at for E, by the
+  ;; model's own reading:
+  ;;   props-400-before-<kind|unnamed>, props-413-<create|replace-named|replace-unnamed>
+  ;;                          a PUT's props refused before the job, by the kind named
+  ;;   create-task-todo-closed-400   P14's 400
+  ;;   props-400-job-<kind>   a replace that named no kind, refused in the job by the stored kind
+  ;;   status-fixed-<status|closed>, status-fixed-closed-while-todo
+  ;;   props-create-<kind>, create-task-<DONE|WONTDO>-closed-<given|now>
+  ;;   props-replace-<kind>, replace-no-props-<kind>, replace-no-props-kept,
+  ;;   replace-task-claims-own   a Task's status or closed sent back as stored
+  ;;   entry-<name>-<status>  each corpus entry by what it was answered
+  ;;   restore-task-status-differs, restore-task-closed-differs   P10
+  ;;   task-404-<why>, task-412(-would-be-wrong-status, -trashed, -not-a-task),
+  ;;   task-409-wrong-state-<task|other-kind>, task-409-not-a-task-<kind>,
+  ;;   task-cell-<state>-<status>-<command>   the nine cells, active and archived
+  ;;   seeded-<command>, seeded-reopen-wrong-status, seeded-<replace|restore>,
+  ;;   seeded-read-<node|list|revisions|snapshot>   on a seeded Task still {}
+  ;;   empty-task-<command>, empty-task-read-<node|list|link-item|revisions|snapshot>
+  ;;                          the same on any Task stored {}
+  (define (props-aims w e x)
+    (let* ((kind (event-kind e)) (status (expectation-status x)) (code (expectation-code x))
+           (tag (event-tag e)) (id (event-id e))
+           (own (and id (own-node w tag id)))
+           (fresh-seed? (and own (seeded? w id) (empty-task? w own)))
+           (pre-ok? (not (memq (event-pre e) '(missing invalid)))))
+      (case kind
+        ((put)
+         (if (not pre-ok?)
+             '()
+             (let* ((c (event-content e)) (create? (eq? (event-pre e) 'create))
+                    (entry (content-props c)) (named (content-kind c))
+                    (r (props-refusal e))
+                    (v (and entry own (entry-verdict entry (mnode-kind own)))))
+               (append
+                (if entry (list (sym "entry-" (entry-name entry) "-" (number->string status))) '())
+                (cond
+                 (r (cond ((and create? (= (car r) 400) (claim? (entry-verdict (or entry empty-entry) named))
+                                (taken? (entry-verdict (or entry empty-entry) named)))
+                           '(create-task-todo-closed-400))
+                          ((= (car r) 400) (list (sym "props-400-before-" (or named "unnamed"))))
+                          (create? '(props-413-create))
+                          (named '(props-413-replace-named))
+                          (else '(props-413-replace-unnamed))))
+                 ((and (eqv? status 400) own) (list (sym "props-400-job-" (mnode-kind own))))
+                 ((equal? code "status_fixed")
+                  (let ((p (msnap-props (node-top own))))
+                    (cons (sym "status-fixed-" (claim-differs? v p))
+                          (if (and (claim-closed v) (string=? (mprops-status p) "TODO")) '(status-fixed-closed-while-todo) '()))))
+                 ((eqv? status 201)
+                  (let ((cv (entry-verdict (or entry empty-entry) named)))
+                    (cons (sym "props-create-" named)
+                          (if (and (claim? cv) (member (claim-status cv) '("DONE" "WONTDO")))
+                              (list (sym "create-task-" (claim-status cv) "-closed-" (if (claim-closed cv) "given" "now")))
+                              '()))))
+                 ((and (eqv? status 200) own)
+                  (append
+                   (if entry
+                       (list (sym "props-replace-" (mnode-kind own)))
+                       (cons (sym "replace-no-props-" (mnode-kind own))
+                             (if (string=? (mprops-text (msnap-props (node-top own))) "{}") '() '(replace-no-props-kept))))
+                   (if (and (claim? v) (or (claim-status v) (claim-closed v))) '(replace-task-claims-own) '())
+                   (if fresh-seed? '(seeded-replace) '())))
+                 (else '()))))))
+        ((restore)
+         (if (and (eqv? status 200) own (string=? (mnode-kind own) "task"))
+             (let ((p (msnap-props (node-top own))) (sp (msnap-props (snap-of own (event-snap e)))))
+               (append (if (equal? (mprops-status p) (mprops-status sp)) '() '(restore-task-status-differs))
+                       (if (equal? (mprops-closed p) (mprops-closed sp)) '() '(restore-task-closed-differs))
+                       (if fresh-seed? '(seeded-restore) '())))
+             '()))
+        ((done wontdo reopen)
+         (if (not pre-ok?)
+             '()
+             (let* ((cell (task-cell w e))
+                    (found (list-ref cell 1)) (state (list-ref cell 2)) (nk (list-ref cell 3)) (st (list-ref cell 4))
+                    (move (assq kind task-moves)))
+               (append
+                (case status
+                  ((404) (list (sym "task-404-" (end-why w tag id))))
+                  ((412) (cons 'task-412
+                               (cond ((eq? state 'trashed) '(task-412-trashed))
+                                     ((not (equal? nk "task")) '(task-412-not-a-task))
+                                     ((not (member st (cadr move))) '(task-412-would-be-wrong-status))
+                                     (else '()))))
+                  ((409) (cond ((equal? code "wrong_state")
+                                (list (if (equal? nk "task") 'task-409-wrong-state-task 'task-409-wrong-state-other-kind)))
+                               ((equal? code "not_a_task") (list (sym "task-409-not-a-task-" nk)))
+                               (else (list (sym "task-cell-" state "-" st "-" kind)))))
+                  ((200) (list (sym "task-cell-" state "-" st "-" kind)))
+                  (else '()))
+                (if (and fresh-seed? (eq? found 'match))
+                    (case status
+                      ((200) (list (sym "seeded-" kind)))
+                      ((409) (if (equal? code "wrong_status") (list (sym "seeded-" kind "-wrong-status")) '()))
+                      (else '()))
+                    '())
+                (if (and own (empty-task? w own) (eqv? status 200)) (list (sym "empty-task-" kind)) '())))))
+        ((get-node)
+         (if (and (eqv? status 200) own (empty-task? w own))
+             (cons 'empty-task-read-node (if fresh-seed? '(seeded-read-node) '()))
+             '()))
+        ((list-nodes list-links)
+         (let* ((items (or (and (eqv? status 200) (expectation-items x)) '()))
+                (nodes (if (eq? kind 'list-links) (map (lambda (i) (cdr (assoc "node" i))) items) items))
+                (empty (filter shown-empty-task? nodes)))
+           (if (null? empty)
+               '()
+               (cons (if (eq? kind 'list-links) 'empty-task-read-link-item 'empty-task-read-list)
+                     (if (and (eq? kind 'list-nodes)
+                              (exists (lambda (i) (exists (lambda (s) (equal? (cdr (assoc "id" i)) (id-text s)))
+                                                          (world-seeded w)))
+                                      empty))
+                         '(seeded-read-list)
+                         '())))))
+        ((list-revisions)
+         (if (and (eqv? status 200) own (string=? (mnode-kind own) "task")
+                  (exists shown-empty-task? (expectation-items x)))
+             (cons 'empty-task-read-revisions (if (seeded? w id) '(seeded-read-revisions) '()))
+             '()))
+        ((get-snapshot)
+         (if (and (eqv? status 200) own (string=? (mnode-kind own) "task") (shown-empty-task? (expectation-json x)))
+             (cons 'empty-task-read-snapshot (if (seeded? w id) '(seeded-read-snapshot) '()))
+             '()))
+        (else '()))))
+
   (define (reset! store)
     (run-write store
                (lambda (tx)
@@ -3609,15 +4865,15 @@
 
   ;; run-sequence : Store Twist Natural Boolean -> Verdict
   ;; The sequence SEED makes, on STORE, emptied first: a fresh app on it
-  ;; (wrap-server around make-app, its wall clock set by the sequence), 82
-  ;; to 119 generated requests, after the family on a family seed; or, on a
+  ;; (wrap-server around make-app, its wall clock set by the sequence), 88
+  ;; to 127 generated requests, after the family on a family seed; or, on a
   ;; deep seed, the chain, the script and 14 to 27. TWIST is as-planned, or
   ;; a changed rule. TRACE? prints each request and its answer as it goes.
   (define (run-sequence store twist seed trace?)
     (let* ((rng (make-rng seed))
            (style (cond ((deep-seed? seed) 'deep) ((family-seed? seed) 'family) ((linked-seed? seed) 'linked)
                         (else 'plain)))
-           (n (if (eq? style 'deep) (+ 14 (rng-below! rng 14)) (+ 82 (rng-below! rng 38))))
+           (n (if (eq? style 'deep) (+ 14 (rng-below! rng 14)) (+ 88 (rng-below! rng 40))))
            (t0 (+ 1795515226123 (rng-below! rng 100000)))
            (deep-tag (rng-pick! rng '(a b)))
            (total (+ n (case style
@@ -3626,7 +4882,10 @@
            (bodies (make-hashtable string-hash string=?))
            (now-cell (vector t0))
            (clock (step-clock 0 1))
-           (h (wrap-server (make-app (store-reader store) (store-writer store)
+           (jobs (vector 0))
+           (writer (let ((write (store-writer store)))
+                     (lambda (job) (vector-set! jobs 0 (+ 1 (vector-ref jobs 0))) (write job))))
+           (h (wrap-server (make-app (store-reader store) writer
                                      (lambda () (vector-ref now-cell 0))
                                      (byte-sequence) clock)
                            (lambda (line) #f) 10000 clock))
@@ -3671,9 +4930,10 @@
          (if x
              (format "  the model expects: ~a ~s, ETag ~s, stepping ~a~a~a\n"
                      (expectation-status x) (expectation-code x) (expectation-etag x)
-                     (if (and (link-kind? (event-kind e)) (not (link-bad e)))
-                         (string-append "link-command's " (link-cell-text (link-cell w e)))
-                         (cells-text (expectation-cells x)))
+                     (cond ((and (link-kind? (event-kind e)) (not (link-bad e)))
+                            (string-append "link-command's " (link-cell-text (link-cell w e))))
+                           ((task-kind? (event-kind e)) (string-append "the task table's " (task-cell-text (job-task-cell w e))))
+                           (else (cells-text (expectation-cells x))))
                      (if (expectation-clause x) (string-append " (" (expectation-clause x) ")") "")
                      (if (expectation-problem x) (string-append "; " (expectation-problem x)) ""))
              "")
@@ -3692,14 +4952,19 @@
               (report w e i desc x #f (list "the model cannot take this step"))
               (begin
                 (vector-set! now-cell 0 (event-now e))
-                (let ((seen (attempt (lambda () (observe h e)))))
+                (let* ((jobs0 (vector-ref jobs 0))
+                       (seen (attempt (lambda () (observe h e))))
+                       (made (- (vector-ref jobs 0) jobs0)))
                   (if (eq? (car seen) 'raised)
                       (report w e i desc x #f (list (string-append "the request raised: " (cadr seen))))
                       (let* ((o (cadr seen))
                              (w1 (expectation-world x))
                              (db (attempt (lambda () (db-now store))))
                              (breaks
-                              (append (guarded "comparing the answer" (lambda () (answer-breaks x o)))
+                              (append (if (= made (expectation-jobs x)) '()
+                                          (list (format "R15: the request made ~a write jobs; the model has ~a (none for a refusal before the job, the props' among them)"
+                                                        made (expectation-jobs x))))
+                                      (guarded "comparing the answer" (lambda () (answer-breaks x o)))
                                       (guarded "the answer's laws" (lambda () (law-breaks w e o)))
                                       (guarded "the refusals' bodies" (lambda () (body-breaks o)))
                                       (if (eq? (car db) 'raised)
@@ -3712,6 +4977,7 @@
                         (for-each (lambda (a) (count! aims a)) (event-aims e))
                         (for-each (lambda (a) (count! aims a)) (tree-aims w e x))
                         (for-each (lambda (a) (count! aims a)) (link-aims w e x o))
+                        (for-each (lambda (a) (count! aims a)) (props-aims w e x))
                         (let ((p (purged-aim w e))) (when p (count! aims p)))
                         (when (expectation-touched x) (count! aims 'last-used-set))
                         (when (and (write-kind? (event-kind e))
@@ -3724,23 +4990,27 @@
                           (set! log (cons line log))
                           (when trace?
                             (display (format "~a (the model: ~a, ~a)\n" line (expectation-status x)
-                                             (if (and (link-kind? (event-kind e)) (not (link-bad e)))
-                                                 (link-cell-text (link-cell w e))
-                                                 (cells-text (expectation-cells x)))))))
+                                             (cond ((and (link-kind? (event-kind e)) (not (link-bad e)))
+                                                    (link-cell-text (link-cell w e)))
+                                                   ((task-kind? (event-kind e)) (task-cell-text (job-task-cell w e)))
+                                                   (else (cells-text (expectation-cells x))))))))
                         (if (null? breaks)
                             (cons w1 (cadr db))
                             (report w e i desc x o breaks)))))))))
 
       (reset! store)
-      (let ((db (attempt (lambda () (db-now store)))))
+      (let* ((w0 (if (eq? style 'plain) (seed-world rng t0) model-start))
+             (seeding (attempt (lambda () (seed-rows! store w0))))
+             (db (attempt (lambda () (db-now store)))))
         (cond
+         ((eq? (car seeding) 'raised) (verdict 0 (string-append "seeding the file raised: " (cadr seeding))))
          ((eq? (car db) 'raised) (verdict 0 (string-append "reading the database raised: " (cadr db))))
-         ((pair? (model-breaks model-start (cadr db)))
-          (verdict 0 (join (cons (format "seed ~a: the emptied file is not the model's start:" seed)
-                                 (model-breaks model-start (cadr db)))
+         ((pair? (append (model-breaks w0 (cadr db)) (always-breaks (cadr db))))
+          (verdict 0 (join (cons (format "seed ~a: the emptied (or seeded) file is not the model's start:" seed)
+                                 (append (model-breaks w0 (cadr db)) (always-breaks (cadr db))))
                            "\n  - ")))
          (else
-          (let loop ((w model-start) (db0 (cadr db)) (now t0) (i 1))
+          (let loop ((w w0) (db0 (cadr db)) (now t0) (i 1))
             (if (> i total)
                 (verdict total #f)
                 (let* ((e (event-at w now i))
@@ -3748,4 +5018,115 @@
                   (if (string? r)
                       (verdict i r)
                       (loop (car r) (cdr r) (event-now e) (+ i 1)))))))))))
+
+  ;;; The corpus, checked once against the server (slice 6)
+
+  ;; corpus-breaks : Store -> (Listof String)
+  ;; Every entry of the corpus through the real handlers, on STORE emptied
+  ;; first, so that a wrong entry is a named failure rather than a mystery
+  ;; mid-run. For each entry and each kind: a create of that kind with those
+  ;; props, answered as the entry says (a 201 storing the entry's text, a
+  ;; Task's made from its claim at the write's time, its answer showing it;
+  ;; or the 400 or the 413 with no write job). Then a node of each kind made
+  ;; with none (as {}), and each entry sent by a replace that names no
+  ;; kind: when no kind takes it, the 400 (or the 413) with no write job;
+  ;; when the node's kind refuses it, the 400 in the job; a Task's claim of
+  ;; a status but TODO, or of any closed, 409 status_fixed in the job; else
+  ;; a 200 storing its text. Each failure names the entry, the kind and the
+  ;; route, the corpus's answer and the server's.
+  (define (corpus-breaks store)
+    (reset! store)
+    (let* ((now-cell (vector 1795515300000))
+           (clock (step-clock 0 1))
+           (jobs (vector 0))
+           (writer (let ((write (store-writer store)))
+                     (lambda (job) (vector-set! jobs 0 (+ 1 (vector-ref jobs 0))) (write job))))
+           (h (wrap-server (make-app (store-reader store) writer (lambda () (vector-ref now-cell 0)) (byte-sequence) clock)
+                           (lambda (line) #f) 10000 clock))
+           (auth (bearer (key-secret-of (make-bytevector 16 1))))
+           (counter (vector 0))
+           (stored (lambda (id)
+                     (run-read store (lambda (tx) (let ((rows (tx-query tx "SELECT props FROM nodes WHERE id = ?" id)))
+                                                    (and (pair? rows) (vector-ref (car rows) 0))))))))
+      (define (next-id!) (vector-set! counter 0 (+ 1 (vector-ref counter 0))) (node-id-of (+ 1000 (vector-ref counter 0))))
+      (define (tick!) (vector-set! now-cell 0 (+ 1 (vector-ref now-cell 0))) (vector-ref now-cell 0))
+      ;; put! : Bytevector (U Natural 'create) Content -> (values Answer Natural Natural)     the answer, the write jobs, now
+      (define (put! id pre c)
+        (let* ((now (tick!)) (j0 (vector-ref jobs 0))
+               (a (exchange h 'PUT (string-append "/v1/nodes/" (id-text id))
+                            (list auth (cons "Content-Type" "application/json")
+                                  (if (eq? pre 'create) (cons "If-None-Match" "*") (cons "If-Match" (etag-of pre))))
+                            (content->text c))))
+          (values a (- (vector-ref jobs 0) j0) now)))
+      ;; judged : String String Answer Natural Natural (U String #f) Bytevector (U Any #f) -> (Listof String)
+      ;; WHAT's answer A, with JOBS write jobs, against the corpus's STATUS,
+      ;; CODE, WANT-JOBS and, for a 2xx, the TEXT stored at ID and SHOWN.
+      (define (judged what a jobs status code want-jobs text id shown)
+        (let ((got-code (problem-code a)))
+          (append
+           (if (and (= (answer-status a) status) (equal? got-code code)) '()
+               (list (format "~a: the corpus has ~a ~a, the server answered ~a ~a" what status (or code "")
+                             (answer-status a) (or got-code ""))))
+           (if (= jobs want-jobs) '()
+               (list (format "~a: the corpus has ~a write jobs, the server made ~a (R15)" what want-jobs jobs)))
+           (if (and text (= (answer-status a) status))
+               (append
+                (let ((s (stored id)))
+                  (if (equal? s text) '()
+                      (list (format "~a: the corpus has the text ~s stored, the server stored ~s" what text s))))
+                (let* ((j (answer-json a)) (p (and (list? j) (assoc "props" j))))
+                  (if (and p (equal? (sorted-json (cdr p)) shown)) '()
+                      (list (format "~a: the corpus shows ~s, the server answered ~s" what shown
+                                    (and (list? j) (assoc "props" j)))))))
+               '()))))
+      (let* ((creates
+              (apply append
+                     (map (lambda (e)
+                            (apply append
+                                   (map (lambda (k)
+                                          (let*-values (((id) (next-id!))
+                                                        ((a jobs now) (put! id 'create (make-content k "corpus" "" "text/plain" e 'absent)))
+                                                        ((v) (entry-verdict e k))
+                                                        ((what) (format "corpus: ~a, a create of a ~a" (entry-name e) k)))
+                                            (if (create-refused? e k)
+                                                (judged what a jobs (if (eq? v 'too-large) 413 400)
+                                                        (if (eq? v 'too-large) "props_too_large" "invalid_request") 0 #f id #f)
+                                                (let ((p (create-props k e now)))
+                                                  (judged what a jobs 201 #f 1 (mprops-text p) id (props-shown k p))))))
+                                        kinds)))
+                          props-corpus)))
+             (bases (map (lambda (k)
+                           (let ((id (next-id!)))
+                             (let-values (((a jobs now) (put! id 'create (make-content k "base" "" "text/plain" #f 'absent))))
+                               (vector k id (if (= (answer-status a) 201) 1 #f)))))
+                         kinds))
+             (replaces
+              (apply append
+                     (map (lambda (e)
+                            (apply append
+                                   (map (lambda (b)
+                                          (let ((k (vector-ref b 0)) (id (vector-ref b 1)) (rev (vector-ref b 2)))
+                                            (if (not rev)
+                                                (list (format "corpus: the base ~a was not made" k))
+                                                (let*-values (((a jobs now) (put! id rev (make-content #f "corpus" "" "text/plain" e 'absent)))
+                                                              ((vs) (map (lambda (j) (entry-verdict e j)) kinds))
+                                                              ((v) (entry-verdict e k))
+                                                              ((what) (format "corpus: ~a, a replace naming no kind of a ~a" (entry-name e) k)))
+                                                  (when (= (answer-status a) 200) (vector-set! b 2 (+ rev 1)))
+                                                  (cond
+                                                   ((not (exists taken? vs))
+                                                    (let ((large? (memq 'too-large vs)))
+                                                      (judged what a jobs (if large? 413 400) (if large? "props_too_large" "invalid_request")
+                                                              0 #f id #f)))
+                                                   ((not (taken? v)) (judged what a jobs 400 "invalid_request" 1 #f id #f))
+                                                   ((and (claim? v) (or (member (claim-status v) '("DONE" "WONTDO")) (claim-closed v)))
+                                                    (judged what a jobs 409 "status_fixed" 1 #f id #f))
+                                                   (else
+                                                    (let ((p (if (claim? v)
+                                                                 (task-props "TODO" #f (claim-deadline v) (claim-scheduled v))
+                                                                 (plain-props v))))
+                                                      (judged what a jobs 200 #f 1 (mprops-text p) id (props-shown k p)))))))))
+                                        bases)))
+                          props-corpus))))
+        (append creates replaces))))
 )

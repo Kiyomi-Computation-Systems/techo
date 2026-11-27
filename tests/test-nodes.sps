@@ -244,25 +244,36 @@
 (define (parsed x create?) (attempt (lambda () (summary (parse-content x create?)))))
 (define (judged x create?) (attempt (lambda () (verdict (parse-content x create?)))))
 
-(test-equal "content: a create"
-  '("note" "A title" "Some text" "text/plain" "{}")
+(test-equal "content: a create; props not given are absent"
+  '("note" "A title" "Some text" "text/plain" absent)
   (parsed good #t))
 
 (test-equal "content: the members in another order"
-  '("note" "A title" "Some text" "text/plain" "{}")
+  '("note" "A title" "Some text" "text/plain" absent)
   (parsed (reverse good) #t))
 
-(test-equal "content: props given as {}"
-  '("note" "A title" "Some text" "text/plain" "{}")
+(test-equal "content: props given as {} are handed on as (), not as absent"
+  '("note" "A title" "Some text" "text/plain" ())
   (parsed (with "props" '() good) #t))
 
 (test-equal "content: a replace with no kind"
-  '(#f "A title" "Some text" "text/plain" "{}")
+  '(#f "A title" "Some text" "text/plain" absent)
   (parsed (without "kind" good) #f))
 
 (test-equal "content: a replace that names a kind keeps it"
-  '("task" "A title" "Some text" "text/plain" "{}")
+  '("task" "A title" "Some text" "text/plain" absent)
   (parsed (with "kind" "task" good) #f))
+
+;; Slice 6: parse-content takes props absent or any object, and hands them
+;; on as read; (techo props)' request-props judges them, for the kind.
+(test-equal "content: props are handed on as read, their members not judged, on a create and a replace"
+  '(("note" "A title" "Some text" "text/plain" (("a" . 1)))
+    (#f "A title" "Some text" "text/plain" (("status" . "DONE") ("status" . 5)))
+    ("project" "A title" "Some text" "text/plain" (("x" ("y" . #(1 null))) ("" . #f))))
+  (list (parsed (with "props" '(("a" . 1)) good) #t)
+        (parsed (with "props" '(("status" . "DONE") ("status" . 5)) (without "kind" good)) #f)
+        (parsed (with "props" '(("x" ("y" . #(1 null))) ("" . #f)) (with "kind" "project" good))
+                #t)))
 
 (test-equal "content: each of the five kinds"
   '("project" "journal" "note" "task" "contact")
@@ -271,12 +282,12 @@
                   '("project" "journal" "note" "task" "contact")))))
 
 (test-equal "content: an empty title and an empty body"
-  '("note" "" "" "text/plain" "{}")
+  '("note" "" "" "text/plain" absent)
   (parsed (with "body" "" (with "title" "" good)) #t))
 
 (test-equal "content: a body may hold any character but U+0000"
   (list "note" "A title" (string (integer->char 1) #\tab #\newline (integer->char #x1F600))
-        "text/plain" "{}")
+        "text/plain" 'absent)
   (parsed (with "body" (string (integer->char 1) #\tab #\newline (integer->char #x1F600)) good)
           #t))
 
@@ -334,12 +345,15 @@
   (list "body false" (with "body" #f good) #t)
   (list "content_type a number" (with "content_type" 5 good) #t)
   (list "content_type null" (with "content_type" 'null good) #t)
-  ;; props
-  (list "props {\"a\":1}" (with "props" '(("a" . 1)) good) #t)
+  ;; props: any object is taken; any other value is not
   (list "props []" (with "props" (vector) good) #t)
+  (list "props [{}], an array, a replace" (with "props" (vector '()) (without "kind" good)) #f)
   (list "props a string" (with "props" "{}" good) #t)
+  (list "props a number" (with "props" 0 good) #t)
   (list "props null" (with "props" 'null good) #t)
+  (list "props null, a replace" (with "props" 'null (without "kind" good)) #f)
   (list "props false" (with "props" #f good) #t)
+  (list "props true" (with "props" #t good) #t)
   ;; U+0000
   (list "U+0000 in the title" (with "title" (string #\a (integer->char 0) #\b) good) #t)
   (list "U+0000 alone as the title" (with "title" (string (integer->char 0)) good) #t)
@@ -368,7 +382,7 @@
   (list 'parent v7-bytes)
   (parent-of (reverse (with "props" '() (with "parent" v7-text good))) #t))
 (test-equal "content: a parent changes none of the other members"
-  '("note" "A title" "Some text" "text/plain" "{}")
+  '("note" "A title" "Some text" "text/plain" absent)
   (parsed (with "parent" v7-text good) #t))
 (test-equal "content: a replace has no parent"
   '(parent #f) (parent-of (without "kind" good) #f))
@@ -467,8 +481,14 @@
                (with "body" big (with "id" "x" good))
                (with "body" big (with "title" (make-string 1001 #\t) good))
                (with "body" big (with "content_type" "plain" good))
-               (with "body" big (with "props" '(("a" . 1)) good))
+               (with "body" big (with "props" (vector) good))
                (with "body" (string-append big (string (integer->char 0))) good)))))
+
+(test-equal "body: too large whatever the props' members: parse-content does not judge them"
+  '(too-large too-large)
+  (let ((big (make-string 1048577 #\b)))
+    (list (judged (with "body" big (with "props" '(("a" . 1)) good)) #t)
+          (judged (with "body" big (with "props" '(("status" . "nope")) (without "kind" good))) #f))))
 
 (test-equal "body: too large is answered only when the parent is right too"
   '(invalid invalid too-large)
@@ -550,13 +570,17 @@
 
 ;; fits? : Alist Content -> Boolean     each field what the object gave
 ;; A parent not given, or null, is #f; a given one is its id's bytes.
+;; Props not given are absent; given, they are the very value, an object.
 (define (fits? x c)
   (let ((given (lambda (name) (let ((m (assoc name x))) (and m (cdr m))))))
     (and (equal? (content-title c) (given "title"))
          (equal? (content-body c) (given "body"))
          (equal? (content-content-type c) (given "content_type"))
          (equal? (content-kind c) (given "kind"))
-         (equal? (content-props c) "{}")
+         (let ((m (assoc "props" x)))
+           (if m
+               (and (eq? (content-props c) (cdr m)) (or (null? (cdr m)) (pair? (cdr m))))
+               (eq? (content-props c) 'absent)))
          (equal? (content-parent c)
                  (let ((p (given "parent")))
                    (if (or (not p) (eq? p 'null)) #f (parse-node-id p)))))))
@@ -616,6 +640,10 @@
 (test-equal "linear: a parent of 2 MiB, refused at once"
   '(invalid quick)
   (timed (lambda () (with "parent" (make-string 2097152 #\a) good)) #t))
+
+(test-equal "linear: props of 200,000 members are handed on at once, not walked"
+  '(content quick)
+  (timed (lambda () (with "props" (members 200000 (lambda (i) (cons "x" i)) '()) good)) #t))
 
 (test-equal "linear: a create's six members, then 199,994 repeats of parent"
   '(invalid quick)
@@ -1538,7 +1566,7 @@
   (read-file ".plans/machines/lifecycle.md"))
 
 (test-equal "the lifecycle document shows the diagram and every cell's answer"
-  '(#t #t #t #t #t #t #t #t #t #t #t #t)
+  '(#t #t #t #t #t #t #t #t #t #t #t #t #t #t)
   (let ((doc (attempt (lambda () (lifecycle-document)))))
     (map (lambda (needle) (and (string? doc) (string-index-of doc needle) #t))
          (list "stateDiagram-v2"
@@ -1552,7 +1580,9 @@
                "| trashed | refuse-wrong-state | refuse-wrong-state | refuse-wrong-state | -> active, set-state | -> purged, purge | refuse-wrong-state | refuse-wrong-state | allow | refuse-wrong-state | allow |\n"
                "| purged | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen |\n"
                "`node-command`"
-               "`link-command` in `(techo links)`"))))
+               "`link-command` in `(techo links)`"
+               "`write` is a replace, a revision's restore or a Task's transition"
+               "`task-command` in `(techo tasks)`"))))
 
 (test-equal "the lifecycle document gives each verdict its answer"
   '(#t #t #t #t #t #t #t)

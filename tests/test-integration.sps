@@ -25,7 +25,7 @@
 (import (rnrs)
         (srfi :64)
         (only (chezscheme) system process getenv real-time sleep make-time
-                           library-directories file-length)
+                           library-directories file-length current-time time-second time-nanosecond)
         (only (chez-sqlite3) open-database close-database! execute! query query-row)
         (techo-testing)
         (techo cli)
@@ -1755,6 +1755,277 @@
                  (col "SELECT revision FROM nodes ORDER BY num")
                  (col "SELECT state FROM nodes ORDER BY num")
                  (col "SELECT count(*) FROM revisions"))))))))
+;; --- props and tasks over the wire (slice 6): the observing -----------------
+
+(define (pw-id n)
+  (string-append "0190b3a4-5c6d-7e8f-9a0b-0000000100" (if (< n 16) "0" "") (string-downcase (number->string n 16))))
+
+;; pw-q : String -> String    single quotes become double ones: JSON written readably
+(define (pw-q s) (list->string (map (lambda (c) (if (char=? c #\') #\" c)) (string->list s))))
+
+;; pw-doc : (U String #f) String (U String #f) -> String
+;; A node's JSON: KIND (none for a replace that names none), a title, the
+;; props (single-quoted JSON text) when there are any.
+(define (pw-doc kind title props)
+  (string-append "{" (if kind (string-append "\"kind\":\"" kind "\",") "")
+                 "\"title\":\"" title "\",\"body\":\"b\",\"content_type\":\"text/plain\""
+                 (if props (string-append ",\"props\":" (pw-q props)) "") "}"))
+
+;; pw-iota : Nat -> (Listof Nat)
+(define (pw-iota n) (let loop ((i (- n 1)) (acc (quote ()))) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+
+;; pw-now-ms : -> Nat    the clock, in milliseconds since 1970
+(define (pw-now-ms)
+  (let ((t (current-time)))
+    (+ (* 1000 (time-second t)) (div (time-nanosecond t) 1000000))))
+
+(define pw-guide-contact
+  "{'name':{'components':[{'kind':'given','value':'Ada'},{'kind':'surname','value':'Lovelace'}]},'emails':{'e1':{'address':'ada@example.com','contexts':{'work':true},'pref':1}},'phones':{'p1':{'number':'+44 20 7946 0000','features':{'mobile':true}}},'speakToAs':{'pronouns':{'k1':{'pronouns':'she/her'}}}}")
+
+(define pw-rich-contact
+  (string-append
+   "{'name':{'components':[{'kind':'title','value':'Dr'},{'kind':'given','value':'Ada'},{'kind':'given2','value':'Augusta'},{'kind':'surname','value':'Lovelace'}],'isOrdered':true},"
+   "'organizations':{'o1':{'name':'Analytical Engines Ltd','units':[{'name':'Research'}],'contexts':{'work':true}}},"
+   "'titles':{'t1':{'name':'Programmer','kind':'role','organizationId':'o1'}},"
+   "'emails':{'e1':{'address':'ada@example.com','contexts':{'work':true},'pref':1,'label':'main'},'e2':{'address':'ada@home.example','contexts':{'private':true},'pref':2},'e3':{'address':'lovelace@example.org'}},"
+   "'phones':{'p1':{'number':'+44 20 7946 0000','features':{'mobile':true,'voice':true},'contexts':{'work':true},'pref':1},'p2':{'number':'+44 20 7946 0001'},'p3':{'number':'020 7946 0002','features':{'fax':true},'label':'fax'}},"
+   "'addresses':{'a1':{'components':[{'kind':'number','value':'12'},{'kind':'name','value':'St James Square'},{'kind':'locality','value':'London'},{'kind':'postcode','value':'SW1Y 4JH'}],'isOrdered':true,'countryCode':'GB','full':'12 St James Square\\nLondon','contexts':{'work':true,'billing':true},'pref':1},'a2':{'full':'Ockham Park, Surrey','countryCode':'GB'}},"
+   "'anniversaries':{'b1':{'kind':'birth','date':{'year':1815,'month':12,'day':10}}},"
+   "'links':{'l1':{'uri':'https://example.com/ada','kind':'contact','contexts':{'work':true},'pref':1,'label':'site'},'l2':{'uri':'mailto:ada@example.com'}},"
+   "'onlineServices':{'s1':{'service':'Mastodon','uri':'https://social.example/@ada','user':'ada','contexts':{'private':true},'pref':1}},"
+   "'speakToAs':{'grammaticalGender':'feminine','pronouns':{'k1':{'pronouns':'she/her','contexts':{'private':true},'pref':1}}}}"))
+
+;; the same emails, in two orders
+(define pw-order-1
+  "{'emails':{'e1':{'address':'a@b.com','pref':1},'e2':{'address':'c@d.com'},'e10':{'address':'e@f.com'}},'phones':{'p2':{'number':'2'},'p1':{'number':'1','pref':3}}}")
+(define pw-order-2
+  "{'phones':{'p1':{'pref':3,'number':'1'},'p2':{'number':'2'}},'emails':{'e10':{'address':'e@f.com'},'e2':{'address':'c@d.com'},'e1':{'pref':1,'address':'a@b.com'}}}")
+
+(define pw-defaults-contact
+  "{'kind':'individual','name':{'@type':'Name','components':[{'@type':'NameComponent','kind':'given','value':'Ada'}],'isOrdered':false},'titles':{'t1':{'@type':'Title','name':'Mathematician','kind':'title'}}}")
+(define pw-defaults-read
+  "{'name':{'components':[{'kind':'given','value':'Ada'}]},'titles':{'t1':{'name':'Mathematician'}}}")
+
+;; (name . props) : each is a create the server must refuse, 400
+(define pw-bad-contacts
+  (list (cons "unknown" "{'nickname':'Ada'}")
+        (cons "unknown-nested" "{'emails':{'e1':{'address':'a@b.com','colour':'red'}}}")
+        (cons "empty-string" "{'emails':{'e1':{'address':'a@b.com','label':''}}}")
+        (cons "empty-map" "{'emails':{}}")
+        (cons "control" "{'emails':{'e1':{'address':'a@b.com','label':'a\\u0001b'}}}")
+        (cons "pref-float" "{'emails':{'e1':{'address':'a@b.com','pref':1.0}}}")
+        (cons "pref-0" "{'emails':{'e1':{'address':'a@b.com','pref':0}}}")
+        (cons "uri-scheme" "{'links':{'l1':{'uri':'hello'}}}")
+        (cons "email-at" "{'emails':{'e1':{'address':'a@'}}}")
+        (cons "dangling-org" "{'titles':{'t1':{'name':'x','organizationId':'o9'}}}")
+        (cons "wrong-type" "{'name':{'@type':'Address','components':[{'kind':'given','value':'A'}]}}")
+        (cons "top-type" "{'@type':'Card'}")
+        (cons "empty-contexts" "{'emails':{'e1':{'address':'a@b.com','contexts':{}}}}")
+        (cons "country-lower" "{'addresses':{'a1':{'countryCode':'gb'}}}")
+        (cons "kind-bad" "{'kind':'company'}")))
+
+;; pw-many-emails : -> String    300 emails: over 4,096 bytes as stored
+(define (pw-many-emails)
+  (string-append
+   "{'emails':{"
+   (join (map (lambda (i) (string-append "'e" (number->string i) "':{'address':'a" (number->string i) "@example.com'}"))
+              (pw-iota 300))
+         ",")
+   "}}"))
+
+;; observe-props! : String -> Void
+;; pw-oj : String -> Json    an observed answer's JSON, as the observing needs it (nd-j is defined later)
+(define (pw-oj k) (let ((r (obs k))) (if (and (pair? r) (integer? (car r))) (lg-json r) 'unobserved)))
+
+(define (observe-props! dir)
+  (define db (string-append dir "/props.db"))
+  (define env (list (string-append "TECHO_DB_PATH=" db)))
+  (define (add! name pw user)
+    (id-of-added (run-cli-in dir name (string-append pw "\n") '() env
+                             (list "user" "add" "--username" user "--email" (string-append user "@example.com")))))
+  (obs-set! "pw:migrate" (car (run-cli-in dir "pwmigrate" "" '() env '("migrate"))))
+  (obs-set! "pw:a-id" (add! "pw-add-a" nd-pw-a "propa"))
+  (obs-set! "pw:b-id" (add! "pw-add-b" nd-pw-b "propb"))
+  (with-server dir "pwsrv" db #f
+    (lambda (port)
+      (define (key-of email pw)
+        (let* ((r (hcall port 'post "/v1/login" "application/json" (login-json email pw "props") '()))
+               (k (jget (lg-json r) "key")))
+          (if (string? k) k "techo_missing")))
+      (let* ((ka (key-of "propa@example.com" nd-pw-a))
+             (kb (key-of "propb@example.com" nd-pw-b))
+             (path (lambda (id) (string-append "/v1/nodes/" id)))
+             (pause (lambda () (sleep (make-time 'time-duration 30000000 0)))))
+        (define (call! key name method target headers body)
+          (obs-set! name (attempt (lambda ()
+                                    (hcall port method target (and body "application/json") (or body "")
+                                           (append (if key (bearer key) '()) headers))))))
+        (define (g! name id) (call! ka name 'get (path id) '() #f))
+        (define (gs! name id suffix) (call! ka name 'get (string-append (path id) suffix) '() #f))
+        (define (mk! name id doc) (call! ka name 'put (path id) nd-create doc))
+        (define (rp! name id rev doc) (call! ka name 'put (path id) (nd-match rev) doc))
+        (define (cmd! name id verb rev)
+          (call! ka name 'post (string-append (path id) "/" verb) (if rev (nd-match rev) '()) #f))
+        (define (stamp! name) (obs-set! name (pw-now-ms)))
+        ;; --- A Task's life
+        (mk! "pw:a-create" (pw-id 1) (pw-doc "task" "A" #f))
+        (g! "pw:a-get1" (pw-id 1))
+        (rp! "pw:a-rep" (pw-id 1) 1
+             (pw-doc #f "A" "{'deadline':'2026-12-01','scheduled':'2026-11-30T09:00'}"))
+        (g! "pw:a-get2" (pw-id 1))
+        (pause)
+        (stamp! "pw:a-t0")
+        (cmd! "pw:a-done" (pw-id 1) "done" 2)
+        (stamp! "pw:a-t1")
+        (g! "pw:a-get3" (pw-id 1))
+        (cmd! "pw:a-done-again" (pw-id 1) "done" 3)
+        (pause)
+        (cmd! "pw:a-wont" (pw-id 1) "wontdo" 3)
+        (g! "pw:a-get4" (pw-id 1))
+        (pause)
+        (cmd! "pw:a-reopen" (pw-id 1) "reopen" 4)
+        (g! "pw:a-get5" (pw-id 1))
+        (gs! "pw:a-revs" (pw-id 1) "/revisions")
+        (gs! "pw:a-rev1" (pw-id 1) "/revisions/1")
+        (gs! "pw:a-rev3" (pw-id 1) "/revisions/3")
+        (gs! "pw:a-rev4" (pw-id 1) "/revisions/4")
+        (gs! "pw:a-rev5" (pw-id 1) "/revisions/5")
+        (rp! "pw:a-rep2" (pw-id 1) 5 (pw-doc #f "A" "{'deadline':'2027-02-02'}"))
+        (pause)
+        (cmd! "pw:a-done2" (pw-id 1) "done" 6)
+        (g! "pw:a-get7" (pw-id 1))
+        (call! ka "pw:a-restore" 'post (string-append (path (pw-id 1)) "/revisions/2/restore") (nd-match 7) #f)
+        (g! "pw:a-get8" (pw-id 1))
+        (gs! "pw:a-rev8" (pw-id 1) "/revisions/8")
+        ;; --- a replace cannot change the status
+        (mk! "pw:c-create" (pw-id 2) (pw-doc "task" "C" "{'deadline':'2026-12-01'}"))
+        (rp! "pw:c-same" (pw-id 2) 1 (pw-doc #f "C" "{'status':'TODO','deadline':'2026-12-01'}"))
+        (rp! "pw:c-done-by-put" (pw-id 2) 2 (pw-doc #f "C" "{'status':'DONE'}"))
+        (rp! "pw:c-wont-by-put" (pw-id 2) 2 (pw-doc #f "C" "{'status':'WONTDO'}"))
+        (rp! "pw:c-closed-by-put" (pw-id 2) 2 (pw-doc #f "C" "{'status':'TODO','closed':5}"))
+        (g! "pw:c-get2" (pw-id 2))
+        (rp! "pw:c-left-out" (pw-id 2) 2 (pw-doc #f "C" "{'deadline':'2026-12-02'}"))
+        (rp! "pw:c-no-props" (pw-id 2) 3 (pw-doc #f "C2" #f))
+        (g! "pw:c-get4" (pw-id 2))
+        (cmd! "pw:c-done" (pw-id 2) "done" 4)
+        (g! "pw:c-get5" (pw-id 2))
+        (rp! "pw:c-reopen-by-put" (pw-id 2) 5 (pw-doc #f "C2" "{'status':'TODO','deadline':'2026-12-02'}"))
+        (rp! "pw:c-back" (pw-id 2) 5
+             (pw-doc #f "C2" (string-append "{'status':'DONE','closed':"
+                                            (let ((c (jget (jget (pw-oj "pw:c-get5") "props") "closed")))
+                                              (if (integer? c) (number->string c) "0"))
+                                            ",'deadline':'2026-12-02'}")))
+        (rp! "pw:c-empty" (pw-id 2) 6 (pw-doc #f "C2" "{}"))
+        (g! "pw:c-get7" (pw-id 2))
+        ;; --- an import
+        (stamp! "pw:e-t0")
+        (mk! "pw:d-create" (pw-id 3) (pw-doc "task" "D" "{'status':'DONE','closed':1700000000000}"))
+        (mk! "pw:e-create" (pw-id 4) (pw-doc "task" "E" "{'status':'DONE'}"))
+        (stamp! "pw:e-t1")
+        (mk! "pw:f-create" (pw-id 5) (pw-doc "task" "F" "{'status':'WONTDO','closed':1700000000001}"))
+        (mk! "pw:g-create" (pw-id 6) (pw-doc "task" "G" "{'status':'TODO','closed':1700000000000}"))
+        (mk! "pw:h-create" (pw-id 7) (pw-doc "task" "H" "{'closed':1700000000000}"))
+        (mk! "pw:i-create" (pw-id 8) (pw-doc "task" "I" "{'status':'DONE','closed':1.5}"))
+        (mk! "pw:j-create" (pw-id 9) (pw-doc "task" "J" "{'status':'DONE','closed':null}"))
+        (mk! "pw:k-create" (pw-id 10) (pw-doc "task" "K" "{'status':'MAYBE'}"))
+        (g! "pw:d-get" (pw-id 3))
+        (g! "pw:e-get" (pw-id 4))
+        (g! "pw:f-get" (pw-id 5))
+        (g! "pw:g-get" (pw-id 6))
+        (g! "pw:h-get" (pw-id 7))
+        ;; --- commands on the wrong thing
+        (mk! "pw:n-create" (pw-id 11) (pw-doc "note" "N" #f))
+        (cmd! "pw:n-done" (pw-id 11) "done" 1)
+        (cmd! "pw:n-wontdo" (pw-id 11) "wontdo" 1)
+        (cmd! "pw:n-reopen" (pw-id 11) "reopen" 1)
+        (mk! "pw:t-create" (pw-id 12) (pw-doc "task" "T" #f))
+        (cmd! "pw:t-trash" (pw-id 12) "trash" 1)
+        (cmd! "pw:t-done" (pw-id 12) "done" 2)
+        (cmd! "pw:t-wontdo" (pw-id 12) "wontdo" 2)
+        (g! "pw:t-get" (pw-id 12))
+        (mk! "pw:ar-create" (pw-id 13) (pw-doc "task" "AR" #f))
+        (cmd! "pw:ar-archive" (pw-id 13) "archive" 1)
+        (cmd! "pw:ar-done" (pw-id 13) "done" 2)
+        (mk! "pw:s-create" (pw-id 14) (pw-doc "task" "S" #f))
+        (cmd! "pw:s-stale" (pw-id 14) "done" 7)
+        (cmd! "pw:s-none" (pw-id 14) "done" #f)
+        (call! ka "pw:s-inm" 'post (string-append (path (pw-id 14)) "/done") nd-create #f)
+        (call! ka "pw:s-get" 'get (string-append (path (pw-id 14)) "/done") '() #f)
+        (call! ka "pw:s-get-wontdo" 'get (string-append (path (pw-id 14)) "/wontdo") '() #f)
+        (cmd! "pw:s-reopen" (pw-id 14) "reopen" 1)
+        (cmd! "pw:s-missing" (pw-id 90) "done" 1)
+        (call! kb "pw:s-other" 'post (string-append (path (pw-id 14)) "/done") (nd-match 1) #f)
+        (call! kb "pw:s-other-reopen" 'post (string-append (path (pw-id 14)) "/reopen") (nd-match 1) #f)
+        (cmd! "pw:s-bad-id" "junk" "done" 1)
+        (call! #f "pw:s-no-key" 'post (string-append (path (pw-id 14)) "/done") (nd-match 1) #f)
+        (g! "pw:s-get-after" (pw-id 14))
+        ;; --- a Note
+        (mk! "pw:at-date" (pw-id 15) (pw-doc "note" "D" "{'at':'2026-12-01'}"))
+        (mk! "pw:at-local" (pw-id 16) (pw-doc "note" "L" "{'at':'2026-12-01T15:00'}"))
+        (mk! "pw:at-moment" (pw-id 17) (pw-doc "note" "M" "{'at':'2026-12-01T20:00:00Z'}"))
+        (g! "pw:at-date-get" (pw-id 15))
+        (g! "pw:at-local-get" (pw-id 16))
+        (g! "pw:at-moment-get" (pw-id 17))
+        (mk! "pw:at-bad-day" (pw-id 18) (pw-doc "note" "x" "{'at':'2026-02-30'}"))
+        (mk! "pw:at-bad-24" (pw-id 19) (pw-doc "note" "x" "{'at':'2026-12-01T24:00'}"))
+        (mk! "pw:at-bad-t" (pw-id 20) (pw-doc "note" "x" "{'at':'2026-12-01t15:00'}"))
+        (mk! "pw:at-bad-num" (pw-id 21) (pw-doc "note" "x" "{'at':20261201}"))
+        (mk! "pw:at-bad-offset" (pw-id 22) (pw-doc "note" "x" "{'at':'2026-12-01T20:00:00+01:00'}"))
+        (mk! "pw:at-bad-deadline" (pw-id 23) (pw-doc "task" "x" "{'deadline':'2026-13-01'}"))
+        (mk! "pw:at-bad-sched" (pw-id 24) (pw-doc "task" "x" "{'scheduled':'tomorrow'}"))
+        ;; --- a Contact
+        (mk! "pw:ct-guide" (pw-id 30) (pw-doc "contact" "Ada" pw-guide-contact))
+        (g! "pw:ct-guide-get" (pw-id 30))
+        (mk! "pw:ct-rich" (pw-id 31) (pw-doc "contact" "Ada Lovelace" pw-rich-contact))
+        (g! "pw:ct-rich-get" (pw-id 31))
+        (rp! "pw:ct-rich-put" (pw-id 31) 1
+             (pw-doc #f "Ada Lovelace" (let ((p (jget (pw-oj "pw:ct-rich-get") "props")))
+                                         (if (list? p) (json->string p) "{}"))))
+        (g! "pw:ct-rich-get2" (pw-id 31))
+        (mk! "pw:ct-ord1" (pw-id 32) (pw-doc "contact" "O1" pw-order-1))
+        (mk! "pw:ct-ord2" (pw-id 33) (pw-doc "contact" "O2" pw-order-2))
+        (g! "pw:ct-ord1-get" (pw-id 32))
+        (g! "pw:ct-ord2-get" (pw-id 33))
+        (mk! "pw:ct-def" (pw-id 34) (pw-doc "contact" "Def" pw-defaults-contact))
+        (g! "pw:ct-def-get" (pw-id 34))
+        (mk! "pw:ct-nl" (pw-id 35) (pw-doc "contact" "Nl" "{'addresses':{'a1':{'full':'1 Main St\\nTown'}}}"))
+        (g! "pw:ct-nl-get" (pw-id 35))
+        (mk! "pw:ct-empty" (pw-id 36) (pw-doc "contact" "Empty" "{}"))
+        (g! "pw:ct-empty-get" (pw-id 36))
+        (for-each (lambda (bc i)
+                    (mk! (string-append "pw:ctbad-" (car bc)) (pw-id (+ 40 i)) (pw-doc "contact" "Bad" (cdr bc))))
+                  pw-bad-contacts (pw-iota (length pw-bad-contacts)))
+        (mk! "pw:ct-big" (pw-id 60) (pw-doc "contact" "Big" (pw-many-emails)))
+        (g! "pw:ct-big-get" (pw-id 60))
+        ;; --- kinds do not mix
+        (mk! "pw:k-note-status" (pw-id 61) (pw-doc "note" "x" "{'status':'TODO'}"))
+        (mk! "pw:k-task-emails" (pw-id 62) (pw-doc "task" "x" "{'emails':{'e1':{'address':'a@b.com'}}}"))
+        (mk! "pw:k-project-at" (pw-id 63) (pw-doc "project" "x" "{'at':'2026-12-01'}"))
+        (mk! "pw:k-project-status" (pw-id 64) (pw-doc "project" "x" "{'status':'TODO'}"))
+        (mk! "pw:k-project-x" (pw-id 65) (pw-doc "project" "x" "{'x':1}"))
+        (mk! "pw:k-project-ok" (pw-id 66) (pw-doc "project" "x" "{}"))
+        (mk! "pw:k-note" (pw-id 67) (pw-doc "note" "KN" "{'at':'2026-12-01'}"))
+        (mk! "pw:k-task" (pw-id 68) (pw-doc "task" "KT" "{'deadline':'2026-12-01'}"))
+        (mk! "pw:k-contact" (pw-id 69) (pw-doc "contact" "KC" "{'kind':'org'}"))
+        (rp! "pw:k-note-as-task" (pw-id 67) 1 (pw-doc #f "KN" "{'status':'DONE'}"))
+        (rp! "pw:k-note-emails" (pw-id 67) 1 (pw-doc #f "KN" "{'emails':{'e1':{'address':'a@b.com'}}}"))
+        (rp! "pw:k-task-as-note" (pw-id 68) 1 (pw-doc #f "KT" "{'at':'2026-12-01'}"))
+        (rp! "pw:k-task-emails-put" (pw-id 68) 1 (pw-doc #f "KT" "{'emails':{'e1':{'address':'a@b.com'}}}"))
+        (rp! "pw:k-contact-at" (pw-id 69) 1 (pw-doc #f "KC" "{'at':'2026-12-01'}"))
+        (rp! "pw:k-project-put" (pw-id 66) 1 (pw-doc #f "x" "{'at':'2026-12-01'}"))
+        (rp! "pw:k-note-named-task" (pw-id 67) 1 (pw-doc "task" "KN" "{'status':'TODO'}"))
+        (rp! "pw:k-note-named-task-at" (pw-id 67) 1 (pw-doc "task" "KN" "{'at':'2026-12-01'}"))
+        (rp! "pw:k-note-ok" (pw-id 67) 1 (pw-doc #f "KN" "{'at':'2026-12-02'}"))
+        (rp! "pw:k-contact-ok" (pw-id 69) 1 (pw-doc #f "KC" "{'emails':{'e1':{'address':'a@b.com'}}}"))
+        (rp! "pw:k-task-ok" (pw-id 68) 1 (pw-doc #f "KT" "{'status':'TODO','deadline':'2026-12-05'}"))
+        ;; --- a link page's item and a list's item
+        (mk! "pw:l-note" (pw-id 70) (pw-doc "note" "LN" #f))
+        (call! ka "pw:l-put-s" 'put (string-append (path (pw-id 70)) "/links/related/" (pw-id 14)) '() #f)
+        (call! ka "pw:l-put-a" 'put (string-append (path (pw-id 70)) "/links/related/" (pw-id 1)) '() #f)
+        (call! ka "pw:l-out" 'get (string-append (path (pw-id 70)) "/links") '() #f)
+        (call! ka "pw:l-in-s" 'get (string-append (path (pw-id 14)) "/links?direction=in") '() #f)
+        (call! ka "pw:l-list" 'get "/v1/nodes?limit=100" '() #f)))))
+
 ;; leftovers : String -> (Listof Boolean)
 ;; Whether DB's `-wal` and `-shm` exist.
 (define (leftovers db)
@@ -1800,6 +2071,7 @@
     (observe "lifecycle-run" (observe-lifecycle! dir))
     (observe "tree-run" (observe-tree! dir))
     (observe "links-run" (observe-links! dir))
+    (observe "props-run" (observe-props! dir))
     ;; The command line.
     (set! cli-version (attempt (lambda () (run-cli dir "version" '() '() '("version")))))
     (set! cli-none (attempt (lambda () (run-cli dir "none" '() '() '()))))
@@ -3413,6 +3685,265 @@
     (if (list? d)
         (list (car (list-ref d 0)) (car (list-ref d 1)) (list-ref d 2) (list-ref d 3) (list-ref d 4) (list-ref d 5))
         d)))
+
+;; --- props and tasks over the wire (slice 6) --------------------------------
+
+(define pw-problem ln-problem)
+(define (pw-got k) (list (lg-st k) (nd-h k "content-type") (lg-code k)))
+(define (pw-props k) (jget (nd-j k) "props"))
+(define (pw-prop k m) (jget (pw-props k) m))
+(define (pw-rev k) (jget (nd-j k) "revision"))
+(define (pw-etag k) (nd-h k "etag"))
+(define head-members '("id" "kind" "state" "parent" "title" "content_type" "props" "revision" "created" "updated"))
+(define (pw-text k) (if (lg-ok? k) (lg-text (obs k)) (obs k)))
+;; pw-norm : Json -> Json    objects' members sorted by name, to compare two texts as values
+(define (pw-norm j)
+  (cond ((vector? j) (vector-map pw-norm j))
+        ((and (pair? j) (pair? (car j)) (string? (caar j)))
+         (list-sort (lambda (a b) (string<? (car a) (car b)))
+                    (map (lambda (p) (cons (car p) (pw-norm (cdr p)))) j)))
+        (else j)))
+(define (pw-sent text) (pw-norm (string->json (pw-q text))))
+(define (pw-read k) (let ((p (pw-props k))) (if (list? p) (pw-norm p) p)))
+;; pw-items : String -> (Listof (List Revision Title ContentType))
+(define (pw-items k)
+  (let ((is (jitems (nd-j k))))
+    (if (list? is) (map (lambda (i) (list (jget i "revision") (jget i "title") (jget i "content_type"))) is) is)))
+(define (pw-in-range? c lo hi) (and (integer? c) (<= (- lo 2000) c (+ hi 2000))))
+(define pw-bad (pw-problem 400 "invalid_request"))
+
+(test-equal "props: the run's setup worked: migrated, two accounts, the server stopped with 0 and raised nothing"
+  '(0 #t #t 0 unobserved)
+  (list (obs "pw:migrate")
+        (and (string? (obs "pw:a-id")) (= 36 (string-length (obs "pw:a-id"))))
+        (and (string? (obs "pw:b-id")) (not (equal? (obs "pw:a-id") (obs "pw:b-id"))))
+        (obs "pwsrv:exit") (obs "pwsrv:raised")))
+
+;; A Task's life
+(test-equal "task life: a Task made with no props answers 201 and reads back {\"status\":\"TODO\"}, in the create's answer and in the GET"
+  (list 201 '(("status" . "TODO")) '(("status" . "TODO")) 1 "\"1\"")
+  (list (lg-st "pw:a-create") (pw-props "pw:a-create") (pw-props "pw:a-get1") (pw-rev "pw:a-get1") (pw-etag "pw:a-get1")))
+
+(test-equal "task life: a replace sets a deadline (a date) and a scheduled (a local time): 200, revision 2, status kept"
+  (list 200 "\"2\"" 2 (pw-norm '(("status" . "TODO") ("deadline" . "2026-12-01") ("scheduled" . "2026-11-30T09:00"))))
+  (list (lg-st "pw:a-rep") (pw-etag "pw:a-rep") (pw-rev "pw:a-get2") (pw-read "pw:a-get2")))
+
+(test-equal "task life: done is 200 with the node without its body, ETag \"3\", revision 3, status DONE, the deadline kept, a closed time in milliseconds near now"
+  (list 200 "application/json" head-members "\"3\"" 3 "DONE" #t "2026-12-01" 'missing)
+  (list (lg-st "pw:a-done") (nd-h "pw:a-done" "content-type") (members (nd-j "pw:a-done")) (pw-etag "pw:a-done")
+        (pw-rev "pw:a-done") (pw-prop "pw:a-done" "status")
+        (pw-in-range? (pw-prop "pw:a-done" "closed") (obs "pw:a-t0") (obs "pw:a-t1"))
+        (pw-prop "pw:a-done" "deadline") (jget (nd-j "pw:a-done") "body")))
+
+(test-equal "task life: the GET after done is the same Task: revision 3, ETag \"3\", the answer's props"
+  (list "\"3\"" 3 #t)
+  (list (pw-etag "pw:a-get3") (pw-rev "pw:a-get3") (equal? (pw-props "pw:a-get3") (pw-props "pw:a-done"))))
+
+(test-equal "task life: done again is 409 wrong_status in the format; the next command takes revision 3, so it changed nothing"
+  (list (pw-problem 409 "wrong_status") 200 4)
+  (list (pw-got "pw:a-done-again") (lg-st "pw:a-wont") (pw-rev "pw:a-get4")))
+
+(test-equal "task life: wontdo is 200, ETag \"4\", status WONTDO, and closed is the one done set"
+  (list "\"4\"" "WONTDO" #t)
+  (list (pw-etag "pw:a-wont") (pw-prop "pw:a-wont" "status")
+        (and (integer? (pw-prop "pw:a-get3" "closed")) (equal? (pw-prop "pw:a-get3" "closed") (pw-prop "pw:a-get4" "closed")))))
+
+(test-equal "task life: reopen is 200, ETag \"5\", status TODO, no closed, the deadline and scheduled kept"
+  (list 200 "\"5\"" "TODO" 'missing "2026-12-01" "2026-11-30T09:00" 5)
+  (list (lg-st "pw:a-reopen") (pw-etag "pw:a-reopen") (pw-prop "pw:a-get5" "status") (pw-prop "pw:a-get5" "closed")
+        (pw-prop "pw:a-get5" "deadline") (pw-prop "pw:a-get5" "scheduled") (pw-rev "pw:a-get5")))
+
+(test-equal "task life: the revisions list has a snapshot for each of the five revisions, newest first, each with the same title and content type"
+  (list 200 '((5 "A" "text/plain") (4 "A" "text/plain") (3 "A" "text/plain") (2 "A" "text/plain") (1 "A" "text/plain")))
+  (list (lg-st "pw:a-revs") (pw-items "pw:a-revs")))
+
+(test-equal "task life: the snapshot of the DONE revision shows DONE with its closed; WONTDO's shows WONTDO with the same closed; revision 1 shows TODO; the reopen's shows TODO and no closed"
+  (list "DONE" #t "WONTDO" #t "TODO" 'missing "TODO" 'missing "A" "text/plain")
+  (list (pw-prop "pw:a-rev3" "status")
+        (equal? (pw-prop "pw:a-rev3" "closed") (pw-prop "pw:a-get3" "closed"))
+        (pw-prop "pw:a-rev4" "status")
+        (equal? (pw-prop "pw:a-rev4" "closed") (pw-prop "pw:a-get3" "closed"))
+        (pw-prop "pw:a-rev1" "status") (pw-prop "pw:a-rev1" "closed")
+        (pw-prop "pw:a-rev5" "status") (pw-prop "pw:a-rev5" "closed")
+        (jget (nd-j "pw:a-rev3") "title") (jget (nd-j "pw:a-rev3") "content_type")))
+
+;; A restore keeps the status
+(test-equal "restore: after a replace (deadline 2027-02-02, no scheduled) and a second done, the Task is DONE at revision 7 with a later closed"
+  (list 200 6 200 "DONE" "2027-02-02" 'missing #t 7)
+  (list (lg-st "pw:a-rep2") 6 (lg-st "pw:a-done2") (pw-prop "pw:a-get7" "status") (pw-prop "pw:a-get7" "deadline")
+        (pw-prop "pw:a-get7" "scheduled")
+        (let ((c1 (pw-prop "pw:a-get3" "closed")) (c2 (pw-prop "pw:a-get7" "closed")))
+          (and (integer? c1) (integer? c2) (> c2 c1)))
+        (pw-rev "pw:a-get7")))
+
+(test-equal "restore: restoring revision 2 of the DONE Task is 200 at revision 8; it is still DONE with the same closed, and the old deadline and scheduled are back"
+  (list 200 8 "DONE" #t "2026-12-01" "2026-11-30T09:00")
+  (list (lg-st "pw:a-restore") (pw-rev "pw:a-get8") (pw-prop "pw:a-get8" "status")
+        (and (integer? (pw-prop "pw:a-get7" "closed")) (equal? (pw-prop "pw:a-get7" "closed") (pw-prop "pw:a-get8" "closed")))
+        (pw-prop "pw:a-get8" "deadline") (pw-prop "pw:a-get8" "scheduled")))
+
+(test-equal "restore: the snapshot of the restore's revision shows DONE with that closed"
+  (list "DONE" #t)
+  (list (pw-prop "pw:a-rev8" "status")
+        (equal? (pw-prop "pw:a-rev8" "closed") (pw-prop "pw:a-get7" "closed"))))
+
+;; A replace cannot change the status
+(test-equal "replace: sending the status read back is 200 (revision 2); another status, WONTDO, and a closed on a TODO Task are each 409 status_fixed"
+  (list 200 2 (pw-problem 409 "status_fixed") (pw-problem 409 "status_fixed") (pw-problem 409 "status_fixed"))
+  (list (lg-st "pw:c-same") (pw-rev "pw:c-same") (pw-got "pw:c-done-by-put") (pw-got "pw:c-wont-by-put") (pw-got "pw:c-closed-by-put")))
+
+(test-equal "replace: the three refusals wrote nothing: revision 2, status TODO, the deadline as before"
+  (list 2 (pw-norm '(("status" . "TODO") ("deadline" . "2026-12-01"))))
+  (list (pw-rev "pw:c-get2") (pw-read "pw:c-get2")))
+
+(test-equal "replace: leaving status out keeps it (TODO) and the new deadline is taken: 200, revision 3"
+  (list 200 3 (pw-norm '(("status" . "TODO") ("deadline" . "2026-12-02"))))
+  (list (lg-st "pw:c-left-out") (pw-rev "pw:c-left-out") (pw-read "pw:c-left-out")))
+
+(test-equal "replace: a replace with no props at all keeps deadline and status, and changes the title: 200, revision 4"
+  (list 200 4 "C2" (pw-norm '(("status" . "TODO") ("deadline" . "2026-12-02"))))
+  (list (lg-st "pw:c-no-props") (pw-rev "pw:c-get4") (jget (nd-j "pw:c-get4") "title") (pw-read "pw:c-get4")))
+
+(test-equal "replace: on a DONE Task, TODO is 409 status_fixed (no reopening by replace); the status and closed read back are 200; \"props\": {} clears the deadline and keeps the status and closed"
+  (list (pw-problem 409 "status_fixed") 200 6 7 (pw-norm (list (cons "status" "DONE") (cons "closed" (pw-prop "pw:c-get5" "closed")))) "DONE")
+  (list (pw-got "pw:c-reopen-by-put") (lg-st "pw:c-back") (pw-rev "pw:c-back") (pw-rev "pw:c-get7") (pw-read "pw:c-get7")
+        (pw-prop "pw:c-get7" "status")))
+
+;; An import
+(test-equal "import: a create with status DONE and a closed keeps that time; WONTDO with a closed keeps it"
+  (list 201 "DONE" 1700000000000 201 "WONTDO" 1700000000001)
+  (list (lg-st "pw:d-create") (pw-prop "pw:d-get" "status") (pw-prop "pw:d-get" "closed")
+        (lg-st "pw:f-create") (pw-prop "pw:f-get" "status") (pw-prop "pw:f-get" "closed")))
+
+(test-equal "import: DONE with no closed gets a time near now"
+  (list 201 "DONE" #t)
+  (list (lg-st "pw:e-create") (pw-prop "pw:e-get" "status")
+        (pw-in-range? (pw-prop "pw:e-get" "closed") (obs "pw:e-t0") (obs "pw:e-t1"))))
+
+(test-equal "import: TODO with a closed, a closed with no status, a closed of 1.5 or null, and a status that is not one are each 400, and make no node"
+  (list pw-bad pw-bad pw-bad pw-bad pw-bad (pw-problem 404 "not_found") (pw-problem 404 "not_found"))
+  (list (pw-got "pw:g-create") (pw-got "pw:h-create") (pw-got "pw:i-create") (pw-got "pw:j-create") (pw-got "pw:k-create")
+        (pw-got "pw:g-get") (pw-got "pw:h-get")))
+
+;; Commands on the wrong thing
+(test-equal "commands: done, wontdo and reopen on a Note are 409 not_a_task"
+  (list (pw-problem 409 "not_a_task") (pw-problem 409 "not_a_task") (pw-problem 409 "not_a_task"))
+  (map pw-got '("pw:n-done" "pw:n-wontdo" "pw:n-reopen")))
+
+(test-equal "commands: on a trashed Task done and wontdo are 409 wrong_state, and it stays trashed at revision 2"
+  (list (pw-problem 409 "wrong_state") (pw-problem 409 "wrong_state") "trashed" 2)
+  (list (pw-got "pw:t-done") (pw-got "pw:t-wontdo") (jget (nd-j "pw:t-get") "state") (pw-rev "pw:t-get")))
+
+(test-equal "commands: done on an archived Task is 200 (the plan's table; the guide is silent)"
+  (list 200 "DONE")
+  (list (lg-st "pw:ar-done") (pw-prop "pw:ar-done" "status")))
+
+(test-equal "commands: a stale If-Match is 412 precondition_failed, none is 428 precondition_required, If-None-Match is 400, reopen on a TODO Task is 409 wrong_status; and the Task is untouched: revision 1, TODO"
+  (list (pw-problem 412 "precondition_failed") (pw-problem 428 "precondition_required") pw-bad
+        (pw-problem 409 "wrong_status") 1 "TODO")
+  (list (pw-got "pw:s-stale") (pw-got "pw:s-none") (pw-got "pw:s-inm") (pw-got "pw:s-reopen")
+        (pw-rev "pw:s-get-after") (pw-prop "pw:s-get-after" "status")))
+
+(test-equal "commands: a missing id, another account's Task (done and reopen) are the same 404 bytes"
+  (list (pw-problem 404 "not_found") (pw-problem 404 "not_found") (pw-problem 404 "not_found") #t #t)
+  (list (pw-got "pw:s-missing") (pw-got "pw:s-other") (pw-got "pw:s-other-reopen")
+        (equal? (pw-text "pw:s-missing") (pw-text "pw:s-other"))
+        (equal? (pw-text "pw:s-missing") (pw-text "pw:s-other-reopen"))))
+
+(test-equal "commands: a bad id is 400 and no key is 401"
+  (list pw-bad (pw-problem 401 "unauthorized"))
+  (list (pw-got "pw:s-bad-id") (pw-got "pw:s-no-key")))
+
+(test-equal "commands: GET on /done and on /wontdo is 405 method_not_allowed with Allow: POST"
+  (list (list (pw-problem 405 "method_not_allowed") "POST") (list (pw-problem 405 "method_not_allowed") "POST"))
+  (map (lambda (k) (list (pw-got k) (nd-h k "allow"))) '("pw:s-get" "pw:s-get-wontdo")))
+
+;; A Note
+(test-equal "note: at in each of the three When forms is taken (201) and read back the same"
+  (list 201 201 201
+        '(("at" . "2026-12-01")) '(("at" . "2026-12-01T15:00")) '(("at" . "2026-12-01T20:00:00Z")))
+  (list (lg-st "pw:at-date") (lg-st "pw:at-local") (lg-st "pw:at-moment")
+        (pw-props "pw:at-date-get") (pw-props "pw:at-local-get") (pw-props "pw:at-moment-get")))
+
+(test-equal "note: 2026-02-30, 24:00, a lower case t, a number, an offset, a deadline of month 13 and a scheduled of \"tomorrow\" are each 400"
+  (map (lambda (k) pw-bad) '(1 2 3 4 5 6 7))
+  (map pw-got '("pw:at-bad-day" "pw:at-bad-24" "pw:at-bad-t" "pw:at-bad-num" "pw:at-bad-offset"
+                "pw:at-bad-deadline" "pw:at-bad-sched")))
+
+;; A Contact
+(test-equal "contact: the guide's example is taken (201) and read back as it was sent"
+  (list 201 (pw-sent pw-guide-contact))
+  (list (lg-st "pw:ct-guide") (pw-read "pw:ct-guide-get")))
+
+(test-equal "contact: a rich one (name, three emails, three phones, two addresses, an organisation, a title naming it, pronouns, two links, an online service, a birthday) is taken and read back as sent"
+  (list 201 (pw-sent pw-rich-contact))
+  (list (lg-st "pw:ct-rich") (pw-read "pw:ct-rich-get")))
+
+(test-equal "contact: what is read back, sent again as a replace, is taken (200, revision 2) and reads back identical, member for member in order"
+  (list 200 2 #t (list "name" "organizations" "titles" "emails" "phones" "addresses" "anniversaries" "links" "onlineServices" "speakToAs"))
+  (list (lg-st "pw:ct-rich-put") (pw-rev "pw:ct-rich-get2")
+        (equal? (pw-props "pw:ct-rich-get") (pw-props "pw:ct-rich-get2"))
+        (members (pw-props "pw:ct-rich-get2"))))
+
+(test-equal "contact: the same Id maps sent in two orders read back identical props, in the ids' order"
+  (list 201 201 #t '("e1" "e10" "e2") '("p1" "p2"))
+  (list (lg-st "pw:ct-ord1") (lg-st "pw:ct-ord2")
+        (equal? (pw-props "pw:ct-ord1-get") (pw-props "pw:ct-ord2-get"))
+        (members (pw-prop "pw:ct-ord1-get" "emails")) (members (pw-prop "pw:ct-ord1-get" "phones"))))
+
+(test-equal "contact: explicit defaults (kind individual, isOrdered false, a title's kind) and right @types are taken and not shown"
+  (list 201 (pw-sent pw-defaults-read) #f)
+  (list (lg-st "pw:ct-def") (pw-read "pw:ct-def-get")
+        (contains? (lg-text (obs "pw:ct-def-get")) "@type")))
+
+(test-equal "contact: a line break in an address's full is taken and read back; {} is a Contact and reads back {}"
+  (list 201 "1 Main St\nTown" 201 '())
+  (list (lg-st "pw:ct-nl") (jget (jget (jget (pw-props "pw:ct-nl-get") "addresses") "a1") "full")
+        (lg-st "pw:ct-empty") (pw-props "pw:ct-empty-get")))
+
+(test-equal "contact: each of an unknown member (top and nested), an empty string, an empty map, a control character in a label, pref 1.0, pref 0, a uri with no scheme, an email of a@, a dangling organizationId, a wrong @type, @type at the top, an empty contexts, a lower case countryCode and an unknown kind is 400 in the format"
+  (map (lambda (bc) pw-bad) pw-bad-contacts)
+  (map (lambda (bc) (pw-got (string-append "pw:ctbad-" (car bc)))) pw-bad-contacts))
+
+(test-equal "contact: props over 4,096 bytes are 413 props_too_large, and make no node"
+  (list (pw-problem 413 "props_too_large") (pw-problem 404 "not_found"))
+  (list (pw-got "pw:ct-big") (pw-got "pw:ct-big-get")))
+
+;; Kinds do not mix
+(test-equal "kinds: a Task's status on a Note, a Contact's emails on a Task, and any member on a Project are each 400; a Project with {} is 201"
+  (list pw-bad pw-bad pw-bad pw-bad pw-bad 201)
+  (list (pw-got "pw:k-note-status") (pw-got "pw:k-task-emails") (pw-got "pw:k-project-at")
+        (pw-got "pw:k-project-status") (pw-got "pw:k-project-x") (lg-st "pw:k-project-ok")))
+
+(test-equal "kinds: a replace naming no kind is judged by the node's own: status on a Note, emails on a Note, at on a Task, emails on a Task, at on a Contact, at on a Project are each 400"
+  (map (lambda (k) pw-bad) '(1 2 3 4 5 6))
+  (map pw-got '("pw:k-note-as-task" "pw:k-note-emails" "pw:k-task-as-note" "pw:k-task-emails-put"
+                "pw:k-contact-at" "pw:k-project-put")))
+
+(test-equal "kinds: a replace naming task on a Note is 409 kind_fixed when the props suit a Task, 400 when they do not"
+  (list (pw-problem 409 "kind_fixed") pw-bad)
+  (list (pw-got "pw:k-note-named-task") (pw-got "pw:k-note-named-task-at")))
+
+(test-equal "kinds: the same replaces with props that suit the node's own kind are 200: at on a Note, emails on a Contact, status and deadline on a Task"
+  (list 200 '(("at" . "2026-12-02")) 200 200 (pw-norm '(("status" . "TODO") ("deadline" . "2026-12-05"))))
+  (list (lg-st "pw:k-note-ok") (pw-props "pw:k-note-ok") (lg-st "pw:k-contact-ok") (lg-st "pw:k-task-ok")
+        (pw-read "pw:k-task-ok")))
+
+;; Links and lists
+(test-equal "links: a link page's item shows a Task's props with its status: in at the TODO Task, and out of the Note, the DONE Task's (with closed) then the TODO one's"
+  (list 201 201 (list '(("status" . "TODO")) '()) (list "DONE" "TODO") #t)
+  (list (lg-st "pw:l-put-s") (lg-st "pw:l-put-a")
+        (list (jget (jget (cadr (jitems (nd-j "pw:l-out"))) "node") "props")
+              (jget (jget (car (jitems (nd-j "pw:l-in-s"))) "node") "props"))
+        (map (lambda (i) (jget (jget (jget i "node") "props") "status")) (jitems (nd-j "pw:l-out")))
+        (integer? (jget (jget (jget (car (jitems (nd-j "pw:l-out"))) "node") "props") "closed"))))
+
+(test-equal "lists: a list item shows a Task's props with status, a Note's {}, and is the link page's node byte for byte"
+  (list '(("status" . "TODO")) "DONE" '() #t)
+  (let* ((items (jitems (nd-j "pw:l-list")))
+         (item (lambda (id) (let ((m (filter (lambda (n) (equal? (jget n "id") id)) items))) (if (pair? m) (car m) #f)))))
+    (list (jget (item (pw-id 14)) "props") (jget (jget (item (pw-id 1)) "props") "status") (jget (item (pw-id 11)) "props")
+          (equal? (item (pw-id 14)) (jget (cadr (jitems (nd-j "pw:l-out"))) "node")))))
 
 (test-end "integration")
 

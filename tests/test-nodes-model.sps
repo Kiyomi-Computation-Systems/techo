@@ -1,27 +1,34 @@
 #!r6rs
 ;;; The nodes model suite: ADR-0007's third layer for D5's versioned write
 ;;; (slice 4, task 5a), the node lifecycle (slice 4b, task 4a), the tree
-;;; (slice 5a, task 4a) and links (slice 5b, task 4a). Seeded random
+;;; (slice 5a, task 4a), links (slice 5b, task 4a), and props and a Task's
+;;; commands (slice 6, task 4a). Seeded random
 ;;; sequences of requests by two accounts run against the real handlers
 ;;; (make-app inside wrap-server, raw HTTP through a test host) and real
 ;;; SQLite (the test doorway on a migrated file), with a wall clock the
 ;;; sequence steps. After every request the answer is compared with the
 ;;; model's, which is the plan's rules written again in (nodes-model), never
-;;; the tables of (techo nodes) nor (techo links)' link-command; the answers
+;;; the tables of (techo nodes) nor (techo links)' link-command, nor
+;;; (techo props), (techo tasks), (techo contact) or (techo when); the answers
 ;;; are held to laws that need no model; the four tables and every key's
 ;;; last_used are read whole and held to laws that need no model (H1 to H6,
 ;;; H11, H2', H3', H15'', H16, G3', G6', G7', G9, G11, G12, G16; P1 to P4,
-;;; P8, P11, P12, P15, P16; H1', H4'', H14', Q1, Q2, Q8, Q9) and to the
-;;; model's world, its links among it.
+;;; P8, P11, P12, P15, P16; H1', H4'', H14', Q1, Q2, Q8, Q9; R1, R2, R4,
+;;; R5, R9, R13, R14, G11') and to the model's world, its links and props
+;;; among it; and every request's write jobs are counted (R15).
 ;;;
 ;;;   1. the oracle on hand-made worlds, pure: the lifecycle's, then a tree
-;;;      on it, then a chain to the depth's boundary, then links on it
-;;;   2. the run: SEQUENCES seeds of 82 to 119 requests, every one to agree;
+;;;      on it, then a chain to the depth's boundary, then links on it, then
+;;;      props and a Task's commands on it; then the props corpus, by itself
+;;;      and each entry once through the real handlers
+;;;   2. the run: SEQUENCES seeds of 88 to 127 requests, every one to agree;
 ;;;      a family seed (ending in 3 or 7) first makes a mixed tree; a linked
 ;;;      seed (ending in 1 or 9) first makes a hub of links both ways and
 ;;;      steps it through the states; a deep seed (a multiple of fifteen)
 ;;;      first makes a chain of 65 Projects and runs a script at the
-;;;      depth's boundary, then 14 to 27
+;;;      depth's boundary, then 14 to 27; any other seed's file first holds
+;;;      one to three Tasks written straight into its tables, props {}, as a
+;;;      file from before slice 6
 ;;;   3. coverage, printed and held to floors: D5's cells; the lifecycle's
 ;;;      24 (three states by five events, a write and the two moves);
 ;;;      node-command's reachable cells, and no other; requests at purged
@@ -33,10 +40,15 @@
 ;;;      links': link-command's 32 reachable cells, and no other; each
 ;;;      outcome by its cause (201, 200 kept, 204, each 404, each 409 by
 ;;;      which end, each 400); purges that took links out, in and both
-;;;      ways; lists both ways, typed and not, pages followed
+;;;      ways; lists both ways, typed and not, pages followed; slice 6's:
+;;;      the task table's nine cells on active and on archived Tasks, each
+;;;      refusal of a command by its cause, each refusal of props by kind and
+;;;      by where it is answered, the 413, status_fixed, P10's restores,
+;;;      P11's replaces, P14's creates, commands and reads on Tasks stored
+;;;      {} and on seeded ones, R17's two orderings
 ;;;   4. teeth: the oracle given a twisted rule disagrees with the handlers;
-;;;      each tree and link twist on the first seeds whose run reached
-;;;      what it bends
+;;;      each tree, link and slice 6 twist on the first seeds whose run
+;;;      reached what it bends
 ;;;
 ;;; No sequence reaches a bulk move's cap of 1,000 children: the route
 ;;; suite holds it (tests/test-node-routes.sps, "bulk: of 1,005 children").
@@ -771,6 +783,145 @@
      (list (expectation-status (expect link-to-trashed hand (put-link lat 'a 1 "related" 4)))
            (expectation-status (expect kept-refused-when-trashed made-then-trashed (put-link (+ lat 2) 'a 1 "related" 3)))))))
 
+;;; Props and a Task's commands, on the hand world (slice 6)
+
+;; corpus : Symbol -> Entry     the corpus's entry of that name
+(define (corpus name) (find (lambda (e) (eq? (entry-name e) name)) props-corpus))
+
+(define (put-props at tag n pre kind props)
+  (make-event 'put at tag (key-of tag) (nid n) pre '() (make-content kind "t" "b" "text/plain" props 'absent)
+              #f #f #f #f '() 'absent))
+(define (command-at at tag n rev ev)
+  (make-event ev at tag (key-of tag) (nid n) rev '() #f #f #f #f #f '() 'absent))
+
+;; outcome : World Event -> (List Status Code Jobs (U Any 'absent))     and the answer's props
+(define (outcome w e)
+  (attempt (lambda ()
+             (let ((x (expect as-planned w e)))
+               (list (expectation-status x) (expectation-code x) (expectation-jobs x)
+                     (member-of (expectation-json x) "props"))))))
+
+(define pat (+ t0 80))
+
+;; tasks : hand, with a's 40 a Task made with no props (TODO), 41 a Task
+;; made DONE with no closed at pat, 42 a Note made with at, 43 a Task made
+;; WONTDO with the closed it gave, then trashed (at 2), 44 a Note trashed (at 2)
+(define tasks
+  (attempt
+   (lambda ()
+     (walk-world hand
+                 (list (put-props pat 'a 40 'create "task" #f)
+                       (put-props (+ pat 1) 'a 41 'create "task" (corpus 'task-done))
+                       (put-props (+ pat 2) 'a 42 'create "note" (corpus 'note-local))
+                       (put-props (+ pat 3) 'a 43 'create "task" (corpus 'task-wontdo-closed-0))
+                       (life-at (+ pat 4) 'a a1 43 1 'trash)
+                       (put-props (+ pat 5) 'a 44 'create "note" #f)
+                       (life-at (+ pat 6) 'a a1 44 1 'trash))))))
+
+(define tat6 (+ pat 20))
+
+(test-equal "oracle: a Task made with no props is TODO, stored {}, shown {\"status\":\"TODO\"}; made DONE it has closed the write's time; made WONTDO with closed 0 keeps 0 (P9, P14)"
+  (list "{}" '(("status" . "TODO")) (string-append "{\"status\":\"DONE\",\"closed\":" (number->string (+ pat 1)) "}")
+        "{\"status\":\"WONTDO\",\"closed\":0}" "{\"at\":\"2026-12-01T15:00\"}")
+  (attempt
+   (lambda ()
+     (let ((text (lambda (n) (mprops-text (msnap-props (car (mnode-snaps (node-in tasks n))))))))
+       (list (text 40) (member-of (expectation-json (expect as-planned tasks (read-at tat6 'a 'get-node 40 #f))) "props")
+             (text 41) (text 43) (text 42))))))
+
+(test-equal "oracle: a create's props are judged before the job (no write job): another kind's, none's, TODO with a closed, over the cap 413; a {} create of every kind is 201"
+  '((400 "invalid_request" 0 absent) (400 "invalid_request" 0 absent) (400 "invalid_request" 0 absent)
+    (413 "props_too_large" 0 absent) (201 #f 1 ()))
+  (map (lambda (e) (outcome tasks e))
+       (list (put-props tat6 'a 50 'create "project" (corpus 'note-date))
+             (put-props tat6 'a 50 'create "note" (corpus 'nothing-colour))
+             (put-props tat6 'a 50 'create "task" (corpus 'task-todo-closed))
+             (put-props tat6 'a 50 'create "contact" (corpus 'contact-over-cap))
+             (put-props tat6 'a 50 'create "journal" (corpus 'empty)))))
+
+(test-equal "oracle: done moves TODO to DONE, closed now, one revision and a snapshot; wontdo then keeps closed; reopen removes it; each op its name; no body in the answer"
+  (list (list 200 "\"2\"" (list (cons "closed" tat6) (cons "status" "DONE")) 'absent "done" '(2 1))
+        (list (cons "closed" tat6) (cons "status" "WONTDO")) "wontdo"
+        '(("status" . "TODO")) "reopen" "{}")
+  (attempt
+   (lambda ()
+     (let* ((x1 (expect as-planned tasks (command-at tat6 'a 40 1 'done)))
+            (w1 (expectation-world x1))
+            (x2 (expect as-planned w1 (command-at (+ tat6 1) 'a 40 2 'wontdo)))
+            (w2 (expectation-world x2))
+            (x3 (expect as-planned w2 (command-at (+ tat6 2) 'a 40 3 'reopen)))
+            (w3 (expectation-world x3))
+            (op (lambda (w) (mchange-op (car (reverse (world-changes-of w 'a)))))))
+       (list (list (expectation-status x1) (expectation-etag x1) (member-of (expectation-json x1) "props")
+                   (member-of (expectation-json x1) "body") (op w1) (map msnap-revision (mnode-snaps (node-in w1 40))))
+             (member-of (expectation-json x2) "props") (op w2)
+             (member-of (expectation-json x3) "props") (op w3)
+             (mprops-text (msnap-props (car (mnode-snaps (node-in w3 40))))))))))
+
+(test-equal "oracle: a command's order: 404 b's, 412 stale on a trashed Note, wrong_state for a trashed Note before not_a_task, not_a_task, wrong_status, 428 none, 400 If-None-Match"
+  '((404 "not_found" 1 absent) (412 "precondition_failed" 1 absent) (409 "wrong_state" 1 absent)
+    (409 "wrong_state" 1 absent) (409 "not_a_task" 1 absent) (409 "wrong_status" 1 absent)
+    (409 "wrong_status" 1 absent) (428 "precondition_required" 0 absent) (400 "invalid_request" 0 absent))
+  (map (lambda (e) (outcome tasks e))
+       (list (command-at tat6 'b 40 1 'done) (command-at tat6 'a 44 1 'done) (command-at tat6 'a 44 2 'done)
+             (command-at tat6 'a 43 2 'reopen) (command-at tat6 'a 42 1 'done) (command-at tat6 'a 41 1 'done)
+             (command-at tat6 'a 40 1 'reopen)
+             (make-event 'done tat6 'a a1 (nid 40) 'missing '() #f #f #f #f #f '() 'absent)
+             (make-event 'done tat6 'a a1 (nid 40) 'invalid '() #f #f #f #f #f '() 'absent))))
+
+(test-equal "oracle: a replace of a Task: no props keep them (P11); its status sent back is taken; another status or a closed while TODO is status_fixed in the job; the deadline sent replaces"
+  (list (list 200 #f 1 (list (cons "closed" (+ pat 1)) (cons "status" "DONE")))
+        (list 200 #f 1 '(("status" . "TODO")))
+        '(409 "status_fixed" 1 absent) '(409 "status_fixed" 1 absent)
+        (list 200 #f 1 (list (cons "closed" (+ pat 1)) (cons "deadline" "2026-12-01") (cons "status" "DONE"))))
+  (map (lambda (e) (outcome tasks e))
+       (list (put-props tat6 'a 41 1 #f #f) (put-props tat6 'a 40 1 #f (corpus 'task-todo))
+             (put-props tat6 'a 40 1 #f (corpus 'task-done)) (put-props tat6 'a 40 1 "task" (corpus 'task-todo-closed))
+             (put-props tat6 'a 41 1 #f (corpus 'task-deadline-date)))))
+
+(test-equal "oracle: a replace's props: naming no kind, Task props on a Note are the 400 in the job; naming note, before it; no kind's before it; {} clears a Note's at; none keeps it"
+  '((400 "invalid_request" 1 absent) (400 "invalid_request" 0 absent) (400 "invalid_request" 0 absent)
+    (200 #f 1 ()) (200 #f 1 (("at" . "2026-12-01T15:00"))))
+  (map (lambda (e) (outcome tasks e))
+       (list (put-props tat6 'a 42 1 #f (corpus 'task-deadline-date)) (put-props tat6 'a 42 1 "note" (corpus 'task-deadline-date))
+             (put-props tat6 'a 42 1 #f (corpus 'nothing-colour)) (put-props tat6 'a 42 1 #f (corpus 'empty))
+             (put-props tat6 'a 42 1 #f #f))))
+
+(test-equal "oracle: a restore of a Task's snapshot from before done (the deadline since cleared) keeps DONE and closed, and brings back the deadline (P10)"
+  (list 200 (list (cons "closed" (+ tat6 1)) (cons "deadline" "2026-12-01") (cons "status" "DONE")))
+  (attempt
+   (lambda ()
+     (let* ((w (walk-world tasks (list (put-props tat6 'a 40 1 #f (corpus 'task-deadline-date))
+                                       (command-at (+ tat6 1) 'a 40 2 'done)
+                                       (put-props (+ tat6 2) 'a 40 3 #f (corpus 'empty)))))
+            (x (expect as-planned w (restore-at (+ tat6 3) 'a a1 40 4 2))))
+       (list (expectation-status x) (member-of (expectation-json x) "props"))))))
+
+(test-equal "oracle: a Task stored {} shows TODO in its snapshots and the snapshot list too (R8)"
+  '((("status" . "TODO")) ((("status" . "TODO"))))
+  (attempt
+   (lambda ()
+     (list (member-of (expectation-json (expect as-planned tasks (read-at tat6 'a 'get-snapshot 40 1))) "props")
+           (map (lambda (i) (member-of i "props")) (expectation-items (expect as-planned tasks (read-at tat6 'a 'list-revisions 40 #f))))))))
+
+;; Twisted rules of slice 6, for the oracle and for the teeth below. A
+;; command's twist sees its TaskCell: (task found state kind status command).
+
+;; wontdo-resets-closed : DONE to WONTDO sets closed to the write's time, as leaving TODO does.
+(define (wontdo-resets-closed cell decision s)
+  (if (equal? decision '(transition "WONTDO" keep)) '(transition "WONTDO" close) decision))
+
+;; status-claim-taken : a replace's claim of another status or closed is written, the claim ignored.
+(define (status-claim-taken cell decision s)
+  (if (equal? decision '(refuse 409 "status_fixed")) '(write) decision))
+
+(test-equal "oracle: each slice 6 twist changes the answer it bends: DONE 41 to WONTDO has closed now; 40 replaced claiming DONE, 200"
+  (list (list (cons "closed" tat6) (cons "status" "WONTDO")) 200)
+  (attempt
+   (lambda ()
+     (list (member-of (expectation-json (expect wontdo-resets-closed tasks (command-at tat6 'a 41 1 'wontdo))) "props")
+           (expectation-status (expect status-claim-taken tasks (put-props tat6 'a 40 1 #f (corpus 'task-done))))))))
+
 ;;; The store every sequence runs on, emptied by each
 
 (define dir (attempt (lambda () (fresh-dir "test-nodes-model"))))
@@ -794,6 +945,19 @@
 
 (define replay-seed (env-number "TECHO_NODES_MODEL_SEED"))
 (define first-seed (or (env-number "TECHO_NODES_MODEL_FIRST") 1))
+
+;;; The props corpus (slice 6): what it says of itself, then each entry
+;;; once through the real handlers, so a wrong entry is a named failure
+;;; here and not a mystery mid-run.
+
+(unless replay-seed
+  (test-equal "corpus: its names, verdicts, texts, Whens, claims, the cap's two texts and R17's two orderings hold"
+    '()
+    (attempt corpus-self-breaks))
+
+  (test-equal "corpus: every entry, as a create of every kind and a replace naming no kind of every kind, is answered as the corpus says, with its write jobs"
+    '()
+    (attempt (lambda () (corpus-breaks store)))))
 
 ;;; Replay: one seed, traced
 
@@ -1089,6 +1253,94 @@
         (cons link-400-aims 14) (cons purge-link-aims 6) (cons list-link-aims 20) (cons link-other-aims 5)))
 (define link-aims-all (apply append (map car link-floors)))
 
+;;; Slice 6's coverage: props and a Task's commands
+
+;; task-cells : State (Listof (List String Symbol)) -> (Listof Symbol)
+;; The task table's cells (status, command) on a Task in STATE.
+(define (task-cells state cells)
+  (map (lambda (c) (aim-of "task-cell-" state "-" (car c) "-" (cadr c))) cells))
+;; The six moves the table takes, and the three it refuses, wrong_status
+(define task-moves-taken '(("TODO" done) ("TODO" wontdo) ("DONE" wontdo) ("DONE" reopen) ("WONTDO" done) ("WONTDO" reopen)))
+(define task-moves-refused '(("TODO" reopen) ("DONE" done) ("WONTDO" wontdo)))
+
+;; task-refusal-aims : a command's refusals by cause: wrong_state for a
+;; trashed Task and a trashed node of another kind (before not_a_task),
+;; not_a_task by each kind, 404 by cause, 412, and 412 where the state, the
+;; kind or the status would refuse too
+(define task-refusal-aims
+  '(task-409-wrong-state-task task-409-wrong-state-other-kind
+    task-409-not-a-task-project task-409-not-a-task-journal task-409-not-a-task-note task-409-not-a-task-contact
+    task-404-missing task-404-purged task-404-other
+    task-412 task-412-trashed task-412-not-a-task task-412-would-be-wrong-status))
+
+;; task-pre-aims : no precondition, a bad one, and If-None-Match on each command
+(define task-pre-aims
+  '(no-precondition-done no-precondition-wontdo no-precondition-reopen
+    bad-precondition-done bad-precondition-wontdo bad-precondition-reopen bad-create-on-task))
+
+;; props-before-aims : props refused before the job (no write job), by the
+;; kind named or by none taking them
+(define props-before-aims
+  '(props-400-before-project props-400-before-journal props-400-before-note props-400-before-task
+    props-400-before-contact props-400-before-unnamed))
+
+;; props-job-aims : a replace that named no kind, refused in the job by the stored kind
+(define props-job-aims '(props-400-job-project props-400-job-journal props-400-job-note props-400-job-task props-400-job-contact))
+
+;; props-413-aims : the 413, on a create, a replace naming the kind, one naming none
+(define props-413-aims '(props-413-create props-413-replace-named props-413-replace-unnamed))
+
+;; status-fixed-aims : a replace's claim of another status, another closed, a closed while TODO
+(define status-fixed-aims '(status-fixed-status status-fixed-closed status-fixed-closed-while-todo))
+
+;; props-create-aims, props-replace-aims : props stored by a create and a
+;; replace of each kind; P11's replace with none, of each kind
+(define props-create-aims (map (lambda (k) (aim-of "props-create-" k)) kinds))
+(define props-replace-aims
+  (append (map (lambda (k) (aim-of "props-replace-" k)) kinds) (map (lambda (k) (aim-of "replace-no-props-" k)) kinds)))
+
+;; props-kept-aims : P11's replace with none of props not {}; a Task's
+;; status and closed sent back; P10's restores of another status and closed
+(define props-kept-aims
+  '(replace-no-props-kept replace-task-claims-own restore-task-status-differs restore-task-closed-differs))
+
+;; p14-aims : a Task made DONE or WONTDO, its closed given or the write's
+;; time; and one made TODO with a closed, the 400 before the job
+(define p14-aims
+  '(create-task-DONE-closed-given create-task-DONE-closed-now create-task-WONTDO-closed-given create-task-WONTDO-closed-now
+    create-task-todo-closed-400))
+
+;; empty-task-aims : P9 and R8: commands and reads on a Task stored {},
+;; and on a seeded one, written as a file from before this slice
+(define empty-task-aims
+  '(empty-task-done empty-task-wontdo empty-task-read-node empty-task-read-list empty-task-read-link-item
+    empty-task-read-revisions empty-task-read-snapshot
+    seeded-done seeded-wontdo seeded-reopen-wrong-status seeded-replace seeded-restore
+    seeded-read-node seeded-read-list seeded-read-revisions seeded-read-snapshot))
+
+;; entry-aims : R17's two orderings stored by a create; the cap's two
+;; sides. (R17 by a replace is the corpus check's: every entry, by a
+;; replace of a Contact.)
+(define entry-aims
+  '(entry-contact-order-a-201 entry-contact-order-b-201 entry-contact-at-cap-201 entry-contact-over-cap-413))
+
+;; props-floors : (Listof (Pair (Listof Symbol) Natural))
+;; Each group's floor is about half the fewest seen over nine runs of 300
+;; (FIRST 1 to 5001 by thousands, 7001, 13001): a move the task table takes
+;; on an active Task 33, on an archived one 7; a refused one on an active
+;; Task 8, on an archived one 3; a command's refusal by cause 11; a bad
+;; precondition 20; props refused before the job 100, in it 4; the 413 12
+;; (over the six runs since any replace may send props over the cap);
+;; status_fixed 7; props stored by a create 182, by a replace 4; kept 33;
+;; P14's 4; on Tasks stored {} 25; R17 and the cap 3.
+(define props-floors
+  (list (cons (task-cells 'active task-moves-taken) 15) (cons (task-cells 'archived task-moves-taken) 3)
+        (cons (task-cells 'active task-moves-refused) 4) (cons (task-cells 'archived task-moves-refused) 1)
+        (cons task-refusal-aims 6) (cons task-pre-aims 10) (cons props-before-aims 45) (cons props-job-aims 2)
+        (cons props-413-aims 6) (cons status-fixed-aims 3) (cons props-create-aims 90) (cons props-replace-aims 2)
+        (cons props-kept-aims 15) (cons p14-aims 2) (cons empty-task-aims 12) (cons entry-aims 1)))
+(define props-aims-all (apply append (map car props-floors)))
+
 (define (at-least floor n) (if (>= n floor) (list 'at-least floor) (list 'only n)))
 
 (define (cell-name c) (format "~a x ~a x ~a" (car c) (or (cadr c) "-") (caddr c)))
@@ -1188,7 +1440,7 @@
           (list 'at-least (cdr group))
           (at-least (cdr group) (hashtable-ref aims-hit aim 0))))
       (car group)))
-   (append tree-floors link-floors))
+   (append tree-floors link-floors props-floors))
 
   (test-equal "coverage: the model steps no cell of link-command's but the reachable ones"
     '()
@@ -1232,11 +1484,17 @@
               (display (format "   at least ~a:\n" (cdr group)))
               (for-each (lambda (aim) (display (format "    ~a: ~a\n" aim (hashtable-ref aims-hit aim 0)))) (car group)))
             link-floors)
+  (display "  props and a Task's commands (slice 6):\n")
+  (for-each (lambda (group)
+              (display (format "   at least ~a:\n" (cdr group)))
+              (for-each (lambda (aim) (display (format "    ~a: ~a\n" aim (hashtable-ref aims-hit aim 0)))) (car group)))
+            props-floors)
   (display "  and with no floor:\n")
   (for-each (lambda (aim) (display (format "    ~a: ~a\n" aim (hashtable-ref aims-hit aim 0))))
             (list-sort (lambda (x y) (string<? (symbol->string x) (symbol->string y)))
                        (filter (lambda (aim) (not (or (memq aim aims) (memq aim some-aims) (memq aim rare-aims)
-                                                      (memq aim tree-aims-all) (memq aim link-aims-all))))
+                                                      (memq aim tree-aims-all) (memq aim link-aims-all)
+                                                      (memq aim props-aims-all))))
                                (vector->list (hashtable-keys aims-hit))))))
 
 ;;; 4. Teeth: the oracle with a twisted rule, the handlers as they are
@@ -1323,7 +1581,17 @@
   (test-equal "teeth: a rule that refuses a kept link with a trashed end disagrees with the handlers' 200"
     #t
     (bites? kept-refused-when-trashed '(link-kept-source-trashed link-kept-target-trashed)
-            '("x link x there" "status: the model has 409, the handlers answered 200"))))
+            '("x link x there" "status: the model has 409, the handlers answered 200")))
+
+  (test-equal "teeth: a rule that resets closed on DONE to WONTDO disagrees with the handlers' JSON"
+    #t
+    (bites? wontdo-resets-closed '(task-cell-active-DONE-wontdo task-cell-archived-DONE-wontdo)
+            '("the task table's" "x DONE x wontdo" "the JSON: the model has")))
+
+  (test-equal "teeth: a rule that writes a replace's claim of another status or closed disagrees with the handlers' 409 status_fixed"
+    #t
+    (bites? status-claim-taken '(status-fixed-status status-fixed-closed status-fixed-closed-while-todo)
+            '("status: the model has 200, the handlers answered 409"))))
 
 (unless (raised? store) (close-test-store! store))
 

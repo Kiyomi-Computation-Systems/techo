@@ -151,8 +151,8 @@ write is checked against the node's revision, and every write is kept until the 
 | `title` | Up to 1,000 characters. May be empty. |
 | `body` | Text, up to 1 MiB (1,048,576 bytes of UTF-8). Techo never reads it. |
 | `content_type` | What the body is, such as `text/org`: 1 to 255 printable ASCII characters (a space is fine, a tab is not) with a `/`. Techo stores it and does nothing with it. |
-| `props` | Must be `{}` for now. You may leave it out. |
-| `revision` | 1 when made, one more after every write and every change of state. |
+| `props` | What is particular to the kind: a Task's status, a Contact's details. See [props](#props-by-kind). 4,096 bytes at most. |
+| `revision` | 1 when made, one more after every write, every change of state, every move and every Task command. |
 | `created`, `updated` | [Times](#times). |
 
 Neither the title nor the body may hold the character U+0000.
@@ -202,6 +202,8 @@ curl -X PUT -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' 
 ```
 
 - `kind` may be left out. Given, it must be the node's own, or it is a `409`.
+- `props` may be left out, and the node's are then kept. Send `{}` to clear
+  them. See [props](#props-by-kind).
 - Send only the five content fields. `id`, `revision` and the times are a `400`
   in a request.
 - The same content sent twice makes two revisions.
@@ -237,7 +239,8 @@ One old revision, whole, with its `body`.
 ### `POST /v1/nodes/{id}/revisions/{n}/restore`
 
 Makes a **new** revision with revision `n`'s title, body, content type and props.
-Nothing old is changed. It needs `If-Match`, takes no body, and answers `200`,
+Nothing old is changed. A Task keeps its present `status` and `closed`: see
+[a Task](#a-task). It needs `If-Match`, takes no body, and answers `200`,
 the node, and the new `ETag`.
 
 ```sh
@@ -477,6 +480,194 @@ second try means it is done.**
 - **Deleting a node deletes every link to and from it.** The nodes at the
   other ends do not change, and get no new revision.
 
+### Props, by kind
+
+`props` holds what is particular to a kind. Each kind has a fixed set of
+members, and anything else is a `400`. The whole of `props` may be 4,096 bytes
+at most, as Techo stores it: `413` `props_too_large`.
+
+| Kind | Props |
+|---|---|
+| Project, Journal | none: `{}` |
+| Note | `at` |
+| Task | `status`, `closed`, `deadline`, `scheduled` |
+| Contact | a contact's details, below |
+
+**If you write a client, four rules:**
+
+- **Send back what you do not know.** Techo will add members over time. Read
+  `props`, change what you understand, and send the rest as you got it. A
+  client that rebuilds `props` from the fields it knows deletes the others.
+- **A member is only ever added.** None is removed or renamed, none becomes
+  required, and no rule on a value gets stricter. What Techo takes today it
+  will always take.
+- **Expect values you do not know.** A member that takes one of a list of
+  words (a contact's `kind`, a phone's `features`) may take more words later.
+  Show or keep one you do not know. Do not fail on it.
+- **Techo may rewrite what you send.** It stores one form: its own order of
+  members, no member that only repeats a default. What you read back means
+  the same and may not be byte for byte what you sent.
+
+**A replace with no `props` keeps the props the node has.** Send `{}` to clear
+them.
+
+**To remove something, leave it out.** A replace's `props` is the whole of
+them: a member that is not there is gone.
+
+| To remove | Send |
+|---|---|
+| one member, such as `deadline` | `props` without it |
+| one entry of a list, such as an email | the `emails` map without that entry |
+| the last entry of a list | `props` without `emails` at all |
+| everything | `"props": {}` |
+
+- **Nothing is ever empty.** An empty string, a string of nothing but spaces,
+  an empty list and an empty map (`"emails": {}`) are each a `400`. Leave the
+  member out instead.
+- A Task's `status` and `closed` are the exception: left out, they are kept.
+
+#### Dates and times you set: a When
+
+`at`, `deadline` and `scheduled` each hold a **When**: a string in one of
+three forms.
+
+| Form | Example | Means |
+|---|---|---|
+| a date | `"2026-12-01"` | that day, wherever you are |
+| a local time | `"2026-12-01T15:00"` | 15:00 on your own clock, wherever you are |
+| a moment | `"2026-12-01T20:00:00Z"` | one instant, in UTC |
+
+- Exactly these: 10, 16 or 20 characters, capital `T` and `Z`, no offset, no
+  fraction, no other time zone. It must be a real date. Anything else is a
+  `400`.
+- **Techo stores it as you sent it and never converts or compares it.** What
+  is overdue, and what order things come in, is yours to work out.
+- Use a date for "due on the 1st", a local time for "09:00 wherever I am" (it
+  is what org-mode means by a time), and a moment for something that happens
+  once for everyone.
+- There are only ever these three forms. A time in a named zone, a repeat and
+  a range are not props: keep them in the body.
+
+The times Techo sets itself (`created`, `updated`, a Task's `closed`) stay
+[milliseconds](#times).
+
+#### A Note
+
+`{"at": "2026-12-01T15:00"}`, or `{}`. `at` says when the note is about, such
+as a journal entry's time. It is never required, in a Journal or out.
+
+#### A Task
+
+```json
+{"status":"DONE","closed":1795515226123,"deadline":"2026-12-01","scheduled":"2026-11-30T09:00"}
+```
+
+| Member | What it is |
+|---|---|
+| `status` | `TODO`, `DONE` or `WONTDO`. A new Task is `TODO` unless you say otherwise. |
+| `closed` | When it stopped being `TODO`, in milliseconds. Techo sets it; you may give it only when you make a Task that is already finished. Not there while it is `TODO`. |
+| `deadline`, `scheduled` | A When each, or left out. |
+
+**Change the status with a command,** each with `If-Match` and no body:
+
+| Route | From | To |
+|---|---|---|
+| `POST /v1/nodes/{id}/done` | `TODO` or `WONTDO` | `DONE` |
+| `POST /v1/nodes/{id}/wontdo` | `TODO` or `DONE` | `WONTDO` |
+| `POST /v1/nodes/{id}/reopen` | `DONE` or `WONTDO` | `TODO` |
+
+```sh
+curl -X POST -H "Authorization: Bearer $KEY" -H 'If-Match: "3"' \
+  http://127.0.0.1:8080/v1/nodes/0193a5c0-9000-7000-8000-000000000004/done
+```
+
+- It answers `200`, the node without its body, and the new `ETag`.
+- `closed` is set when a Task leaves `TODO`, kept between `DONE` and `WONTDO`,
+  and removed by a reopen.
+- A command that changes nothing (`done` on a `DONE` Task) is a `409`
+  `wrong_status`. On a node that is no Task it is a `409` `not_a_task`. A
+  trashed Task takes none: `409` `wrong_state`.
+- **Each one is a revision,** with a copy of the Task as it then was.
+- **A replace cannot change `status` or `closed`.** Send them back as you read
+  them, or leave them out: both are kept. Another status, or another
+  `closed`, is a `409` `status_fixed`. A `status` that is none of the three
+  words is a `400`.
+- **A restore does not change them either.** It brings back the old revision's
+  `deadline` and `scheduled`, and the Task stays as done or not as it is now.
+- **Bringing in finished Tasks:** when you make a Task you may give `status`,
+  and for a `DONE` or `WONTDO` one its `closed` time. Left out, `closed` is
+  the time you made it.
+
+#### A Contact
+
+A Contact's props are part of **JSContact** (RFC 9553), with its names and
+shapes exactly. Every member is optional, and `{}` is a Contact.
+
+```json
+{"name":{"components":[{"kind":"given","value":"Ada"},{"kind":"surname","value":"Lovelace"}]},
+ "emails":{"e1":{"address":"ada@example.com","contexts":{"work":true},"pref":1}},
+ "phones":{"p1":{"number":"+44 20 7946 0000","features":{"mobile":true}}},
+ "speakToAs":{"pronouns":{"k1":{"pronouns":"she/her"}}}}
+```
+
+| Member | Holds |
+|---|---|
+| `kind` | `individual` (assumed when left out), `org` or `location` |
+| `name` | `components`, a list of `{"kind", "value"}`: `title`, `given`, `given2`, `surname`, `surname2`, `credential`, `generation`. And `isOrdered`. |
+| `organizations` | each `name`, `units` (a list of `{"name"}`), `contexts`. Needs `name` or `units`. |
+| `titles` | each **`name`**, `kind` (`title` or `role`), `organizationId` |
+| `emails` | each **`address`**, `contexts`, `pref`, `label` |
+| `phones` | each **`number`**, `features`, `contexts`, `pref`, `label` |
+| `addresses` | each `components`, `isOrdered`, `countryCode`, `full`, `contexts`, `pref`. Needs `components`, `countryCode` or `full`. |
+| `anniversaries` | each **`kind`** (`birth`, `death`, `wedding`) and **`date`**: `{"year", "month", "day"}` |
+| `links` | each **`uri`**, `kind` (`contact`), `contexts`, `pref`, `label` |
+| `onlineServices` | each `service`, `uri`, `user`, `contexts`, `pref`, `label`. Needs `uri` or `user`. |
+| `speakToAs` | `grammaticalGender`, and `pronouns`: each **`pronouns`**, `contexts`, `pref`. Needs one of the two. |
+
+A member in **bold** must be there in each entry. A `name` needs its
+`components`, and a component its `kind` and `value`.
+
+- **A list of several things is a map,** keyed by a short id you choose: 1 to
+  255 of letters, digits, `-` and `_`. Keep an entry's id when you change it.
+  Techo stores the entries in the ids' order, capitals first: `B` comes
+  before `a`.
+- `contexts` is `{"work": true}`, `{"private": true}` or both; an address may
+  add `billing` and `delivery`. `features` is the same shape: `mobile`,
+  `voice`, `text`, `video`, `main-number`, `textphone`, `fax`, `pager`.
+- `pref` is 1 to 100, and 1 is the most preferred.
+- An address's `components` have a `kind` each: `room`, `apartment`, `floor`,
+  `building`, `number`, `name` (the street's), `block`, `subdistrict`,
+  `district`, `locality`, `region`, `postcode`, `country`, `direction`,
+  `landmark`, `postOfficeBox`.
+- A date may be partial: a year alone, a year and a month, or a month and a
+  day with no year. 29 February with no year is a date.
+- **The contact's full name is the node's `title`.** Props hold its parts.
+
+**Where Techo is stricter than JSContact, or checks less:**
+
+- A member Techo does not list is a `400`. JSContact has more: nicknames,
+  photos, phonetics, translations and others are not held yet.
+- An email address is plain `name@domain`, in ASCII: letters, digits, dots
+  and ``!#$%&'*+-/=?^_`{|}~``. A quoted name (`"a b"@c`), an address in
+  brackets and a letter outside ASCII (`élise@exemple.fr`) are refused.
+- A `uri` must be a real URI with a scheme, in ASCII: `https://example.com/`,
+  `mailto:ada@example.com`. Percent-encode anything else.
+- **Techo takes any scheme,** `javascript:` and `file:` among them. Check the
+  scheme yourself before you open a link.
+- `countryCode` is two capital letters. **Techo does not check that the
+  country exists.**
+- A number is whole: `1`, never `1.0`.
+- No string is empty or only white space, and none holds a control
+  character or a Unicode line or paragraph separator (U+2028, U+2029).
+- **The one line break is `\n`, and only in an address's `full`.** `\r\n` is
+  refused: send `\n`.
+- A nested object may carry JSContact's `"@type"` if it names the right type.
+  Techo does not keep it.
+
+**To make a JSContact Card from a Contact,** add `"@type": "Card"`,
+`"version": "1.0"`, a `uid` (such as `urn:uuid:` and the node's id), and
+`name.full` from the title.
+
 ### What can go wrong with a node
 
 | Status | `code` | When |
@@ -489,8 +680,12 @@ second try means it is done.**
 | 409 | `invalid_parent` | The parent cannot hold this node. See [folders](#folders). |
 | 409 | `would_loop` | The move would put a node under itself. |
 | 409 | `has_children` | A `DELETE` of a node that still has children. |
+| 409 | `not_a_task` | `done`, `wontdo` or `reopen` on a node that is no Task. |
+| 409 | `wrong_status` | The Task's status does not allow the command. |
+| 409 | `status_fixed` | A replace sent a `status` or `closed` other than the Task's own. |
 | 412 | `precondition_failed` | The node is not at the revision you gave, or the id you want to make is in use. |
 | 413 | `payload_too_large` | The body is over 1 MiB, or the whole request is over 2 MiB. A move's request is over 16 KiB. |
+| 413 | `props_too_large` | `props` is over 4,096 bytes. |
 | 415 | `unsupported_media_type` | `Content-Type` is not `application/json`. |
 | 428 | `precondition_required` | A write with neither `If-Match` nor `If-None-Match`. |
 
@@ -503,7 +698,7 @@ A `400` `invalid_request` is one of:
   or either on a link's `PUT` or `DELETE`;
 - no body, or a body that is not one JSON object;
 - a field missing, unknown, given twice or of the wrong type;
-- a `kind` that is not one of the five, or `props` that is not `{}`;
+- a `kind` that is not one of the five, or `props` its kind does not take;
 - a title or content type past its limit, or U+0000 in the title or body.
 
 Other things to know:
@@ -557,6 +752,9 @@ node's links both are a type and an id, as `mentions:<id>`.
 ## Times
 
 A time is whole milliseconds since 1970, UTC: `1795515226123`.
+
+The one exception is a date or time you set in `props`, which is a
+[When](#dates-and-times-you-set-a-when).
 
 ## Errors
 

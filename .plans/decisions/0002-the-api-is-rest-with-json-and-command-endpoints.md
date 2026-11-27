@@ -100,3 +100,19 @@ Plan: [slice 5b](../2026-11-26-slice-5b-links.md)
   `in`) and `type`, paged. An item carries the node at the other end, without
   its body.
 - **No new code.** A missing end, and a link that is not there, are 404.
+
+## Amendment, 2026-11-27: slice 6's routes, and a When
+
+Status: accepted (owner, 2026-11-27, as slice 6's P6, P7 and P11)
+Plan: [slice 6](../2026-11-27-slice-6-kinds-and-props.md)
+
+- **A Task's status changes by `POST /v1/nodes/{id}/done`, `/wontdo` and
+  `/reopen`,** each with `If-Match`.
+- **A When is the one exception to "a time is whole milliseconds".** A date
+  or time the user sets in props is a string in one of three forms: a date
+  `2026-12-01`, a local time `2026-12-01T15:00`, a moment
+  `2026-12-01T20:00:00Z`. The server checks it, stores it as given, and never
+  converts or compares it. A time the server sets stays milliseconds.
+- **The forms are fixed:** a fourth would break a client that reads the three.
+- **Four codes more:** `props_too_large` (413); `not_a_task`, `wrong_status`
+  and `status_fixed` (409).

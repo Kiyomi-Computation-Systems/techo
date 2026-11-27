@@ -27,7 +27,11 @@
 ;;; links), answers them and asks this table of each end. event-op names
 ;;; their ops.
 ;;;
-;;; Nothing here raises with a title or a body: parse-content,
+;;; Slice 6: parse-content takes props absent or any object and hands them
+;;; on as read; (techo props) judges them. A Task's transition is write in
+;;; the lifecycle's table, asked by task-command in (techo tasks).
+;;;
+;;; Nothing here raises with a title, a body or props: parse-content,
 ;;; parse-move-body and parse-parent-param never raise, and every other
 ;;; raise carries a symbol, a number, a boolean or an id at most.
 (library (techo nodes)
@@ -182,7 +186,11 @@
   ;; content-title : Content -> String
   ;; content-body : Content -> String
   ;; content-content-type : Content -> String
-  ;; content-props : Content -> String          the text "{}", until slice 6
+  ;; content-props : Content -> (U Alist 'absent)
+  ;;   the props object as read, '() for {}, its members not judged; the
+  ;;   symbol absent when not given. For the loop's thread only: it must
+  ;;   never reach a job. (techo props)' request-props judges props, from
+  ;;   the request's whole object, and only its Drafts go into a job.
   ;; content-parent : Content -> (U Bytevector #f)
   ;;   a create's parent; #f for the top level, and always for a replace
   (define-record-type content
@@ -271,17 +279,21 @@
   ;; members are kind, title, body, content_type and props, and on a create
   ;; parent. title, body and content_type are required strings; kind is
   ;; required on a create and optional otherwise, one of node-kinds; props
-  ;; is optional and must be an empty object; a create's parent is optional,
-  ;; as parent-value takes it, and null is as none (T3). 'invalid for what is
-  ;; no object, a member past a create's six or a replace's five, a member
-  ;; not of those (so parent on a replace), a name twice, a member missing or
-  ;; of the wrong type, a title over title-cap characters, U+0000 in the
-  ;; title or the body, a content_type that content-type-ok? refuses, or a
-  ;; parent that parent-value refuses. 'too-large only for a body over
-  ;; body-cap bytes of UTF-8, when all else is right.
+  ;; is optional, and any JSON object (slice 6): it is handed on as read,
+  ;; and its members are not judged here, but by (techo props)' request-props
+  ;; for the kind; a create's parent is optional, as parent-value takes it,
+  ;; and null is as none (T3). 'invalid for what is no object, a member past
+  ;; a create's six or a replace's five, a member not of those (so parent on
+  ;; a replace), a name twice, a member missing or of the wrong type (props
+  ;; a string, a number, an array, null or a boolean), a title over
+  ;; title-cap characters, U+0000 in the title or the body, a content_type
+  ;; that content-type-ok? refuses, or a parent that parent-value refuses.
+  ;; 'too-large only for a body over body-cap bytes of UTF-8, when all else
+  ;; is right.
   ;; Never raises. Its work is bounded by its members' lengths: a list longer
   ;; than six (five for a replace) is refused before any name is compared,
-  ;; and a title, a content type or a parent over its limit before it is read.
+  ;; and a title, a content type or a parent over its limit before it is
+  ;; read. Props are not walked: a pair from the reader is an object.
   (define (parse-content x create?)
     (let ((names (if create? create-member-names member-names)))
       (if (and (at-most? x (length names))
@@ -299,7 +311,7 @@
                             (and (string? kind) (member kind node-kinds))))
                    'invalid)
                   ((not (and (string? title) (string? body) (string? type))) 'invalid)
-                  ((not (or (eq? props absent) (null? props))) 'invalid)
+                  ((not (or (eq? props absent) (null? props) (pair? props))) 'invalid)
                   ((not (<= (string-length title) title-cap)) 'invalid)
                   ((has-nul? title) 'invalid)
                   ((not (content-type-ok? type)) 'invalid)
@@ -308,7 +320,8 @@
                    (let-values (((bytes nul?) (scan-body body)))
                      (cond (nul? 'invalid)
                            ((<= bytes body-cap)
-                            (make-content (if (eq? kind absent) #f kind) title body type "{}"
+                            (make-content (if (eq? kind absent) #f kind) title body type
+                                          (if (eq? props absent) 'absent props)
                                           parent))
                            (else 'too-large))))))
           'invalid)))
@@ -542,9 +555,9 @@
   ;; each end.
   (define link-events '(link unlink))
 
-  ;; The lifecycle table's ten events: the five, write (a replace or a
-  ;; revision's restore), the two moves and the two links. The document's
-  ;; columns.
+  ;; The lifecycle table's ten events: the five, write (a replace, a
+  ;; revision's restore or a Task's transition, slice 6), the two moves and
+  ;; the two links. The document's columns.
   (define table-events (append lifecycle-events '(write) move-events link-events))
 
   ;; event-op : Symbol -> String
@@ -562,8 +575,9 @@
   ;; lifecycle-rows : (Listof Row)
   ;; The thirty rows, three states by ten events, by state and then by
   ;; event, as the plans' tables read. Row is (state event next command
-  ;; update), as (techo machine) takes it. write is a replace or a
-  ;; revision's restore. A refusal and allow leave the state; untrash always
+  ;; update), as (techo machine) takes it. write is a replace, a revision's
+  ;; restore or a Task's transition (task-command, in (techo tasks), asks
+  ;; for it as a replace). A refusal and allow leave the state; untrash always
   ;; lands on active (L2); a purge is only from trashed (L8); a trashed node
   ;; is not moved, but its children may be (T8, slice 5a's review); a
   ;; trashed node takes no new link, and a link is removed in any state
@@ -882,15 +896,15 @@
      "Generated from the table in `src/techo/nodes.sls`. Do not edit.\n"
      "Regenerate with `scripts/guix-env make machines`; "
      "a test fails when this file differs.\n\n"
-     "A node starts `active`, and `purged` is the one end. `write` is a replace or a\n"
-     "revision's restore. `move` puts the node under a new parent; `move-children`\n"
-     "moves its children and leaves the node as it is. `link` makes a link with the\n"
-     "node at either end, and `unlink` removes one. A refusal and `allow` leave the\n"
-     "state.\n\n"
-     "One function, `node-command`, answers every request but a link's from this\n"
-     "table and the write machine's, with two facts more: the verdict on the new\n"
-     "parent, and whether the node has children. It looks first at what the job\n"
-     "found:\n\n"
+     "A node starts `active`, and `purged` is the one end.\n"
+     "`write` is a replace, a revision's restore or a Task's transition. `move` puts\n"
+     "the node under a new parent; `move-children` moves its children and leaves the\n"
+     "node as it is. `link` makes a link with the node at either end, and `unlink`\n"
+     "removes one. A refusal and `allow` leave the state.\n\n"
+     "One function, `node-command`, answers every request but a link's and a Task's\n"
+     "transition from this table and the write machine's, with two facts more: the\n"
+     "verdict on the new parent, and whether the node has children. It looks first\n"
+     "at what the job found:\n\n"
      "- `none`: the write machine's answer. A create's is the verdict's: an insert\n"
      "  when it is `ok`. A state change, a move and a bulk move are a 404.\n"
      "- `differ`: a 412, whatever the state. Stale comes before the state, and a\n"
@@ -907,6 +921,10 @@
      "allows `unlink`, which every state does; and an `unlink` of a link that is\n"
      "not there is a 404. `node-command` answers neither: for it they are cells\n"
      "that cannot happen.\n\n"
+     "A Task's `done`, `wontdo` and `reopen` are answered by\n"
+     "`task-command` in `(techo tasks)`, which asks `node-command` for a replace, so\n"
+     "they take this table's `write`: a trashed Task takes none, and an archived one\n"
+     "does. Then it asks the kind, then the task's own table, [task.md](task.md).\n\n"
      "```mermaid\n"
      (machine->mermaid lifecycle-machine)
      "```\n\n"

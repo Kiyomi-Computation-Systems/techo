@@ -138,3 +138,20 @@ Plan: [slice 5b](../2026-11-26-slice-5b-links.md)
 5. **A purge of a node with 181,667 links held the writer 0.6 s** and grew the
    `-wal` to 70 MB, cut to 16 MiB at the next commit. Accepted, as a large
    history's purge is.
+
+## Amendment, 2026-11-27: props in a write
+
+Status: accepted (owner, 2026-11-27, as slice 6's P7, P10, P11 and P14)
+Plan: [slice 6](../2026-11-27-slice-6-kinds-and-props.md)
+
+1. **A replace with no `props` keeps the stored props.** `{}` clears them.
+   This narrows "a replace sends the whole content": title, body and content
+   type are still required.
+2. **A Task's `status` and `closed` are changed by no replace and no
+   restore.** A replace may send them back as read. A restore copies the rest
+   of the old props and keeps the two.
+3. **A transition is a write of content:** the revision goes up by one, and a
+   snapshot is appended with the body copied. Its change row's op is `done`,
+   `wontdo` or `reopen`.
+4. **A create may give a finished Task's `closed`,** for an import. Otherwise
+   the server sets it.

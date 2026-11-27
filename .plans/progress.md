@@ -70,12 +70,22 @@ close-out under **Close-outs**, newest first.
 
 ## Next
 
-**Slice 6: kinds and props; task transitions.** Not planned yet.
+**Slice 6: kinds and props; task transitions.**
+[Planned](2026-11-27-slice-6-kinds-and-props.md), built and reviewed on
+`slice-6-kinds-and-props`: the owner decided P1 to P14 on 2026-11-27, and
+three tightenings after the build's review. Not merged.
 
-**Slice 5b is built,** on `slice-5b-links`, not merged: migration 6, three
+**Slice 5b is merged** (#20, `25ad3b2`): migration 6, three
 link routes ([the plan](2026-11-26-slice-5b-links.md); ADR-0002, ADR-0003,
 ADR-0004 and ADR-0007, amended 2026-11-26). A person can now link one note to
 another and read a note's backlinks.
+
+**For slice 8, the change feed:** read
+[issue #21](https://github.com/Kiyomi-Computation-Systems/techo/issues/21)
+before planning it. The Emacs client asks for a cursor contract: read the
+latest cursor (an empty account too), paged replay after a saved cursor, a
+feed row for every kind of change with purges and links, and a distinct
+error for an expired cursor. Its acceptance cases are in the issue.
 
 **Kept ready, from slice 5b (2026-11-27):**
 
@@ -142,6 +152,17 @@ by a Journal (409 `invalid_parent`), a Project refused under its own child (409
 `DELETE` refused (409 `has_children`), its children moved out in one call
 (`{"moved":2,"left":0}`), and then deleted (204).
 
+**And for slice 6, 2026-11-27, on its branch before the merge:** `make test`
+passed 40 of 40 suites. Against a real server, twenty steps matched: a Note
+with `at`, a Task with a deadline (read as `TODO`), a Contact stored in
+Techo's own order; a false date, an unknown member, an email past ASCII and a
+blank label each refused (400); a Task marked done, refused a second `done`
+(409 `wrong_status`), moved to `WONTDO` with `closed` kept, refused a replace
+that changed its status (409 `status_fixed`), kept its props through a replace
+with none, reopened with `closed` gone; `done` refused on a Note (409
+`not_a_task`); and a restore that brought back the old deadline and left the
+Task `DONE`.
+
 ## Slices
 
 | # | Slice | State | Waits on |
@@ -154,8 +175,8 @@ by a Journal (409 `invalid_parent`), a Project refused under its own child (409
 | 4 | Node create, read, update; revisions; `If-Match` | merged, #15 | |
 | 4b | The node lifecycle: archive, trash, purge | merged, #18 | |
 | 5a | The tree and move | merged, #19 | |
-| 5b | Links | built, on `slice-5b-links` | |
-| 6 | Kinds and props; task transitions | not planned | |
+| 5b | Links | merged, #20 | |
+| 6 | Kinds and props; task transitions | built, on `slice-6-kinds-and-props` | |
 | 7 | Tags and search | not planned | |
 | 8 | The change feed | not planned | |
 | 9 | Docker image and backup | not planned | |
@@ -194,7 +215,36 @@ From [outline.md](outline.md) §14, each for the slice named:
 
 ## Close-outs
 
-### Slice 5b: links (built 2026-11-27)
+### Slice 6: kinds and props; task transitions (PR #22, 2026-11-27)
+
+- **Built:** four pure libraries, `(techo when)`, `(techo contact)`,
+  `(techo tasks)` and `(techo props)`; `props-of` in the store; three routes,
+  `done`, `wontdo`, `reopen`; four codes. No migration. Four new suites: 40.
+  The model sends props from a corpus of 115 and runs about 37,000 requests
+  in 38 s.
+- **Answered:** fixed members per kind, add-only for good; a 4 KiB cap; a
+  When in three forms that the server never compares; a Task's status moved
+  only by a command, each a revision; a Contact as a strict subset of
+  JSContact; old Tasks read as `TODO` (P1 to P14).
+- **Moved on:** nothing. Kept ready: a rebuild of `nodes` with props last, if
+  the cap is ever raised past about 8 KiB (a page of 51 costs 6.7 ms at 4 KiB
+  and grows in line with it).
+- **What the reviews caught that the builders could not:**
+  - the plan's: props were judged inside the job, on the writer; "the store
+    needs nothing new" was false; a transition through `node-command` would
+    have raised; the canonical form was not pinned; `wrong_status` meant two
+    things;
+  - the build's: no bug, in 270 raced pairs and 121 mutants. Three rules too
+    loose, which P3 would have frozen: any character past ASCII in an email
+    address, U+2028 and U+2029 in every string, and a string of only spaces.
+    All three tightened on the owner's word. Ten false or thin sentences in
+    the guide.
+- **Run on the owner's Mac, by hand, before the merge:** see "Run on the owner's
+  Mac" above.
+- **Learned:** with an add-only rule, the review that matters most is of what
+  is accepted, not of what is refused. A loose rule cannot be fixed later.
+
+### Slice 5b: links (merged 2026-11-27, #20)
 
 - **Built:** migration 6 (`links`, `links_target`); a new pure `(techo links)`
   with `link-command`; two events more in the lifecycle's table; nine

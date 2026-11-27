@@ -710,6 +710,44 @@
   (let ((a (ask w1 'GET (string-append node-path "/archive") (list node-key))))
     (if (answer? a) (list (answer-status a) (code-of a) (answer-header a "allow")) a)))
 
+(test-equal "nodes: a POST to a node's done, wontdo and reopen reach their routes: with no If-Match, 428 precondition_required; a GET on each is 405, its allow POST"
+  '((428 "application/problem+json" "precondition_required")
+    (428 "application/problem+json" "precondition_required")
+    (428 "application/problem+json" "precondition_required")
+    (405 "method_not_allowed" "POST") (405 "method_not_allowed" "POST") (405 "method_not_allowed" "POST"))
+  (append (map (lambda (sub) (shape (ask w1 'POST (string-append node-path sub) (list node-key))))
+               '("/done" "/wontdo" "/reopen"))
+          (map (lambda (sub)
+                 (let ((a (ask w1 'GET (string-append node-path sub) (list node-key))))
+                   (if (answer? a) (list (answer-status a) (code-of a) (answer-header a "allow")) a)))
+               '("/done" "/wontdo" "/reopen"))))
+
+;; props-of-answer : Answer -> Any     an answer's props member, as the client reads it
+(define (props-of-answer a)
+  (let ((j (answer-json a))) (and (list? j) (assoc "props" j) (cdr (assoc "props" j)))))
+
+(test-equal "nodes: through make-app, a Task's done is 200 with no body, ETag \"2\", props DONE closed at the wall clock's time; a Contact's props are stored in canonical order and answered so"
+  (list (list 201 '(("status" . "TODO")))
+        (list 200 "\"2\"" #f (list (cons "status" "DONE") (cons "closed" node-wall)))
+        (list 201 200 '(("emails" ("a1" ("address" . "a@b")) ("zz" ("address" . "z@b") ("label" . "w"))))))
+  (let* ((w (node-world "props.db"))
+         (task "/v1/nodes/0190b3a4-5c6d-7e8f-9a0b-000000000020")
+         (contact "/v1/nodes/0190b3a4-5c6d-7e8f-9a0b-000000000021")
+         (t (ask w 'PUT task (list node-key json-h (cons "If-None-Match" "*"))
+                 "{\"kind\":\"task\",\"title\":\"t\",\"body\":\"b\",\"content_type\":\"text/plain\"}"))
+         (d (ask w 'POST (string-append task "/done") (list node-key (cons "If-Match" "\"1\""))))
+         (c (ask w 'PUT contact (list node-key json-h (cons "If-None-Match" "*"))
+                 (string-append "{\"kind\":\"contact\",\"title\":\"t\",\"body\":\"b\",\"content_type\":\"text/plain\","
+                                "\"props\":{\"emails\":{\"zz\":{\"label\":\"w\",\"address\":\"z@b\"},\"a1\":{\"address\":\"a@b\"}}}}")))
+         (r (ask w 'GET contact (list node-key))))
+    (if (for-all answer? (list t d c r))
+        (list (list (answer-status t) (props-of-answer t))
+              (list (answer-status d) (answer-header d "etag")
+                    (let ((j (answer-json d))) (and (list? j) (assoc "body" j) #t))
+                    (props-of-answer d))
+              (list (answer-status c) (answer-status r) (props-of-answer r)))
+        (list t d c r))))
+
 (test-equal "nodes: a POST to a node's move and move-children reach their routes: with no If-Match, 428 precondition_required"
   '((428 "application/problem+json" "precondition_required")
     (428 "application/problem+json" "precondition_required"))

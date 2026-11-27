@@ -2,9 +2,9 @@
 ;;; The errors suite: D7's table of codes, each one's status and message,
 ;;; the &refusal condition, and the answer in RFC 9457's format that
 ;;; problem-res and status-problem-res make (slice 3a, task 3); 3b's codes,
-;;; slice 4's three (its D10), slice 4b's wrong_state (its L9), and slice
-;;; 5a's three (its T10). A body is parsed with jsonparse and compared as a
-;;; value, never as a string.
+;;; slice 4's three (its D10), slice 4b's wrong_state (its L9), slice 5a's
+;;; three (its T10), and slice 6's four (its plan's review, blocker 9). A
+;;; body is parsed with jsonparse and compared as a value, never as a string.
 ;;;
 ;;; Everything that can raise is computed under `attempt`, and a raise comes
 ;;; out as a value the expectation never is.
@@ -35,11 +35,11 @@
 
 (test-begin "errors")
 
-(test-equal "codes: the twenty-two, in status order"
+(test-equal "codes: the twenty-six, in status order"
   '(invalid_json invalid_request unauthorized invalid_credentials forbidden not_found
     method_not_allowed too_many_keys kind_fixed wrong_state invalid_parent would_loop
-    has_children precondition_failed
-    payload_too_large unsupported_media_type precondition_required rate_limited internal
+    has_children not_a_task wrong_status status_fixed precondition_failed
+    payload_too_large props_too_large unsupported_media_type precondition_required rate_limited internal
     unavailable timeout error)
   error-codes)
 
@@ -57,8 +57,12 @@
 (define four-b '(wrong_state))
 ;; Slice 5a's three: each a 409 too, so a bare 409 gets none of them.
 (define five-a '(invalid_parent would_loop has_children))
+;; Slice 6's four: three 409s more, and props_too_large shares 413 with
+;; payload_too_large, so a bare 409 or 413 gets none of them.
+(define six '(not_a_task wrong_status status_fixed props_too_large))
 (define old-fixed
-  (filter (lambda (c) (not (or (memq c three-b) (memq c four) (memq c four-b) (memq c five-a))))
+  (filter (lambda (c) (not (or (memq c three-b) (memq c four) (memq c four-b) (memq c five-a)
+                               (memq c six))))
           fixed))
 
 (test-assert "status: every fixed code has one in 400 to 599"
@@ -67,7 +71,8 @@
            fixed))
 
 (test-equal "status: the table, code by code"
-  '(400 400 401 401 403 404 405 409 409 409 409 409 409 412 413 415 428 429 500 503 504)
+  '(400 400 401 401 403 404 405 409 409 409 409 409 409 409 409 409 412 413 413 415 428 429 500 503
+    504)
   (attempt (lambda () (map error-status fixed))))
 
 (test-equal "status: the fallback has none" #f (attempt (lambda () (error-status 'error))))
@@ -114,6 +119,14 @@
      "The node still has children."))
   (attempt (lambda () (list (map error-status five-a) (map error-message five-a)))))
 
+(test-equal "slice 6 codes: three 409s and a 413, each saying what about the Task or its props refused it"
+  '((409 409 409 413)
+    ("The node is not a Task."
+     "The Task's status does not allow this request."
+     "A replace cannot change a Task's status or closed time."
+     "The props are too large."))
+  (attempt (lambda () (list (map error-status six) (map error-message six)))))
+
 (test-equal "status: unknown code raises" 'assertion
   (raised-kind (lambda () (error-status 'nope))))
 (test-equal "message: unknown code raises" 'assertion
@@ -129,7 +142,7 @@
     internal unavailable timeout)
   (attempt (lambda () (map (lambda (c) (status->code (error-status c))) old-fixed))))
 
-(test-equal "status->code: a bare 401, 409 and 429 are not 3b's codes, nor 4's, 4b's or 5a's 409"
+(test-equal "status->code: a bare 401, 409 and 429 are not 3b's codes, nor 4's, 4b's, 5a's or 6's 409"
   '(unauthorized error error)
   (map status->code '(401 409 429)))
 
@@ -142,6 +155,11 @@
 (test-equal "status->code: 411 and 413 stay theirs; 427 and 429 are not 428's"
   '(error payload_too_large error error)
   (map status->code '(411 413 427 429)))
+
+(test-equal "status->code: a bare 413 is payload_too_large, never props_too_large"
+  '(payload_too_large payload_too_large)
+  (attempt (lambda () (map (lambda (c) (status->code (error-status c)))
+                           '(payload_too_large props_too_large)))))
 
 (test-equal "status->code: 400 is invalid_request" 'invalid_request (status->code 400))
 (test-equal "status->code: 418 is error" 'error (status->code 418))
@@ -284,6 +302,22 @@
      (("type" . "about:blank") ("title" . "Conflict") ("status" . 409)
       ("code" . "has_children") ("detail" . "The node still has children."))))
   (map (lambda (c) (problem-summary (lambda () (problem-res c)))) five-a))
+
+(test-equal "problem-res: each slice 6 code, in the format"
+  '((409 "application/problem+json"
+     (("type" . "about:blank") ("title" . "Conflict") ("status" . 409)
+      ("code" . "not_a_task") ("detail" . "The node is not a Task.")))
+    (409 "application/problem+json"
+     (("type" . "about:blank") ("title" . "Conflict") ("status" . 409)
+      ("code" . "wrong_status") ("detail" . "The Task's status does not allow this request.")))
+    (409 "application/problem+json"
+     (("type" . "about:blank") ("title" . "Conflict") ("status" . 409)
+      ("code" . "status_fixed")
+      ("detail" . "A replace cannot change a Task's status or closed time.")))
+    (413 "application/problem+json"
+     (("type" . "about:blank") ("title" . "Content Too Large") ("status" . 413)
+      ("code" . "props_too_large") ("detail" . "The props are too large."))))
+  (map (lambda (c) (problem-summary (lambda () (problem-res c)))) six))
 
 (test-equal "status-problem-res: a bare 412 and 428 answer slice 4's codes"
   '("precondition_failed" "precondition_required")

@@ -114,7 +114,12 @@ CREATE INDEX nodes_parent ON nodes(owner, parent, id);   -- migration 5
 - **To come, by `ADD COLUMN`:** tags (7, or a
   table). The table has no large column: at worst a title of 4,000 bytes puts later
   columns on one more page, not a walk of many.
-- **Open (slice 6):** each kind's props.
+- **Decided (slice 6):** each kind's props, checked before any write and stored in
+  one canonical form of at most 4,096 bytes (ADR-0003, amended 2026-11-27). The
+  column's only check is still `json_valid`: the code's rules are the truth. A
+  Task's default status is not stored, so a Task from before reads as `TODO`.
+- **Kept ready:** past about 8 KiB of props, rebuild the table with `props` last,
+  or move it out.
 
 ### revisions (shipped in migration 3; ADR-0004 amended)
 
@@ -158,7 +163,8 @@ CREATE TABLE changes (
   the write's own transaction.
 - **Decided:** `op` has no `CHECK`: SQLite cannot change one. Today's values are
   `create`, `update`, `restore`, `archive`, `unarchive`, `trash`, `untrash`,
-  `purge`, `move`, `link` and `unlink`; the code's list is the truth. A `link` or
+  `purge`, `move`, `link`, `unlink`, `done`, `wontdo` and `reopen`; the code's list is
+  the truth. A `link` or
   `unlink` row is on the link's source, at the source's present revision: two rows
   of a node can carry one revision. A `purge` row is the node's tombstone,
   and its last row.
