@@ -1,15 +1,19 @@
 #!r6rs
 ;;; The nodes suite: slice 4's pure core, (techo nodes). All pure.
 ;;;
-;;;   the constants     the five kinds and the three caps (D6, D7)
+;;;   the constants     the five kinds and the caps (D6, D7; slice 5a's three)
 ;;;   ids               a node's id is a UUID of version 7, RFC variant (D2, H10)
 ;;;   revisions         a path's revision, and the ETag (D4)
 ;;;   preconditions     If-Match and If-None-Match, exactly as D4 takes them (H9)
-;;;   content           the body's members, types and limits (D6, D7, H8)
+;;;   content           the body's members, types and limits (D6, D7, H8), a create's parent
 ;;;   the linear rule   a request at the cap, whatever its members, is quick (H13)
+;;;   a move's body     and the list's ?parent= (slice 5a)
 ;;;   the table         D5's table, checked exhaustively, every cell stepped (H7)
-;;;   the lifecycle     slice 4b's table, checked exhaustively, every cell stepped (G1)
-;;;   node-command      the two tables answer one request, every cell (G5, G15)
+;;;   the lifecycle     slice 4b's table with 5a's two events, every cell stepped (G1)
+;;;   the tree          what may hold what, the verdict on a new parent, which
+;;;                     children a bulk move takes, every combination (T2, T5, T8, P18)
+;;;   node-command      the two tables, the verdict and the children answer one
+;;;                     request, every cell (G5, G15, P6, P17)
 ;;;   states and events the store's names, ?state= and the feed's ops
 ;;;   the diagrams      .plans/machines/write.md and lifecycle.md are what the tables render
 ;;;
@@ -60,6 +64,10 @@
 (test-equal "caps: body 1 MiB, request 2 MiB, title 1000"
   '(1048576 2097152 1000)
   (attempt (lambda () (list body-cap request-cap title-cap))))
+
+(test-equal "caps: a parent's depth 64, a bulk move's children 1000, a move's body 16 KiB"
+  '(64 1000 16384)
+  (attempt (lambda () (list depth-cap move-children-cap move-body-cap))))
 
 ;;; Ids (D2, H10)
 
@@ -335,6 +343,57 @@
   (list "U+0000 in the body" (with "body" (string #\a (integer->char 0) #\b) good) #t)
   (list "U+0000 at the body's end" (with "body" (string #\a (integer->char 0)) good) #t)))
 
+;;; A create's parent (slice 5a, T3)
+
+(define v4-text "0190b3a4-5c6d-4e8f-9a0b-1c2d3e4f5a6b")
+
+;; parent-of : Any Boolean -> Any     (parent P) for a Content, anything else as it is
+(define (parent-of x create?)
+  (attempt (lambda ()
+             (let ((r (parse-content x create?)))
+               (if (content? r) (list 'parent (content-parent r)) r)))))
+
+(test-equal "content: a create with no parent is at the top level"
+  '(parent #f) (parent-of good #t))
+(test-equal "content: a create with parent null is at the top level"
+  '(parent #f) (parent-of (with "parent" 'null good) #t))
+(test-equal "content: a create's parent, a v7 id in either case, is its 16 bytes"
+  (list (list 'parent v7-bytes) (list 'parent v7-bytes))
+  (list (parent-of (with "parent" v7-text good) #t)
+        (parent-of (with "parent" (string-upcase v7-text) good) #t)))
+(test-equal "content: the six members of a create, in another order"
+  (list 'parent v7-bytes)
+  (parent-of (reverse (with "props" '() (with "parent" v7-text good))) #t))
+(test-equal "content: a parent changes none of the other members"
+  '("note" "A title" "Some text" "text/plain" "{}")
+  (parsed (with "parent" v7-text good) #t))
+(test-equal "content: a replace has no parent"
+  '(parent #f) (parent-of (without "kind" good) #f))
+
+(for-each
+ (lambda (c)
+   (test-equal (string-append "content: invalid, " (car c))
+     'invalid
+     (judged (cadr c) (caddr c))))
+ (list
+  (list "a v4 id as the parent" (with "parent" v4-text good) #t)
+  (list "a parent that is no id" (with "parent" "x" good) #t)
+  (list "an empty parent" (with "parent" "" good) #t)
+  (list "a parent's id in braces" (with "parent" (string-append "{" v7-text "}") good) #t)
+  (list "a number as the parent" (with "parent" 5 good) #t)
+  (list "false as the parent" (with "parent" #f good) #t)
+  (list "true as the parent" (with "parent" #t good) #t)
+  (list "{} as the parent" (with "parent" '() good) #t)
+  (list "an array as the parent" (with "parent" (vector v7-text) good) #t)
+  (list "an object as the parent" (with "parent" (list (cons "id" v7-text)) good) #t)
+  (list "parent twice, the same" (append (with "parent" v7-text good) (list (cons "parent" v7-text))) #t)
+  (list "parent twice, null then an id" (append (with "parent" 'null good) (list (cons "parent" v7-text))) #t)
+  (list "a seventh member" (with "x" 1 (with "props" '() (with "parent" v7-text good))) #t)
+  (list "Parent, another case" (with "Parent" v7-text good) #t)
+  (list "a replace with a parent" (with "parent" v7-text (without "kind" good)) #f)
+  (list "a replace with parent null" (with "parent" 'null (without "kind" good)) #f)
+  (list "a replace with a kind and a parent" (with "parent" v7-text good) #f)))
+
 ;;; The limits, at each and one past it (H8)
 
 (define e-acute (integer->char #xe9))          ; two bytes of UTF-8
@@ -408,6 +467,13 @@
                (with "body" big (with "props" '(("a" . 1)) good))
                (with "body" (string-append big (string (integer->char 0))) good)))))
 
+(test-equal "body: too large is answered only when the parent is right too"
+  '(invalid invalid too-large)
+  (let ((big (make-string 1048577 #\b)))
+    (list (judged (with "body" big (with "parent" v4-text good)) #t)
+          (judged (with "body" big (with "parent" v7-text (without "kind" good))) #f)
+          (judged (with "body" big (with "parent" v7-text good)) #t))))
+
 (define (with-type t) (with "content_type" t good))
 
 (test-equal "content_type: 255 characters is the limit"
@@ -444,10 +510,11 @@
       (set! state (mod (+ (* state 1103515245) 12345) 2147483648))
       (mod (div state 65536) n))))
 
-(define fuzz-names '("kind" "title" "body" "content_type" "props" "id" "revision" "Title" ""))
+(define fuzz-names
+  '("kind" "title" "body" "content_type" "props" "parent" "id" "revision" "Title" "Parent" ""))
 (define fuzz-strings
   (list "" "note" "task" "Note" "text/plain" "/" "plain" (string #\a (integer->char 0)) "x"
-        (make-string 1001 #\t)))
+        (make-string 1001 #\t) v7-text v4-text))
 
 ;; fuzz-value : (Natural -> Natural) Natural -> Any     a value as jsonparse makes one
 (define (fuzz-value next depth)
@@ -479,13 +546,17 @@
                               acc))))))))
 
 ;; fits? : Alist Content -> Boolean     each field what the object gave
+;; A parent not given, or null, is #f; a given one is its id's bytes.
 (define (fits? x c)
   (let ((given (lambda (name) (let ((m (assoc name x))) (and m (cdr m))))))
     (and (equal? (content-title c) (given "title"))
          (equal? (content-body c) (given "body"))
          (equal? (content-content-type c) (given "content_type"))
          (equal? (content-kind c) (given "kind"))
-         (equal? (content-props c) "{}"))))
+         (equal? (content-props c) "{}")
+         (equal? (content-parent c)
+                 (let ((p (given "parent")))
+                   (if (or (not p) (eq? p 'null)) #f (parse-node-id p)))))))
 
 (test-equal "content: never raises, and a Content holds what was given"
   'ok
@@ -538,6 +609,91 @@
 (test-equal "linear: a body of the request's cap, 2 MiB of ASCII, too large at once"
   '(too-large quick)
   (timed (lambda () (with "body" (make-string 2097152 #\b) good)) #t))
+
+(test-equal "linear: a parent of 2 MiB, refused at once"
+  '(invalid quick)
+  (timed (lambda () (with "parent" (make-string 2097152 #\a) good)) #t))
+
+(test-equal "linear: a create's six members, then 199,994 repeats of parent"
+  '(invalid quick)
+  (timed (lambda () (members 199994 (lambda (i) (cons "parent" 'null))
+                             (append (with "parent" 'null good) '(("props")))))
+         #t))
+
+;;; A move's body and the list's ?parent= (slice 5a)
+
+(test-equal "move body: a v7 id, in either case, is its bytes; null is the top level"
+  (list v7-bytes v7-bytes #f)
+  (attempt (lambda ()
+             (map parse-move-body
+                  (list (list (cons "parent" v7-text))
+                        (list (cons "parent" (string-upcase v7-text)))
+                        '(("parent" . null)))))))
+
+(for-each
+ (lambda (c)
+   (test-equal (string-append "move body: invalid, " (car c))
+     'invalid
+     (attempt (lambda () (parse-move-body (cdr c))))))
+ (list (cons "{}, which reads as ()" '())
+       (cons "a number" 7)
+       (cons "a string" v7-text)
+       (cons "null" 'null)
+       (cons "true" #t)
+       (cons "false" #f)
+       (cons "an empty array" (vector))
+       (cons "an array holding the object" (vector (list (cons "parent" v7-text))))
+       (cons "a v4 id" (list (cons "parent" v4-text)))
+       (cons "a string that is no id" '(("parent" . "x")))
+       (cons "an empty string" '(("parent" . "")))
+       (cons "the id in braces" (list (cons "parent" (string-append "{" v7-text "}"))))
+       (cons "a number as the parent" '(("parent" . 5)))
+       (cons "false as the parent" '(("parent" . #f)))
+       (cons "true as the parent" '(("parent" . #t)))
+       (cons "{} as the parent" '(("parent")))
+       (cons "an array as the parent" (list (cons "parent" (vector v7-text))))
+       (cons "an object as the parent" (list (cons "parent" (list (cons "id" v7-text)))))
+       (cons "the member twice, the same id" (list (cons "parent" v7-text) (cons "parent" v7-text)))
+       (cons "the member twice, null" '(("parent" . null) ("parent" . null)))
+       (cons "another member after it" (list (cons "parent" v7-text) (cons "kind" "note")))
+       (cons "another member before it" (list (cons "kind" "note") (cons "parent" v7-text)))
+       (cons "another member alone" '(("kind" . "note")))
+       (cons "Parent, another case" '(("Parent" . null)))
+       (cons "a member with an empty name" '(("" . null)))
+       (cons "a member named by a symbol" '((parent . null)))
+       (cons "an improper list" (cons '("parent" . null) 5))
+       (cons "a list of a string" '("parent"))))
+
+(test-equal "move body: a parent of 2 MiB, refused at once"
+  '(invalid quick)
+  (attempt (lambda ()
+             (let* ((x (list (cons "parent" (make-string 2097152 #\a))))
+                    (t0 (real-time))
+                    (r (parse-move-body x))
+                    (t1 (real-time)))
+               (list r (if (< (- t1 t0) 100) 'quick (- t1 t0)))))))
+
+(test-equal "move body: 200,000 members, refused at once"
+  '(invalid quick)
+  (attempt (lambda ()
+             (let* ((x (members 200000 (lambda (i) (cons "parent" 'null)) '()))
+                    (t0 (real-time))
+                    (r (parse-move-body x))
+                    (t1 (real-time)))
+               (list r (if (< (- t1 t0) 100) 'quick (- t1 t0)))))))
+
+(test-equal "?parent=: not given is any; null is the top level; a v7 id, in either case, is its bytes"
+  (list 'any #f v7-bytes v7-bytes)
+  (attempt (lambda ()
+             (map parse-parent-param (list #f "null" v7-text (string-upcase v7-text))))))
+
+(for-each
+ (lambda (x)
+   (test-equal (string-append "?parent=: refused, " (written x))
+     'invalid
+     (attempt (lambda () (parse-parent-param x)))))
+ (list "" "NULL" "Null" " null" "null " "nul" "none" "any" "x" v4-text
+       (string-append v7-text ",") (string-append "{" v7-text "}") 7 'null))
 
 ;;; found and write-event: what the job saw, as the table's state and event
 
@@ -729,11 +885,13 @@
 ;;; The lifecycle's table (slice 4b, G1)
 
 (define life-states '(active archived trashed purged))
-(define life-events '(archive unarchive trash untrash purge write))
+(define life-events '(archive unarchive trash untrash purge write move move-children))
 
 ;; The table the owner approved, written out here, not read from
 ;; lifecycle-rows: (state event next command) for a row, (state event) for a
-;; cell that cannot happen. In the table's order.
+;; cell that cannot happen. In the table's order. Slice 5a's two events
+;; (T8, the review's blocker 3): move is refused for a trashed node, and
+;; move-children allowed in every state.
 (define lifecycle-table
   '((active archive archived set-state)
     (active unarchive active refuse-wrong-state)
@@ -741,24 +899,32 @@
     (active untrash active refuse-wrong-state)
     (active purge active refuse-wrong-state)
     (active write active allow)
+    (active move active allow)
+    (active move-children active allow)
     (archived archive archived refuse-wrong-state)
     (archived unarchive active set-state)
     (archived trash trashed set-state)
     (archived untrash archived refuse-wrong-state)
     (archived purge archived refuse-wrong-state)
     (archived write archived allow)
+    (archived move archived allow)
+    (archived move-children archived allow)
     (trashed archive trashed refuse-wrong-state)
     (trashed unarchive trashed refuse-wrong-state)
     (trashed trash trashed refuse-wrong-state)
     (trashed untrash active set-state)
     (trashed purge purged purge)
     (trashed write trashed refuse-wrong-state)
+    (trashed move trashed refuse-wrong-state)
+    (trashed move-children trashed allow)
     (purged archive)
     (purged unarchive)
     (purged trash)
     (purged untrash)
     (purged purge)
-    (purged write)))
+    (purged write)
+    (purged move)
+    (purged move-children)))
 
 (define (lifecycle-problems rows)
   (attempt (lambda () (machine-problems (make-machine rows) '(active) '(purged)
@@ -768,8 +934,8 @@
   '()
   (lifecycle-problems lifecycle-rows))
 
-(test-equal "lifecycle: eighteen rows"
-  18
+(test-equal "lifecycle: twenty-four rows, three states by eight events"
+  24
   (attempt (lambda () (length lifecycle-rows))))
 
 (test-equal "lifecycle: the rows are exactly the table's, in its order"
@@ -777,12 +943,12 @@
   (attempt (lambda () (map (lambda (r) (list (car r) (cadr r) (caddr r) (cadddr r)))
                            lifecycle-rows))))
 
-(test-equal "lifecycle: the can't-happen pairs are purged's six, in the table's order"
+(test-equal "lifecycle: the can't-happen pairs are purged's eight, in the table's order"
   (filter (lambda (c) (= (length c) 2)) lifecycle-table)
   (attempt (lambda () (map (lambda (c) (list (car c) (cadr c))) lifecycle-cant-happen))))
 
 (test-equal "lifecycle: every can't-happen pair has a reason, a non-empty string"
-  '(#t #t #t #t #t #t)
+  '(#t #t #t #t #t #t #t #t)
   (attempt (lambda ()
              (map (lambda (c) (and (string? (caddr c)) (> (string-length (caddr c)) 0)))
                   lifecycle-cant-happen))))
@@ -824,7 +990,7 @@
             (#t (list 'raised (describe x))))
     (call-with-values (lambda () (lifecycle-step s e)) list)))
 
-;; Every one of the 24 cells, by construction: a cell the table above lacks
+;; Every one of the 32 cells, by construction: a cell the table above lacks
 ;; expects what no step answers.
 (for-each
  (lambda (s)
@@ -845,51 +1011,257 @@
         (raised-kind (lambda () (lifecycle-step 'active 'delete)))
         (raised-kind (lambda () (lifecycle-step 'active 'replace)))))
 
-;;; node-command: the two tables answer one request (slice 4b, G5, G15)
+;;; The tree: what may hold what, the verdict on a new parent, and which
+;;; children a bulk move takes (slice 5a: T2, T5, T8, the review's blockers
+;;; 2 and 3, P18)
+
+(define kinds '("project" "journal" "note" "task" "contact"))
+
+;; What may hold what (T2), written out here, not read from the library: a
+;; parent's kind, then every kind it holds. A Project holds any kind,
+;; Projects too; a Journal only Notes; the rest nothing.
+(define hold-table
+  '(("project" "project" "journal" "note" "task" "contact")
+    ("journal" "note")
+    ("note")
+    ("task")
+    ("contact")))
+
+;; holds? : String String -> Boolean     the table above's answer
+(define (holds? parent child) (and (member child (cdr (assoc parent hold-table))) #t))
+
+;; Every one of the 25 pairs.
+(for-each
+ (lambda (p)
+   (for-each
+    (lambda (c)
+      (test-equal (string-append "may-hold?: " p " holds " c "?")
+        (holds? p c)
+        (attempt (lambda () (may-hold? p c)))))
+    kinds))
+ kinds)
+
+;; raised-who : (-> Any) -> (U Symbol 'no-raise 'other)
+;; The who of an assertion violation; 'no-raise when nothing was raised;
+;; 'other for any other raise, or one with no who. A check of the library's
+;; own is told from a car or a bytevector=? that happened to raise.
+(define (raised-who thunk)
+  (guard (e ((and (assertion-violation? e) (who-condition? e)) (condition-who e))
+            (#t 'other))
+    (thunk)
+    'no-raise))
+
+(test-equal "may-hold?: what is no kind raises, as the parent or as the child"
+  '(may-hold? may-hold? may-hold? may-hold? may-hold? may-hold? may-hold?)
+  (map (lambda (pc) (raised-who (lambda () (may-hold? (car pc) (cadr pc)))))
+       '(("Project" "note") ("folder" "note") (#f "note") (project "note")
+         ("project" "Note") ("project" "folder") ("journal" #f))))
+
+;; The verdict's facts. K is the id kept out, P another; a chain's ids are
+;; neither.
+(define (test-id n)
+  (let ((b (make-bytevector 16 0)))
+    (bytevector-u16-set! b 14 n (endianness big))
+    b))
+(define keep-id (test-id 1000))
+(define other-id (test-id 2000))
+;; chain : Natural -> (Listof Bytevector)     N distinct ids, none K or P
+(define (chain n)
+  (let loop ((i n) (acc '()))
+    (if (= i 0) acc (loop (- i 1) (cons (test-id i) acc)))))
+
+;; Each fact by a name, and its value.
+(define verdict-parents (list (cons 'top #f) (cons 'other other-id) (cons 'itself keep-id)))
+(define verdict-ancestors
+  (list (cons 'none '())
+        (cons 'holding-it (list (test-id 1) keep-id (test-id 2)))
+        (cons 'sixty-three (chain 63))
+        (cons 'sixty-four (chain 64))
+        (cons 'sixty-four-holding-it (append (chain 63) (list keep-id)))
+        (cons 'sixty-five (chain 65))))
+(define verdict-founds
+  (cons #f (apply append (map (lambda (k) (map (lambda (s) (list k s)) '(active archived trashed)))
+                              kinds))))
+(define kinds-in (append kinds '(#f)))
+
+;; expected-verdict : Symbol (U (List String Symbol) #f) Symbol (U String #f) -> Symbol
+;; The plan's review's order, by the facts' names, the first that applies:
+;; the top level is ok; nothing found is missing; a trashed parent is
+;; trashed; the node itself as the parent, or among the parent's ancestors,
+;; is a loop; a kind the parent may not hold, or for a bulk move (#f) a
+;; parent that holds nothing, is wrong-kind; 64 ancestors or more is too
+;; deep (a parent may have 63); else ok.
+(define (expected-verdict parent found ancestors kind)
+  (let ((held (and found (cdr (assoc (car found) hold-table)))))
+    (cond ((eq? parent 'top) 'ok)
+          ((not found) 'missing)
+          ((eq? (cadr found) 'trashed) 'trashed)
+          ((or (eq? parent 'itself) (memq ancestors '(holding-it sixty-four-holding-it))) 'loop)
+          ((if kind (not (member kind held)) (null? held)) 'wrong-kind)
+          ((memq ancestors '(sixty-four sixty-four-holding-it sixty-five)) 'too-deep)
+          (else 'ok))))
+
+;; Every combination: 3 parents, 16 founds, 6 ancestries, 6 kinds going in.
+(for-each
+ (lambda (p)
+   (for-each
+    (lambda (f)
+      (for-each
+       (lambda (a)
+         (for-each
+          (lambda (k)
+            (test-equal (string-append "verdict: parent " (written (car p)) ", found " (written f)
+                                       ", ancestors " (written (car a)) ", going in " (written k))
+              (expected-verdict (car p) f (car a) k)
+              (attempt (lambda () (parent-verdict (cdr p) f (cdr a) keep-id k)))))
+          kinds-in))
+       verdict-ancestors))
+    verdict-founds))
+ verdict-parents)
+
+(test-equal "verdict: the grid above expects each of the six verdicts"
+  '(#t #t #t #t #t #t)
+  (let ((seen (apply append
+                     (map (lambda (p)
+                            (apply append
+                                   (map (lambda (f)
+                                          (apply append
+                                                 (map (lambda (a)
+                                                        (map (lambda (k) (expected-verdict (car p) f (car a) k))
+                                                             kinds-in))
+                                                      verdict-ancestors)))
+                                        verdict-founds)))
+                          verdict-parents))))
+    (map (lambda (v) (and (memq v seen) #t)) '(ok missing trashed loop wrong-kind too-deep))))
+
+(test-equal "verdict: facts no job finds raise; a state given as a string is no state"
+  '(parent-verdict parent-verdict parent-verdict parent-verdict parent-verdict parent-verdict
+    parent-verdict parent-verdict parent-verdict)
+  (map (lambda (args) (raised-who (lambda () (apply parent-verdict args))))
+       (list (list other-id '("project" purged) '() keep-id "note")
+             (list other-id '("project" "active") '() keep-id "note")
+             (list other-id '("project" "trashed") '() keep-id "note")
+             (list other-id '("folder" active) '() keep-id "note")
+             (list other-id '("project" active) '() keep-id "Note")
+             (list (make-bytevector 15 0) '("project" active) '() keep-id "note")
+             (list other-id '("project" active) '() (make-bytevector 15 0) "note")
+             (list other-id '("project" active) (list "x") keep-id "note")
+             (list other-id '("project" active) 'none keep-id "note"))))
+
+;; expected-move : Symbol String (U String #f) -> Boolean
+;; A child moves when it is active or archived (T8) and the new parent may
+;; hold it; the top level holds every kind.
+(define (expected-move state kind parent-kind)
+  (and (memq state '(active archived)) (or (not parent-kind) (holds? parent-kind kind)) #t))
+
+;; Every child's state a job can find, by every kind, by every new parent's kind.
+(for-each
+ (lambda (s)
+   (for-each
+    (lambda (k)
+      (for-each
+       (lambda (pk)
+         (test-equal (string-append "child-moves?: " (written s) " " k " into " (written pk))
+           (expected-move s k pk)
+           (attempt (lambda () (child-moves? s k pk)))))
+       kinds-in))
+    kinds))
+ '(active archived trashed))
+
+(test-equal "child-moves?: a purged child and a state as a string raise in the step; a kind that is none in may-hold?"
+  '(machine-step machine-step may-hold?)
+  (list (raised-who (lambda () (child-moves? 'purged "note" "project")))
+        (raised-who (lambda () (child-moves? "active" "note" "project")))
+        (raised-who (lambda () (child-moves? 'active "folder" "project")))))
+
+(test-equal "child-kind-filter: the top level and a project take any kind; a journal only notes"
+  '(any any "note")
+  (attempt (lambda () (map child-kind-filter '(#f "project" "journal")))))
+
+(test-equal "child-kind-filter: a kind that holds nothing raises, and so does what is no kind"
+  '(child-kind-filter child-kind-filter child-kind-filter may-hold? may-hold?)
+  (map (lambda (k) (raised-who (lambda () (child-kind-filter k))))
+       '("note" "task" "contact" "folder" "Project")))
+
+(test-equal "child-kind-filter: agrees with may-hold? over every kind"
+  '()
+  (attempt
+   (lambda ()
+     (filter (lambda (x) x)
+             (map (lambda (p)
+                    (let ((held (filter (lambda (c) (may-hold? p c)) kinds))
+                          (f (guard (e ((assertion-violation? e) 'raised)) (child-kind-filter p))))
+                      (if (cond ((null? held) (eq? f 'raised))
+                                ((eq? f 'any) (equal? held kinds))
+                                ((string? f) (equal? held (list f)))
+                                (else #f))
+                          #f
+                          (list p f held))))
+                  kinds)))))
+
+;;; node-command: the two tables, the verdict and the children answer one
+;;; request (slice 4b, G5, G15; slice 5a, P6, P17)
 
 (define request-events '(create replace replace-other-kind restore restore-unknown
-                         archive unarchive trash untrash purge))
+                         archive unarchive trash untrash purge move move-children))
 (define request-states '(#f active archived trashed purged))
+(define verdicts '(ok missing trashed loop wrong-kind too-deep))
+
+;; What each verdict answers, written out (T10, P17): go is the request's
+;; own command; any other is its refusal.
+(define verdict-answers
+  '((ok . go) (missing . refuse-invalid-parent) (trashed . refuse-invalid-parent)
+    (loop . refuse-would-loop) (wrong-kind . refuse-invalid-parent)
+    (too-deep . refuse-invalid-parent)))
 
 ;; What node-command answers, written out: under each Found, a row per state
 ;; in request-states' order, an entry per event in request-events' order. X is
 ;; an assertion violation (the cell cannot happen); a symbol is that command
-;; and #f; (set-state S) is set-state and the state S to store.
+;; and #f; (set-state S) is set-state and the state S to store; (parent C)
+;; is C when the verdict is ok, else the verdict's refusal; (children C) is
+;; refuse-has-children when the node has children, else C. No other entry
+;; looks at the verdict or the children.
 (define node-command-table
   '((none
-     (#f       insert refuse-404 X X refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404)
-     (active   insert refuse-404 X X refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404)
-     (archived insert refuse-404 X X refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404)
-     (trashed  insert refuse-404 X X refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404)
-     (purged   insert refuse-404 X X refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404))
+     (#f       (parent insert) refuse-404 X X refuse-404
+               refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404)
+     (active   (parent insert) refuse-404 X X refuse-404
+               refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404)
+     (archived (parent insert) refuse-404 X X refuse-404
+               refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404)
+     (trashed  (parent insert) refuse-404 X X refuse-404
+               refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404)
+     (purged   (parent insert) refuse-404 X X refuse-404
+               refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404))
     (match
-     (#f       X X X X X X X X X X)
+     (#f       X X X X X X X X X X X X)
      (active   X write refuse-409 copy refuse-404
                (set-state archived) refuse-wrong-state (set-state trashed)
-               refuse-wrong-state refuse-wrong-state)
+               refuse-wrong-state refuse-wrong-state (parent move) (parent move-children))
      (archived X write refuse-409 copy refuse-404
                refuse-wrong-state (set-state active) (set-state trashed)
-               refuse-wrong-state refuse-wrong-state)
+               refuse-wrong-state refuse-wrong-state (parent move) (parent move-children))
      (trashed  X refuse-wrong-state refuse-wrong-state refuse-wrong-state refuse-wrong-state
                refuse-wrong-state refuse-wrong-state refuse-wrong-state
-               (set-state active) purge)
-     (purged   X X X X X X X X X X))
+               (set-state active) (children purge) refuse-wrong-state (parent move-children))
+     (purged   X X X X X X X X X X X X))
     (differ
-     (#f       refuse-412 refuse-412 refuse-412 refuse-412 refuse-412
-               refuse-412 refuse-412 refuse-412 refuse-412 refuse-412)
-     (active   refuse-412 refuse-412 refuse-412 refuse-412 refuse-412
-               refuse-412 refuse-412 refuse-412 refuse-412 refuse-412)
-     (archived refuse-412 refuse-412 refuse-412 refuse-412 refuse-412
-               refuse-412 refuse-412 refuse-412 refuse-412 refuse-412)
-     (trashed  refuse-412 refuse-412 refuse-412 refuse-412 refuse-412
-               refuse-412 refuse-412 refuse-412 refuse-412 refuse-412)
-     (purged   refuse-412 refuse-412 refuse-412 refuse-412 refuse-412
-               refuse-412 refuse-412 refuse-412 refuse-412 refuse-412))))
+     (#f       refuse-412 refuse-412 refuse-412 refuse-412 refuse-412 refuse-412
+               refuse-412 refuse-412 refuse-412 refuse-412 refuse-412 refuse-412)
+     (active   refuse-412 refuse-412 refuse-412 refuse-412 refuse-412 refuse-412
+               refuse-412 refuse-412 refuse-412 refuse-412 refuse-412 refuse-412)
+     (archived refuse-412 refuse-412 refuse-412 refuse-412 refuse-412 refuse-412
+               refuse-412 refuse-412 refuse-412 refuse-412 refuse-412 refuse-412)
+     (trashed  refuse-412 refuse-412 refuse-412 refuse-412 refuse-412 refuse-412
+               refuse-412 refuse-412 refuse-412 refuse-412 refuse-412 refuse-412)
+     (purged   refuse-412 refuse-412 refuse-412 refuse-412 refuse-412 refuse-412
+               refuse-412 refuse-412 refuse-412 refuse-412 refuse-412 refuse-412))))
 
-;; expected-command : Found (U Symbol #f) Symbol -> Any
-;; The table's entry for the cell, as commanded answers it; a cell the table
-;; lacks expects what node-command never answers.
-(define (expected-command f s e)
+;; expected-command : Found (U Symbol #f) Symbol Symbol Boolean -> Any
+;; The table's entry for the cell, with the verdict V and the children C, as
+;; commanded answers it; a cell the table lacks expects what node-command
+;; never answers.
+(define (expected-command f s e v c)
   (let* ((rows (cond ((assq f node-command-table) => cdr) (else '())))
          (row (assq s rows))
          (tail (memq e request-events))
@@ -898,37 +1270,52 @@
         (let ((entry (list-ref entries (- (length request-events) (length tail)))))
           (cond ((eq? entry 'X) 'cannot-happen)
                 ((symbol? entry) (list entry #f))
+                ((eq? (car entry) 'parent)
+                 (let ((answer (cdr (assq v verdict-answers))))
+                   (list (if (eq? answer 'go) (cadr entry) answer) #f)))
+                ((eq? (car entry) 'children)
+                 (list (if c 'refuse-has-children (cadr entry)) #f))
                 (else entry)))
         'missing-from-the-suites-table)))
 
-;; commanded : Any Any Any -> (U (List Symbol (U Symbol #f)) 'cannot-happen (List 'raised String))
+;; commanded : Any Any Any Any Any -> (U (List Symbol (U Symbol #f)) 'cannot-happen (List 'raised String))
 ;; The command and the state to store; 'cannot-happen for an assertion
-;; violation from node-command whose irritants are the cell, the Found, the
-;; state and the event; any other raise as itself.
-(define (commanded f s e)
+;; violation from node-command whose irritants are the whole cell, the
+;; Found, the state, the event, the verdict and the children; any other
+;; raise as itself.
+(define (commanded f s e v c)
   (guard (x ((and (assertion-violation? x)
                   (who-condition? x) (eq? (condition-who x) 'node-command)
-                  (irritants-condition? x) (equal? (condition-irritants x) (list f s e)))
+                  (irritants-condition? x) (equal? (condition-irritants x) (list f s e v c)))
              'cannot-happen)
             (#t (list 'raised (describe x))))
-    (call-with-values (lambda () (node-command f s e)) list)))
+    (call-with-values (lambda () (node-command f s e v c)) list)))
 
-;; Every one of the 150 cells, by construction.
+;; Every one of the 2,160 cells, by construction: 3 Founds, 5 states, 12
+;; events, 6 verdicts, and with children or without.
 (for-each
  (lambda (f)
    (for-each
     (lambda (s)
       (for-each
        (lambda (e)
-         (test-equal (string-append "command: " (written f) ", " (written s) ", " (written e))
-           (expected-command f s e)
-           (commanded f s e)))
+         (for-each
+          (lambda (v)
+            (for-each
+             (lambda (c)
+               (test-equal (string-append "command: " (written f) ", " (written s) ", " (written e)
+                                          ", " (written v) ", " (written c))
+                 (expected-command f s e v c)
+                 (commanded f s e v c)))
+             '(#f #t)))
+          verdicts))
        request-events))
     request-states))
  '(none match differ))
 
-(test-equal "command: the nine commands it answers, in the order the cells first give them"
-  '(insert refuse-404 write refuse-409 copy set-state refuse-wrong-state purge refuse-412)
+(test-equal "command: the fourteen commands it answers, in the order the cells first give them"
+  '(insert refuse-invalid-parent refuse-would-loop refuse-404 write refuse-409 copy set-state
+    refuse-wrong-state move move-children purge refuse-has-children refuse-412)
   (attempt
    (lambda ()
      (fold-left
@@ -937,30 +1324,88 @@
          (lambda (acc s)
            (fold-left
             (lambda (acc e)
-              (let ((a (commanded f s e)))
-                (if (and (pair? a) (symbol? (car a)) (not (eq? (car a) 'raised))
-                         (not (memq (car a) acc)))
-                    (append acc (list (car a)))
-                    acc)))
+              (fold-left
+               (lambda (acc v)
+                 (fold-left
+                  (lambda (acc c)
+                    (let ((a (commanded f s e v c)))
+                      (if (and (pair? a) (symbol? (car a)) (not (eq? (car a) 'raised))
+                               (not (memq (car a) acc)))
+                          (append acc (list (car a)))
+                          acc)))
+                  acc '(#f #t)))
+               acc verdicts))
             acc request-events))
          acc request-states))
       '() '(none match differ)))))
 
 (test-equal "command: an event no request sends raises, whatever was found"
-  '(cannot-happen cannot-happen cannot-happen cannot-happen cannot-happen cannot-happen)
-  (list (commanded 'none #f 'write) (commanded 'match 'active 'write)
-        (commanded 'differ 'active 'write) (commanded 'none #f 'delete)
-        (commanded 'match 'active 'delete) (commanded 'differ 'trashed 'delete)))
+  '(cannot-happen cannot-happen cannot-happen cannot-happen cannot-happen cannot-happen
+    cannot-happen)
+  (list (commanded 'none #f 'write 'ok #f) (commanded 'match 'active 'write 'ok #f)
+        (commanded 'differ 'active 'write 'ok #f) (commanded 'none #f 'delete 'ok #f)
+        (commanded 'match 'active 'delete 'ok #f) (commanded 'differ 'trashed 'delete 'ok #f)
+        (commanded 'match 'active 'move-child 'ok #f)))
 
 (test-equal "command: a Found the write machine has not raises"
   '(cannot-happen cannot-happen)
-  (list (commanded 'gone 'active 'replace) (commanded #f 'active 'archive)))
+  (list (commanded 'gone 'active 'replace 'ok #f) (commanded #f 'active 'archive 'ok #f)))
 
 (test-equal "command: with match the state must be a live one; with none and differ it is not looked at"
   '(cannot-happen cannot-happen (refuse-412 #f) (refuse-412 #f) (insert #f) (refuse-404 #f))
-  (list (commanded 'match 'gone 'replace) (commanded 'match "active" 'archive)
-        (commanded 'differ 'gone 'replace) (commanded 'differ "trashed" 'untrash)
-        (commanded 'none 'gone 'create) (commanded 'none "active" 'archive)))
+  (list (commanded 'match 'gone 'replace 'ok #f) (commanded 'match "active" 'archive 'ok #f)
+        (commanded 'differ 'gone 'replace 'ok #f) (commanded 'differ "trashed" 'untrash 'ok #f)
+        (commanded 'none 'gone 'create 'ok #f) (commanded 'none "active" 'archive 'ok #f)))
+
+;; raised-as : (-> Any) -> (U (List String (Listof Any)) 'no-raise (List 'raised String))
+;; An assertion violation from node-command as its message and irritants;
+;; 'no-raise when nothing was raised; any other raise as itself.
+(define (raised-as thunk)
+  (guard (x ((and (assertion-violation? x)
+                  (who-condition? x) (eq? (condition-who x) 'node-command)
+                  (message-condition? x) (irritants-condition? x))
+             (list (condition-message x) (condition-irritants x)))
+            (#t (list 'raised (describe x))))
+    (thunk)
+    'no-raise))
+
+(test-equal "command: a verdict that is none of the six raises where it is looked at"
+  '(("not a verdict on a parent" (fine)) ("not a verdict on a parent" (fine))
+    ("not a verdict on a parent" (fine)) ("not a verdict on a parent" (#f))
+    ("not a verdict on a parent" ("ok")))
+  (list (raised-as (lambda () (node-command 'none #f 'create 'fine #f)))
+        (raised-as (lambda () (node-command 'match 'active 'move 'fine #f)))
+        (raised-as (lambda () (node-command 'match 'trashed 'move-children 'fine #f)))
+        (raised-as (lambda () (node-command 'match 'archived 'move #f #f)))
+        (raised-as (lambda () (node-command 'none #f 'create "ok" #f)))))
+
+(test-equal "command: where the verdict is not looked at, any value is ignored"
+  '((refuse-wrong-state #f) (refuse-412 #f) (refuse-412 #f) (write #f) (refuse-404 #f)
+    (refuse-404 #f) (set-state archived) (purge #f))
+  (list (commanded 'match 'trashed 'move 'fine #f)
+        (commanded 'differ 'active 'create 'fine #f)
+        (commanded 'differ 'active 'move 'fine #f)
+        (commanded 'match 'active 'replace 'fine #f)
+        (commanded 'none #f 'move 'fine #f)
+        (commanded 'none #f 'replace 'fine #f)
+        (commanded 'match 'active 'archive 'fine #f)
+        (commanded 'match 'trashed 'purge 'fine #f)))
+
+(test-equal "command: whether the node has children must be a boolean where it is looked at: 0 is not #f"
+  '(("whether the node has children is a boolean" (0))
+    ("whether the node has children is a boolean" (())))
+  (list (raised-as (lambda () (node-command 'match 'trashed 'purge 'ok 0)))
+        (raised-as (lambda () (node-command 'match 'trashed 'purge 'ok '())))))
+
+(test-equal "command: where the children are not looked at, any value is ignored"
+  '((refuse-wrong-state #f) (refuse-404 #f) (refuse-412 #f) (move #f) (move-children #f)
+    (insert #f))
+  (list (commanded 'match 'active 'purge 'ok 0)
+        (commanded 'none #f 'purge 'ok 0)
+        (commanded 'differ 'trashed 'purge 'ok 0)
+        (commanded 'match 'active 'move 'ok 0)
+        (commanded 'match 'trashed 'move-children 'ok 0)
+        (commanded 'none #f 'create 'ok 0)))
 
 ;;; The states and the events, as the store and the feed name them
 
@@ -1007,14 +1452,14 @@
   '(archive unarchive trash untrash purge)
   (attempt (lambda () lifecycle-events)))
 
-(test-equal "event-op: each event's op in the feed is its own name"
-  '("archive" "unarchive" "trash" "untrash" "purge")
-  (attempt (lambda () (map event-op '(archive unarchive trash untrash purge)))))
+(test-equal "event-op: each event's op in the feed is its own name, and a move's is move"
+  '("archive" "unarchive" "trash" "untrash" "purge" "move")
+  (attempt (lambda () (map event-op '(archive unarchive trash untrash purge move)))))
 
-(test-equal "event-op: a write's events, the table's write and what is no event raise"
-  '(assertion assertion assertion assertion assertion)
+(test-equal "event-op: a write's events, the table's write, a bulk move and what is no event raise"
+  '(assertion assertion assertion assertion assertion assertion)
   (map (lambda (x) (raised-kind (lambda () (event-op x))))
-       (list 'create 'replace 'write "archive" #f)))
+       (list 'create 'replace 'write 'move-children "archive" #f)))
 
 ;;; The diagram, held to its file
 
@@ -1050,20 +1495,35 @@
   (read-file ".plans/machines/lifecycle.md"))
 
 (test-equal "the lifecycle document shows the diagram and every cell's answer"
-  '(#t #t #t #t #t #t #t #t)
+  '(#t #t #t #t #t #t #t #t #t #t #t)
   (let ((doc (attempt (lambda () (lifecycle-document)))))
     (map (lambda (needle) (and (string? doc) (string-index-of doc needle) #t))
          (list "stateDiagram-v2"
                "trashed --> purged: purge"
-               "| State | archive | unarchive | trash | untrash | purge | write |"
-               "| active | -> archived, set-state | refuse-wrong-state | -> trashed, set-state | refuse-wrong-state | refuse-wrong-state | allow |"
-               "| archived | refuse-wrong-state | -> active, set-state | -> trashed, set-state | refuse-wrong-state | refuse-wrong-state | allow |"
-               "| trashed | refuse-wrong-state | refuse-wrong-state | refuse-wrong-state | -> active, set-state | -> purged, purge | refuse-wrong-state |"
-               "| purged | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen |"
+               "active --> active: unarchive, untrash, purge, write, move, move-children"
+               "archived --> archived: archive, untrash, purge, write, move, move-children"
+               "trashed --> trashed: archive, unarchive, trash, write, move, move-children"
+               "| State | archive | unarchive | trash | untrash | purge | write | move | move-children |"
+               "| active | -> archived, set-state | refuse-wrong-state | -> trashed, set-state | refuse-wrong-state | refuse-wrong-state | allow | allow | allow |"
+               "| archived | refuse-wrong-state | -> active, set-state | -> trashed, set-state | refuse-wrong-state | refuse-wrong-state | allow | allow | allow |"
+               "| trashed | refuse-wrong-state | refuse-wrong-state | refuse-wrong-state | -> active, set-state | -> purged, purge | refuse-wrong-state | refuse-wrong-state | allow |"
+               "| purged | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen |"
                "`node-command`"))))
 
+(test-equal "the lifecycle document gives each verdict its answer"
+  '(#t #t #t #t #t #t #t)
+  (let ((doc (attempt (lambda () (lifecycle-document)))))
+    (map (lambda (needle) (and (string? doc) (string-index-of doc needle) #t))
+         (list "| Verdict | Answer |"
+               "| ok | the request's own: insert, move or move-children |"
+               "| missing | refuse-invalid-parent |"
+               "| trashed | refuse-invalid-parent |"
+               "| loop | refuse-would-loop |"
+               "| wrong-kind | refuse-invalid-parent |"
+               "| too-deep | refuse-invalid-parent |"))))
+
 (test-equal "the lifecycle document gives each can't-happen pair its reason"
-  '(#t #t #t #t #t #t)
+  '(#t #t #t #t #t #t #t #t)
   (attempt
    (lambda ()
      (let ((doc (lifecycle-document)))

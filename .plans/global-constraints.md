@@ -43,7 +43,9 @@ disagree, the record wins and this file gets fixed.
 - **A time in the API is whole milliseconds since 1970, UTC** (ADR-0002, amended).
 - **Routes live under `/v1`,** but `/health` (ADR-0002, amended).
 - **Every write to a node carries `If-Match`,** or `If-None-Match: *` to make it.
-  Stale answers 412, neither 428 (ADR-0004, amended 2026-11-25).
+  Stale answers 412, neither 428 (ADR-0004, amended 2026-11-25). The one
+  exception: a bulk move's children, moved on the node's `If-Match` (ADR-0004,
+  amended 2026-11-26).
 - **`If-Match` is one revision in quotes.** `*`, a list and a weak tag are refused
   (ADR-0004, amended).
 - **A node's id is a UUID of version 7** (ADR-0004, amended).
@@ -65,7 +67,16 @@ disagree, the record wins and this file gets fixed.
 - **A purged node's row stays, and no query that answers a client reads it.**
   Its id is never used again (ADR-0004, amended).
 - **Stale is answered before the state, and the state before the kind,** by one
-  pure function (ADR-0007, amended 2026-11-25).
+  pure function (ADR-0007, amended 2026-11-25). Then the new parent, then the
+  children (ADR-0007, amended 2026-11-26).
+- **The nodes of an account are a forest,** and only the code keeps it so: the
+  foreign key on `parent` takes a loop and a purged row (ADR-0003, amended
+  2026-11-26).
+- **A recursive statement is written `FROM <cte> CROSS JOIN nodes`,** has its
+  own cap, and has its plan held by a test (traps.md).
+- **A move answers no body and writes no snapshot** (ADR-0004, amended
+  2026-11-26).
+- **No row's parent is a purged row** (ADR-0003, amended 2026-11-26).
 - **Every change gets the owner's next sequence number,** in the same transaction
   (ADR-0004).
 - **The server never interprets or merges a body** (ADR-0005).

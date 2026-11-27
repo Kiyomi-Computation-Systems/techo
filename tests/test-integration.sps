@@ -257,19 +257,23 @@
 
 (define T-id (number->string techo-application-id))
 
-;; make-ahead! : String -> Void    Techo's id, version 5
+;; make-ahead! : String -> Void
+;; Techo's id, and a version one past the latest shipped one.
 (define (make-ahead! p)
   (make-file! p (list (string-append "PRAGMA application_id = " T-id)
-                      "PRAGMA user_version = 5")))
+                      (string-append "PRAGMA user_version = "
+                                     (number->string ahead-version)))))
 
 ;; make-foreign! : String -> Void    another program's id and a table
 (define (make-foreign! p)
   (make-file! p '("PRAGMA application_id = 42" "CREATE TABLE t (x)" "INSERT INTO t VALUES (1)")))
 
 ;; The shipped schema, as the file's facts count it: accounts, api_keys, the
-;; index, and the automatic indexes of the primary and unique keys.
+;; index, and the automatic indexes of the primary and unique keys, and migration 5's index.
 (define shipped-latest (latest-version migrations))
-(define shipped-objects 14)
+(define shipped-objects 15)
+;; A version no shipped migration reaches: what "a file from a newer Techo" holds.
+(define ahead-version (+ shipped-latest 1))
 (define shipped-tables '("accounts" "api_keys" "changes" "nodes" "revisions"))
 
 ;; applied-lines : (Listof Natural) -> (Listof String)
@@ -1315,6 +1319,197 @@
                  (col "SELECT op FROM changes ORDER BY seq")
                  (col "SELECT seq FROM changes ORDER BY seq"))))))))
 
+;; --- the tree over the wire (slice 5a) -------------------------------------
+;;
+;; A third server on a fresh file, two accounts. A project (tr-p), a note in
+;; it, a journal and a task at the top level; the lists by parent; the moves
+;; and every refusal; the project trashed and emptied with a bulk move, then
+;; purged; a second project holding a note and a task, emptied into the
+;; journal; the other account's attempts. Each call is filed under a name,
+;; and the log line it should leave is remembered in tr-calls.
+
+(define (tr-id n)
+  (string-append "0190b3a4-5c6d-7e8f-9a0b-000000000" (if (< n 16) "0" "") "b" (number->string n 16)))
+(define tr-p (tr-id 1))    ; project
+(define tr-n (tr-id 2))    ; note, made in the project
+(define tr-j (tr-id 3))    ; journal
+(define tr-t (tr-id 4))    ; task
+(define tr-q (tr-id 5))    ; project in the project
+(define tr-m (tr-id 6))    ; note in the project, made before it is trashed
+(define tr-p2 (tr-id 7))   ; second project
+(define tr-n2 (tr-id 8))   ; its note
+(define tr-t2 (tr-id 9))   ; its task
+(define tr-nb (tr-id 10))  ; the second account's note
+(define tr-nobody (tr-id 11)) ; an id nobody holds
+(define tr-x1 (tr-id 12))  ; ids of creates and moves that are refused
+(define tr-x2 (tr-id 13))
+(define tr-x3 (tr-id 14))
+(define tr-x4 (tr-id 15))
+(define tr-n3 (tr-id 16))  ; a trashed note in the second project
+(define tr-n4 (tr-id 17))  ; an archived note in the second project
+(define tr-title-word "gannettitle")
+(define tr-body-word "wombatbody")
+(define tr-calls '())
+
+;; tr-doc : String String (U String 'none 'null) -> String
+;; A note's create or replace: PARENT is an id, 'null, or 'none (no member).
+(define (tr-doc kind n parent)
+  (string-append "{\"kind\":\"" kind "\",\"title\":\"" tr-title-word " " n "\",\"body\":\"" tr-body-word " " n
+                 "\",\"content_type\":\"text/plain\""
+                 (cond ((string? parent) (string-append ",\"parent\":\"" parent "\""))
+                       ((eq? parent 'null) ",\"parent\":null")
+                       (else ""))
+                 "}"))
+
+;; tr-to : (U String #f) -> String    a move's body: the parent, or null
+(define (tr-to p)
+  (if p (string-append "{\"parent\":\"" p "\"}") "{\"parent\":null}"))
+
+;; tr-call! : Nat String Symbol String String Headers (U String #f) (U String #f) Symbol -> Void
+;; One request with KEY, filed under NAME; its expected log line is kept.
+;; CTYPE #f: application/json when there is a body.
+(define (tr-call! port name method target key headers body ctype who)
+  (let ((r (attempt (lambda ()
+                      (hcall port method target (or ctype (and body "application/json")) (or body "")
+                             (append (bearer key) headers))))))
+    (obs-set! name r)
+    (when (and (pair? r) (not (eq? (car r) 'raised)))
+      (set! tr-calls (cons (list (string-upcase (symbol->string method)) (lc-path-of target)
+                                 (number->string (lg-status r))
+                                 (if (or (= (lg-status r) 428)
+                                         (and (= (lg-status r) 400)
+                                              (or (string=? name "tr:none-match") (and (> (string-length name) 8) (string=? (substring name 0 8) "tr:list-")))))
+                                     '- who))
+                           tr-calls)))))
+
+;; observe-tree! : String -> Void
+(define (observe-tree! dir)
+  (define db (string-append dir "/tree.db"))
+  (define env (list (string-append "TECHO_DB_PATH=" db)))
+  (define (add! name pw user)
+    (id-of-added (run-cli-in dir name (string-append pw "\n") '() env
+                             (list "user" "add" "--username" user "--email" (string-append user "@example.com")))))
+  (set! tr-calls '())
+  (obs-set! "tr:migrate" (car (run-cli-in dir "trmigrate" "" '() env '("migrate"))))
+  (obs-set! "tr:a-id" (add! "tr-add-a" nd-pw-a "treea"))
+  (obs-set! "tr:b-id" (add! "tr-add-b" nd-pw-b "treeb"))
+  (with-server dir "trsrv" db #f
+    (lambda (port)
+      (define (key-of email pw)
+        (let* ((r (hcall port 'post "/v1/login" "application/json" (login-json email pw "tree") '()))
+               (k (jget (lg-json r) "key")))
+          (if (string? k) k "techo_missing")))
+      (let* ((ka (key-of "treea@example.com" nd-pw-a))
+             (kb (key-of "treeb@example.com" nd-pw-b))
+             (path (lambda (id) (string-append "/v1/nodes/" id)))
+             (mv (lambda (id) (string-append "/v1/nodes/" id "/move")))
+             (mc (lambda (id) (string-append "/v1/nodes/" id "/move-children")))
+             (kids (lambda (id) (string-append "/v1/nodes?parent=" id))))
+        (define (a! name method target headers body) (tr-call! port name method target ka headers body #f 'a))
+        (define (b! name method target headers body) (tr-call! port name method target kb headers body #f 'b))
+        ;; the first nodes and the lists
+        (a! "tr:p-create" 'put (path tr-p) nd-create (tr-doc "project" "p" 'none))
+        (a! "tr:n-create" 'put (path tr-n) nd-create (tr-doc "note" "n" tr-p))
+        (a! "tr:j-create" 'put (path tr-j) nd-create (tr-doc "journal" "j" 'null))
+        (a! "tr:t-create" 'put (path tr-t) nd-create (tr-doc "task" "t" 'none))
+        (a! "tr:list-top" 'get "/v1/nodes?parent=null" '() #f)
+        (a! "tr:list-p" 'get (kids tr-p) '() #f)
+        (a! "tr:list-flat" 'get "/v1/nodes" '() #f)
+        ;; moves, and the kinds a parent holds
+        (a! "tr:t-to-p" 'post (mv tr-t) (nd-match 1) (tr-to tr-p))
+        (a! "tr:t-to-j" 'post (mv tr-t) (nd-match 2) (tr-to tr-j))
+        (a! "tr:n-to-j" 'post (mv tr-n) (nd-match 1) (tr-to tr-j))
+        (a! "tr:n-under-t" 'post (mv tr-n) (nd-match 2) (tr-to tr-t))
+        (a! "tr:list-j" 'get (kids tr-j) '() #f)
+        (a! "tr:list-p-2" 'get (kids tr-p) '() #f)
+        ;; loops
+        (a! "tr:q-create" 'put (path tr-q) nd-create (tr-doc "project" "q" tr-p))
+        (a! "tr:p-under-q" 'post (mv tr-p) (nd-match 1) (tr-to tr-q))
+        (a! "tr:p-under-p" 'post (mv tr-p) (nd-match 1) (tr-to tr-p))
+        ;; the shape of a move request
+        (a! "tr:stale" 'post (mv tr-t) (nd-match 1) (tr-to #f))
+        (a! "tr:no-match" 'post (mv tr-t) '() (tr-to #f))
+        (a! "tr:none-match" 'post (mv tr-t) (list (cons "If-None-Match" "*")) (tr-to #f))
+        (tr-call! port "tr:text-plain" 'post (mv tr-t) ka (nd-match 2) (tr-to #f) "text/plain" 'a)
+        (a! "tr:empty-object" 'post (mv tr-t) (nd-match 2) "{}")
+        (a! "tr:extra-member" 'post (mv tr-t) (nd-match 2) "{\"parent\":null,\"x\":1}")
+        (a! "tr:replace-parent" 'put (path tr-n) (nd-match 2) (tr-doc "note" "n" tr-j))
+        (a! "tr:t-after-refusals" 'get (path tr-t) '() #f)
+        ;; to the top level
+        (a! "tr:t-to-top" 'post (mv tr-t) (nd-match 2) (tr-to #f))
+        (a! "tr:list-top-2" 'get "/v1/nodes?parent=null" '() #f)
+        ;; the project is trashed; its children keep their state
+        (a! "tr:m-create" 'put (path tr-m) nd-create (tr-doc "note" "m" tr-p))
+        (a! "tr:p-trash" 'post (string-append (path tr-p) "/trash") (nd-match 1) #f)
+        (a! "tr:q-after-trash" 'get (path tr-q) '() #f)
+        (a! "tr:list-flat-2" 'get "/v1/nodes" '() #f)
+        (a! "tr:list-p-3" 'get (kids tr-p) '() #f)
+        (a! "tr:create-in-trashed" 'put (path tr-x1) nd-create (tr-doc "note" "x" tr-p))
+        (a! "tr:t-into-trashed" 'post (mv tr-t) (nd-match 3) (tr-to tr-p))
+        (a! "tr:p-move-trashed" 'post (mv tr-p) (nd-match 2) (tr-to #f))
+        ;; purge refused, the children moved out, then the purge
+        (a! "tr:p-delete-full" 'delete (path tr-p) (nd-match 2) #f)
+        (a! "tr:p-move-children" 'post (mc tr-p) (nd-match 2) (tr-to #f))
+        (a! "tr:p-get" 'get (path tr-p) '() #f)
+        (a! "tr:q-get" 'get (path tr-q) '() #f)
+        (a! "tr:m-get" 'get (path tr-m) '() #f)
+        (a! "tr:p-delete" 'delete (path tr-p) (nd-match 2) #f)
+        (a! "tr:p-get-purged" 'get (path tr-p) '() #f)
+        ;; a bulk move that leaves a task behind
+        (a! "tr:p2-create" 'put (path tr-p2) nd-create (tr-doc "project" "p2" 'none))
+        (a! "tr:n2-create" 'put (path tr-n2) nd-create (tr-doc "note" "n2" tr-p2))
+        (a! "tr:t2-create" 'put (path tr-t2) nd-create (tr-doc "task" "t2" tr-p2))
+        (a! "tr:n3-create" 'put (path tr-n3) nd-create (tr-doc "note" "n3" tr-p2))
+        (a! "tr:n3-trash" 'post (string-append (path tr-n3) "/trash") (nd-match 1) #f)
+        (a! "tr:n4-create" 'put (path tr-n4) nd-create (tr-doc "note" "n4" tr-p2))
+        (a! "tr:n4-archive" 'post (string-append (path tr-n4) "/archive") (nd-match 1) #f)
+        (a! "tr:p2-into-p2" 'post (mc tr-p2) (nd-match 1) (tr-to tr-p2))
+        (a! "tr:p2-into-j" 'post (mc tr-p2) (nd-match 1) (tr-to tr-j))
+        (a! "tr:p2-get" 'get (path tr-p2) '() #f)
+        (a! "tr:list-p2" 'get (kids tr-p2) '() #f)
+        (a! "tr:list-j-2" 'get (kids tr-j) '() #f)
+        (a! "tr:list-p2-trashed" 'get (string-append (kids tr-p2) "&state=trashed") '() #f)
+        (a! "tr:list-j-archived" 'get (string-append (kids tr-j) "&state=archived") '() #f)
+        ;; the other account
+        (b! "tr:b-move" 'post (mv tr-p2) (nd-match 1) (tr-to #f))
+        (b! "tr:b-move-children" 'post (mc tr-p2) (nd-match 1) (tr-to #f))
+        (a! "tr:p2-get-after-b" 'get (path tr-p2) '() #f)
+        (a! "tr:list-p2-after-b" 'get (kids tr-p2) '() #f)
+        (b! "tr:b-create-under-a" 'put (path tr-x2) nd-create (tr-doc "note" "bx" tr-p2))
+        (b! "tr:b-create-under-nobody" 'put (path tr-x2) nd-create (tr-doc "note" "bx" tr-nobody))
+        (b! "tr:nb-create" 'put (path tr-nb) nd-create (tr-doc "note" "nb" 'none))
+        (b! "tr:b-move-under-a" 'post (mv tr-nb) (nd-match 1) (tr-to tr-p2))
+        (b! "tr:b-move-under-nobody" 'post (mv tr-nb) (nd-match 1) (tr-to tr-nobody))
+        (b! "tr:b-list-a-project" 'get (kids tr-p2) '() #f)
+        (b! "tr:b-list-nobody" 'get (kids tr-nobody) '() #f)
+        ;; bad spellings and a missing id
+        (a! "tr:list-empty" 'get "/v1/nodes?parent=" '() #f)
+        (a! "tr:list-NULL" 'get "/v1/nodes?parent=NULL" '() #f)
+        (a! "tr:list-twice" 'get (string-append "/v1/nodes?parent=" tr-j "&parent=" tr-j) '() #f)
+        (a! "tr:list-junk" 'get "/v1/nodes?parent=junk" '() #f)
+        (a! "tr:list-missing" 'get (kids tr-nobody) '() #f)
+        (a! "tr:move-missing" 'post (mv tr-nobody) (nd-match 1) (tr-to #f))
+        (a! "tr:move-children-missing" 'post (mc tr-nobody) (nd-match 1) (tr-to #f))
+        (a! "tr:list-purged-parent" 'get (kids tr-p) '() #f)
+        ;; a bulk move to the top level leaves a trashed child
+        (a! "tr:p2-to-top" 'post (mc tr-p2) (nd-match 1) (tr-to #f))
+        (a! "tr:t2-get" 'get (path tr-t2) '() #f)
+        (a! "tr:list-p2-trashed-2" 'get (string-append (kids tr-p2) "&state=trashed") '() #f))))
+  (obs-set! "tr:expect" (reverse tr-calls))
+  (obs-set! "tr:db"
+    (attempt
+     (lambda ()
+       (with-db (open-techo-db db 'read-only)
+         (lambda (c)
+           (define (col sql) (map (lambda (r) (vector-ref r 0)) (query c sql)))
+           (list (col "SELECT state FROM nodes ORDER BY num")
+                 (col "SELECT revision FROM nodes ORDER BY num")
+                 (col "SELECT lower(hex(id)) FROM nodes ORDER BY num")
+                 (col "SELECT lower(hex(parent)) FROM nodes ORDER BY num")
+                 (col "SELECT count(*) FROM nodes WHERE parent = (SELECT id FROM nodes ORDER BY num LIMIT 1)")
+                 (col "SELECT op FROM changes WHERE owner = (SELECT owner FROM nodes ORDER BY num LIMIT 1) ORDER BY seq")
+                 (col "SELECT lower(hex(node)) || ':' || revision FROM changes WHERE op = 'move' AND owner = (SELECT owner FROM nodes ORDER BY num LIMIT 1) ORDER BY seq"))))))))
+
 ;; leftovers : String -> (Listof Boolean)
 ;; Whether DB's `-wal` and `-shm` exist.
 (define (leftovers db)
@@ -1358,6 +1553,7 @@
     (observe "login-run" (observe-login! dir))
     (observe "nodes-run" (observe-nodes! dir))
     (observe "lifecycle-run" (observe-lifecycle! dir))
+    (observe "tree-run" (observe-tree! dir))
     ;; The command line.
     (set! cli-version (attempt (lambda () (run-cli dir "version" '() '() '("version")))))
     (set! cli-none (attempt (lambda () (run-cli dir "none" '() '() '()))))
@@ -1549,7 +1745,8 @@
   (obs "migrate-again"))
 
 (test-equal "migrate: an ahead file is refused, exit 1, the line on stderr"
-  (list 1 "" (nl "techo: refused: this binary is older than the database (version 5)"))
+  (list 1 "" (nl (string-append "techo: refused: this binary is older than the database (version "
+                     (number->string ahead-version) ")")))
   (obs "migrate-ahead"))
 
 (test-equal "migrate: another program's file is refused, exit 1, the line on stderr"
@@ -1650,7 +1847,8 @@
   (obs "serve-fresh"))
 
 (test-equal "serve: an ahead file is refused"
-  (refused-line "this binary is older than the database (version 5)")
+  (refused-line (string-append "this binary is older than the database (version "
+                               (number->string ahead-version) ")"))
   (obs "serve-ahead"))
 
 (test-equal "serve: another program's file is refused"
@@ -2190,7 +2388,7 @@
 
 (define (nd-j k) (if (lg-ok? k) (lg-json (obs k)) (obs k)))
 (define (nd-h k name) (if (lg-ok? k) (lg-header (obs k) name) (obs k)))
-(define node-members '("id" "kind" "state" "title" "body" "content_type" "props" "revision" "created" "updated"))
+(define node-members '("id" "kind" "state" "parent" "title" "body" "content_type" "props" "revision" "created" "updated"))
 (define nd-problem "application/problem+json")
 
 (test-equal "nodes: the run's setup worked: migrated, two accounts, the server stopped with 0 and raised nothing"
@@ -2261,7 +2459,7 @@
   (list (lg-st "nd:b-list") (jitems (nd-j "nd:b-list")) (lg-st "nd:b-create") (lg-code "nd:b-create")))
 
 (test-equal "nodes: the first account's list holds the node at revision 3, with no body member"
-  (list 200 (list nd-n1) '("id" "kind" "state" "title" "content_type" "props" "revision" "created" "updated") '(3))
+  (list 200 (list nd-n1) '("id" "kind" "state" "parent" "title" "content_type" "props" "revision" "created" "updated") '(3))
   (let ((is (jitems (nd-j "nd:a-list"))))
     (list (lg-st "nd:a-list")
           (if (list? is) (map (lambda (i) (jget i "id")) is) is)
@@ -2347,7 +2545,7 @@
 
 ;; --- the node lifecycle over the wire (slice 4b) ---------------------------
 
-(define state-less-members '("id" "kind" "state" "title" "content_type" "props" "revision" "created" "updated"))
+(define state-less-members '("id" "kind" "state" "parent" "title" "content_type" "props" "revision" "created" "updated"))
 (define (lc-ids k)
   (let ((is (jitems (nd-j k)))) (if (list? is) (map (lambda (i) (jget i "id")) is) is)))
 (define (lc-problem status code)
@@ -2514,6 +2712,202 @@
           "create" "create" "trash" "purge")
         '(1 2 3 4 5 6 7 8 9 10 11 12))
   (obs "lc:db"))
+
+;; --- the tree over the wire (slice 5a) -------------------------------------
+
+;; tr-hex : String -> String    an id as the file shows it: no dashes
+(define (tr-hex id)
+  (list->string (filter (lambda (c) (not (char=? c #\-))) (string->list id))))
+(define (tr-problem status code) (list status nd-problem code))
+(define (tr-got k) (list (lg-st k) (nd-h k "content-type") (lg-code k)))
+(define (tr-ids k) (lc-ids k))
+(define (tr-parents k)
+  (let ((is (jitems (nd-j k)))) (if (list? is) (map (lambda (i) (jget i "parent")) is) is)))
+;; tr-moved : String -> (List Status ETag Parent (Listof String))
+;; A move's answer: its status, ETag, parent and members.
+(define (tr-moved k)
+  (let ((j (nd-j k))) (list (lg-st k) (nd-h k "etag") (jget j "parent") (members j))))
+;; tr-shown : String -> (List Status ETag State Revision Parent)
+(define (tr-shown k)
+  (let ((j (nd-j k))) (list (lg-st k) (nd-h k "etag") (jget j "state") (jget j "revision") (jget j "parent"))))
+(define tr-invalid (tr-problem 409 "invalid_parent"))
+
+(test-equal "tree: the run's setup worked: migrated, two accounts, the server stopped with 0 and raised nothing"
+  '(0 #t #t 0 unobserved)
+  (list (obs "tr:migrate")
+        (and (string? (obs "tr:a-id")) (= 36 (string-length (obs "tr:a-id"))))
+        (and (string? (obs "tr:b-id")) (not (equal? (obs "tr:a-id") (obs "tr:b-id"))))
+        (obs "trsrv:exit") (obs "trsrv:raised")))
+
+(test-equal "tree: a create is 201 with its parent in the answer: the project's id, null for \"parent\": null, and null where none was sent"
+  (list (list 201 'null) (list 201 tr-p) (list 201 'null) (list 201 'null))
+  (map (lambda (k) (list (lg-st k) (jget (nd-j k) "parent"))) '("tr:p-create" "tr:n-create" "tr:j-create" "tr:t-create")))
+
+(test-equal "tree: ?parent=null lists the project, the journal and the task and not the note; ?parent=<project> lists the note; the flat list holds all four; each item has its parent"
+  (list 200 (list tr-p tr-j tr-t) '(null null null)
+        200 (list tr-n) (list tr-p)
+        200 (list tr-p tr-n tr-j tr-t) (list 'null tr-p 'null 'null))
+  (list (lg-st "tr:list-top") (tr-ids "tr:list-top") (tr-parents "tr:list-top")
+        (lg-st "tr:list-p") (tr-ids "tr:list-p") (tr-parents "tr:list-p")
+        (lg-st "tr:list-flat") (tr-ids "tr:list-flat") (tr-parents "tr:list-flat")))
+
+(test-equal "tree: a move of the task into the project is 200, ETag \"2\", the parent the project, and no body member"
+  (list 200 "\"2\"" tr-p state-less-members)
+  (tr-moved "tr:t-to-p"))
+
+(test-equal "tree: a move of the task into the journal is 409 invalid_parent; the note into the journal works (ETag \"2\"); the note under the task is invalid_parent"
+  (list tr-invalid (list 200 "\"2\"" tr-j state-less-members) tr-invalid)
+  (list (tr-got "tr:t-to-j") (tr-moved "tr:n-to-j") (tr-got "tr:n-under-t")))
+
+(test-equal "tree: after the moves the journal holds the note and the project holds the task"
+  (list (list tr-n) (list tr-t))
+  (list (tr-ids "tr:list-j") (tr-ids "tr:list-p-2")))
+
+(test-equal "tree: a project made in the project is 201; moving the outer project under the inner, or under itself, is 409 would_loop"
+  (list 201 tr-p (tr-problem 409 "would_loop") (tr-problem 409 "would_loop"))
+  (list (lg-st "tr:q-create") (jget (nd-j "tr:q-create") "parent")
+        (tr-got "tr:p-under-q") (tr-got "tr:p-under-p")))
+
+(test-equal "tree: a stale move is 412; none is 428; with If-None-Match is 400; as text/plain is 415; {} and an extra member are 400; a replace with a parent is 400"
+  (list (tr-problem 412 "precondition_failed") (tr-problem 428 "precondition_required")
+        (tr-problem 400 "invalid_request") (tr-problem 415 "unsupported_media_type")
+        (tr-problem 400 "invalid_request") (tr-problem 400 "invalid_request")
+        (tr-problem 400 "invalid_request"))
+  (map tr-got '("tr:stale" "tr:no-match" "tr:none-match" "tr:text-plain" "tr:empty-object"
+                "tr:extra-member" "tr:replace-parent")))
+
+(test-equal "tree: after the refusals the task is as it was: active, revision 2, ETag \"2\", under the project"
+  (list 200 "\"2\"" "active" 2 tr-p)
+  (tr-shown "tr:t-after-refusals"))
+
+(test-equal "tree: a move with {\"parent\": null} is 200, ETag \"3\", the parent null; the top level lists the project, the journal and the task again"
+  (list (list 200 "\"3\"" 'null state-less-members) (list tr-p tr-j tr-t))
+  (list (tr-moved "tr:t-to-top") (tr-ids "tr:list-top-2")))
+
+(test-equal "tree: a trashed project: 200, ETag \"2\"; its child is still active, under it, in the flat list and under ?parent=<project>"
+  (list (list 200 "\"2\"" "trashed") (list 200 "\"1\"" "active" 1 tr-p)
+        (list tr-n tr-j tr-t tr-q tr-m) (list tr-q tr-m))
+  (list (let ((j (nd-j "tr:p-trash"))) (list (lg-st "tr:p-trash") (nd-h "tr:p-trash" "etag") (jget j "state")))
+        (tr-shown "tr:q-after-trash")
+        (tr-ids "tr:list-flat-2") (tr-ids "tr:list-p-3")))
+
+(test-equal "tree: into the trashed project a create and a move are 409 invalid_parent; the trashed project's own move is 409 wrong_state"
+  (list tr-invalid tr-invalid (tr-problem 409 "wrong_state"))
+  (map tr-got '("tr:create-in-trashed" "tr:t-into-trashed" "tr:p-move-trashed")))
+
+(test-equal "tree: a DELETE of the trashed project with children is 409 has_children"
+  (tr-problem 409 "has_children")
+  (tr-got "tr:p-delete-full"))
+
+(test-equal "tree: move-children to the top level is 200 {moved 2, left 0} with no ETag; the project's revision is unchanged; each child is at revision 2 with no parent"
+  (list 200 "{\"moved\":2,\"left\":0}" #f
+        (list 200 "\"2\"" "trashed" 2 'null) (list 200 "\"2\"" "active" 2 'null) (list 200 "\"2\"" "active" 2 'null))
+  (list (lg-st "tr:p-move-children") (lg-text (obs "tr:p-move-children")) (nd-h "tr:p-move-children" "etag")
+        (tr-shown "tr:p-get") (tr-shown "tr:q-get") (tr-shown "tr:m-get")))
+
+(test-equal "tree: the DELETE then is 204 with an empty body, and the project is 404 after"
+  (list 204 "" (tr-problem 404 "not_found"))
+  (list (lg-st "tr:p-delete") (lg-text (obs "tr:p-delete")) (tr-got "tr:p-get-purged")))
+
+(test-equal "tree: a second project holding a note, a task, a trashed note and an archived note; a bulk move of its children into itself is 409 would_loop"
+  (list 201 201 201 201 "trashed" 201 "archived" (tr-problem 409 "would_loop"))
+  (list (lg-st "tr:p2-create") (lg-st "tr:n2-create") (lg-st "tr:t2-create")
+        (lg-st "tr:n3-create") (jget (nd-j "tr:n3-trash") "state")
+        (lg-st "tr:n4-create") (jget (nd-j "tr:n4-archive") "state")
+        (tr-got "tr:p2-into-p2")))
+
+(test-equal "tree: a bulk move into the journal takes the active note and the archived note and leaves the task and the trashed note: {moved 2, left 2}; the project is at revision 1; the project still holds the task (active) and the trashed note (trashed); the journal holds the notes, the archived one under ?state=archived"
+  (list 200 "{\"moved\":2,\"left\":2}" #f (list 200 "\"1\"" "active" 1 'null) (list tr-t2) (list tr-n tr-n2)
+        (list tr-n3) (list tr-n4))
+  (list (lg-st "tr:p2-into-j") (lg-text (obs "tr:p2-into-j")) (nd-h "tr:p2-into-j" "etag")
+        (tr-shown "tr:p2-get") (tr-ids "tr:list-p2") (tr-ids "tr:list-j-2")
+        (tr-ids "tr:list-p2-trashed") (tr-ids "tr:list-j-archived")))
+
+(test-equal "tree: a bulk move of the second project to the top level takes the task and leaves the trashed note: {moved 1, left 1}, no ETag; the task is at revision 2 with no parent; the trashed note is still under the project"
+  (list 200 "{\"moved\":1,\"left\":1}" #f (list 200 "\"2\"" "active" 2 'null) (list tr-n3))
+  (list (lg-st "tr:p2-to-top") (lg-text (obs "tr:p2-to-top")) (nd-h "tr:p2-to-top" "etag")
+        (tr-shown "tr:t2-get") (tr-ids "tr:list-p2-trashed-2")))
+
+(test-equal "tree: the other account's move and move-children of the first account's project, at its revision, are 404 not_found and change nothing"
+  (list (tr-problem 404 "not_found") (tr-problem 404 "not_found")
+        (list 200 "\"1\"" "active" 1 'null) (list tr-t2))
+  (list (tr-got "tr:b-move") (tr-got "tr:b-move-children")
+        (tr-shown "tr:p2-get-after-b") (tr-ids "tr:list-p2-after-b")))
+
+(test-equal "tree: the first account's project as the other account's parent, on a create and on a move, is 409 invalid_parent, the same bytes as for an id nobody holds"
+  (list tr-invalid tr-invalid 201 tr-invalid tr-invalid #t #t)
+  (list (tr-got "tr:b-create-under-a") (tr-got "tr:b-create-under-nobody") (lg-st "tr:nb-create")
+        (tr-got "tr:b-move-under-a") (tr-got "tr:b-move-under-nobody")
+        (equal? (lg-text (obs "tr:b-create-under-a")) (lg-text (obs "tr:b-create-under-nobody")))
+        (equal? (lg-text (obs "tr:b-move-under-a")) (lg-text (obs "tr:b-move-under-nobody")))))
+
+(test-equal "tree: ?parent=<the first account's project> is 404 for the other account, the same bytes as for an id nobody holds"
+  (list (tr-problem 404 "not_found") (tr-problem 404 "not_found") #t)
+  (list (tr-got "tr:b-list-a-project") (tr-got "tr:b-list-nobody")
+        (equal? (lg-text (obs "tr:b-list-a-project")) (lg-text (obs "tr:b-list-nobody")))))
+
+(test-equal "tree: ?parent= empty, NULL, twice and a non-id are each 400 invalid_request"
+  (map (lambda (k) (tr-problem 400 "invalid_request")) '(1 2 3 4))
+  (map tr-got '("tr:list-empty" "tr:list-NULL" "tr:list-twice" "tr:list-junk")))
+
+(test-equal "tree: a missing id, as ?parent=, as a move and as a move-children, is 404 not_found; so is a purged project as ?parent="
+  (map (lambda (k) (tr-problem 404 "not_found")) '(1 2 3 4))
+  (map tr-got '("tr:list-missing" "tr:move-missing" "tr:move-children-missing" "tr:list-purged-parent")))
+
+(define (tr-log-lines)
+  (let ((o (obs "trsrv:out")))
+    (if (string? o)
+        (filter (lambda (l) (starts-with? (or (field-of l "path") "") "/v1/nodes")) (request-lines o))
+        '())))
+
+(test-equal "tree log: one line a request, in order, each with its method, path (no query), status and account (`-` for a 428, an If-None-Match 400 and a list's 400, answered before the key)"
+  (map (lambda (e)
+         (list (car e) (cadr e) (caddr e)
+               (cond ((eq? (cadddr e) 'a) (obs "tr:a-id"))
+                     ((eq? (cadddr e) 'b) (obs "tr:b-id"))
+                     (else "-"))))
+       (obs "tr:expect"))
+  (map line-key (tr-log-lines)))
+
+(test-equal "tree log: the run made 77 requests, and the log has a line for each"
+  '(77 77)
+  (list (length (obs "tr:expect")) (length (tr-log-lines))))
+
+(test-equal "tree log: each new route has a line: move and move-children, 200 and 409 and 404 among them"
+  '(#t #t #t #t #t #t)
+  (let ((lines (map line-key (tr-log-lines))) (a (obs "tr:a-id")) (b (obs "tr:b-id")))
+    (map (lambda (l) (and (member l lines) #t))
+         (list (list "POST" (string-append "/v1/nodes/" tr-t "/move") "200" a)
+               (list "POST" (string-append "/v1/nodes/" tr-t "/move") "409" a)
+               (list "POST" (string-append "/v1/nodes/" tr-p "/move") "409" a)
+               (list "POST" (string-append "/v1/nodes/" tr-p "/move-children") "200" a)
+               (list "POST" (string-append "/v1/nodes/" tr-p2 "/move-children") "200" a)
+               (list "POST" (string-append "/v1/nodes/" tr-p2 "/move-children") "404" b)))))
+
+(test-equal "tree log: no title word and no body word anywhere in the server's output or error stream"
+  '(#t #t #f #f #f #f)
+  (let ((o (obs "trsrv:out")) (e (obs "trsrv:err")))
+    (list (and (string? o) (contains? o "path=/v1/nodes/")) (string? e)
+          (and (string? o) (contains? o tr-title-word)) (and (string? o) (contains? o tr-body-word))
+          (and (string? e) (contains? e tr-title-word)) (and (string? e) (contains? e tr-body-word)))))
+
+(test-equal "tree: the file after the server stops: the purged project has no parent and no children; every parent as the story leaves it; revisions; the first account's ops in order, and the moves, the bulk one's in id order"
+  (list '("purged" "active" "active" "active" "active" "active" "active" "active" "active" "trashed" "archived" "active")
+        '(3 2 1 3 2 2 1 2 2 2 3 1)
+        0
+        '("create" "create" "create" "create" "move" "move" "create" "move" "create" "trash"
+          "move" "move" "purge" "create" "create" "create" "create" "trash" "create" "archive" "move" "move" "move")
+        (map (lambda (p) (string-append (tr-hex (car p)) ":" (number->string (cdr p))))
+             (list (cons tr-t 2) (cons tr-n 2) (cons tr-t 3) (cons tr-q 2) (cons tr-m 2) (cons tr-n2 2) (cons tr-n4 3) (cons tr-t2 2))))
+  (let ((d (obs "tr:db")))
+    (if (list? d)
+        (list (car d) (cadr d)
+              (car (list-ref d 4)) (list-ref d 5) (list-ref d 6))
+        d)))
+
+(test-equal "tree: the file's parents: the purged project, the journal, the task, the two projects made top level and the second account's note have none; the notes are under the journal and the second task under its project"
+  (map (lambda (p) (if p (tr-hex p) "")) (list #f tr-j #f #f #f #f #f tr-j #f tr-p2 tr-j #f))
+  (let ((d (obs "tr:db"))) (if (list? d) (list-ref d 3) d)))
 
 (test-end "integration")
 

@@ -2,8 +2,9 @@
 ;;; The errors suite: D7's table of codes, each one's status and message,
 ;;; the &refusal condition, and the answer in RFC 9457's format that
 ;;; problem-res and status-problem-res make (slice 3a, task 3); 3b's codes,
-;;; slice 4's three (its D10), and slice 4b's wrong_state (its L9). A body is
-;;; parsed with jsonparse and compared as a value, never as a string.
+;;; slice 4's three (its D10), slice 4b's wrong_state (its L9), and slice
+;;; 5a's three (its T10). A body is parsed with jsonparse and compared as a
+;;; value, never as a string.
 ;;;
 ;;; Everything that can raise is computed under `attempt`, and a raise comes
 ;;; out as a value the expectation never is.
@@ -34,9 +35,10 @@
 
 (test-begin "errors")
 
-(test-equal "codes: the nineteen, in status order"
+(test-equal "codes: the twenty-two, in status order"
   '(invalid_json invalid_request unauthorized invalid_credentials forbidden not_found
-    method_not_allowed too_many_keys kind_fixed wrong_state precondition_failed
+    method_not_allowed too_many_keys kind_fixed wrong_state invalid_parent would_loop
+    has_children precondition_failed
     payload_too_large unsupported_media_type precondition_required rate_limited internal
     unavailable timeout error)
   error-codes)
@@ -53,8 +55,11 @@
 (define four '(kind_fixed precondition_failed precondition_required))
 ;; Slice 4b's one: wrong_state shares 409 too, so a bare 409 never gets it.
 (define four-b '(wrong_state))
+;; Slice 5a's three: each a 409 too, so a bare 409 gets none of them.
+(define five-a '(invalid_parent would_loop has_children))
 (define old-fixed
-  (filter (lambda (c) (not (or (memq c three-b) (memq c four) (memq c four-b)))) fixed))
+  (filter (lambda (c) (not (or (memq c three-b) (memq c four) (memq c four-b) (memq c five-a))))
+          fixed))
 
 (test-assert "status: every fixed code has one in 400 to 599"
   (for-all (lambda (c) (let ((s (attempt (lambda () (error-status c)))))
@@ -62,7 +67,7 @@
            fixed))
 
 (test-equal "status: the table, code by code"
-  '(400 400 401 401 403 404 405 409 409 409 412 413 415 428 429 500 503 504)
+  '(400 400 401 401 403 404 405 409 409 409 409 409 409 412 413 415 428 429 500 503 504)
   (attempt (lambda () (map error-status fixed))))
 
 (test-equal "status: the fallback has none" #f (attempt (lambda () (error-status 'error))))
@@ -102,6 +107,13 @@
   '((409) ("The node's state does not allow this request."))
   (attempt (lambda () (list (map error-status four-b) (map error-message four-b)))))
 
+(test-equal "slice 5a codes: each a 409, each saying what about the parent or the children refused it"
+  '((409 409 409)
+    ("The parent cannot hold this node."
+     "The move would put a node under itself."
+     "The node still has children."))
+  (attempt (lambda () (list (map error-status five-a) (map error-message five-a)))))
+
 (test-equal "status: unknown code raises" 'assertion
   (raised-kind (lambda () (error-status 'nope))))
 (test-equal "message: unknown code raises" 'assertion
@@ -117,7 +129,7 @@
     internal unavailable timeout)
   (attempt (lambda () (map (lambda (c) (status->code (error-status c))) old-fixed))))
 
-(test-equal "status->code: a bare 401, 409 and 429 are not 3b's codes, nor 4's or 4b's 409"
+(test-equal "status->code: a bare 401, 409 and 429 are not 3b's codes, nor 4's, 4b's or 5a's 409"
   '(unauthorized error error)
   (map status->code '(401 409 429)))
 
@@ -260,6 +272,18 @@
      ("code" . "wrong_state")
      ("detail" . "The node's state does not allow this request.")))
   (problem-summary (lambda () (problem-res 'wrong_state))))
+
+(test-equal "problem-res: each slice 5a code, in the format"
+  '((409 "application/problem+json"
+     (("type" . "about:blank") ("title" . "Conflict") ("status" . 409)
+      ("code" . "invalid_parent") ("detail" . "The parent cannot hold this node.")))
+    (409 "application/problem+json"
+     (("type" . "about:blank") ("title" . "Conflict") ("status" . 409)
+      ("code" . "would_loop") ("detail" . "The move would put a node under itself.")))
+    (409 "application/problem+json"
+     (("type" . "about:blank") ("title" . "Conflict") ("status" . 409)
+      ("code" . "has_children") ("detail" . "The node still has children."))))
+  (map (lambda (c) (problem-summary (lambda () (problem-res c)))) five-a))
 
 (test-equal "status-problem-res: a bare 412 and 428 answer slice 4's codes"
   '("precondition_failed" "precondition_required")

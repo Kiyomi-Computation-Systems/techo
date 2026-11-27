@@ -710,6 +710,44 @@
   (let ((a (ask w1 'GET (string-append node-path "/archive") (list node-key))))
     (if (answer? a) (list (answer-status a) (code-of a) (answer-header a "allow")) a)))
 
+(test-equal "nodes: a POST to a node's move and move-children reach their routes: with no If-Match, 428 precondition_required"
+  '((428 "application/problem+json" "precondition_required")
+    (428 "application/problem+json" "precondition_required"))
+  (list (shape (ask w1 'POST (string-append node-path "/move") (list node-key json-h)
+                    "{\"parent\":null}"))
+        (shape (ask w1 'POST (string-append node-path "/move-children") (list node-key json-h)
+                    "{\"parent\":null}"))))
+
+(test-equal "nodes: GET on a node's move and move-children is 405, its allow POST"
+  '((405 "method_not_allowed" "POST") (405 "method_not_allowed" "POST"))
+  (map (lambda (sub)
+         (let ((a (ask w1 'GET (string-append node-path sub) (list node-key))))
+           (if (answer? a) (list (answer-status a) (code-of a) (answer-header a "allow")) a)))
+       '("/move" "/move-children")))
+
+(test-equal "nodes: a move through make-app: 200, the node under its new parent, ETag \"2\"; a bulk move: 200, its counts"
+  (list (list 201 201) (list 200 "\"2\"" "0190b3a4-5c6d-7e8f-9a0b-000000000010")
+        (list 200 #f '(("moved" . 1) ("left" . 0))))
+  (let* ((w (node-world "move.db"))
+         (project "/v1/nodes/0190b3a4-5c6d-7e8f-9a0b-000000000010")
+         (note "/v1/nodes/0190b3a4-5c6d-7e8f-9a0b-000000000011")
+         (create (lambda (path kind)
+                   (ask w 'PUT path (list node-key json-h (cons "If-None-Match" "*"))
+                        (json->string (list (cons "kind" kind) (cons "title" "t") (cons "body" "b")
+                                            (cons "content_type" "text/plain"))))))
+         (p (create project "project"))
+         (n (create note "note"))
+         (m (ask w 'POST (string-append note "/move") (list node-key json-h (cons "If-Match" "\"1\""))
+                 "{\"parent\":\"0190b3a4-5c6d-7e8f-9a0b-000000000010\"}"))
+         (b (ask w 'POST (string-append project "/move-children")
+                 (list node-key json-h (cons "If-Match" "\"1\"")) "{\"parent\":null}")))
+    (if (for-all answer? (list p n m b))
+        (list (list (answer-status p) (answer-status n))
+              (list (answer-status m) (answer-header m "etag")
+                    (let ((j (answer-json m))) (and (list? j) (assoc "parent" j) (cdr (assoc "parent" j)))))
+              (list (answer-status b) (answer-header b "etag") (answer-json b)))
+        (list p n m b))))
+
 (test-equal "nodes: a stale If-Match is 412 precondition_failed, application/problem+json"
   '(412 "application/problem+json" "precondition_failed")
   (shape (ask w1 'PUT node-path (list node-key json-h (cons "If-Match" "\"7\""))

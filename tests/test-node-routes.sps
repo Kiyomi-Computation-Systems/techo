@@ -1,19 +1,27 @@
 #!r6rs
-;;; The node routes suite: slice 4's routes and slice 4b's lifecycle, (techo
-;;; node-routes), as a router serves them inside the whole stack
-;;; (wrap-server), against real SQLite through the test doorway, raw HTTP
-;;; bytes in through circuit's test host. The rig makes its own router of
-;;; them; tests/test-app.sps holds them joined to make-app.
+;;; The node routes suite: slice 4's routes, slice 4b's lifecycle and slice
+;;; 5a's tree, (techo node-routes), as a router serves them inside the whole
+;;; stack (wrap-server), against real SQLite through the test doorway, raw
+;;; HTTP bytes in through circuit's test host. The rig makes its own router
+;;; of them; tests/test-app.sps holds them joined to make-app.
 ;;;
-;;;   PUT    /v1/nodes/:id                       create (If-None-Match: *) or replace (If-Match)
+;;;   PUT    /v1/nodes/:id                       create (If-None-Match: *), perhaps under a
+;;;                                              parent, or replace (If-Match)
 ;;;   GET    /v1/nodes/:id                       the node, with its ETag
 ;;;   DELETE /v1/nodes/:id                       a purge (If-Match), 204
-;;;   GET    /v1/nodes?state=                    the account's nodes in one state, paged, no bodies
+;;;   GET    /v1/nodes?state=&parent=            the account's nodes in one state, all, a
+;;;                                              node's children or the top level; paged, no bodies
 ;;;   GET    /v1/nodes/:id/revisions             its snapshots, newest first, no bodies
 ;;;   GET    /v1/nodes/:id/revisions/:n          one snapshot, whole
 ;;;   POST   /v1/nodes/:id/revisions/:n/restore  a new revision copied from snapshot n
 ;;;   POST   /v1/nodes/:id/archive, /unarchive, /trash, /untrash
 ;;;                                              a state change (If-Match), the node without its body
+;;;   POST   /v1/nodes/:id/move                  a move (If-Match), the node without its body
+;;;   POST   /v1/nodes/:id/move-children         a bulk move of its children (If-Match), counts
+;;;
+;;; Every node in an answer has its parent after its state: an id, or null.
+;;; The tree's tests end by checking the whole table is a forest
+;;; (forest-faults), by rules written out here, not read from the code.
 ;;;
 ;;; Each test gets a file of its own (a rig), seeded through the store's own
 ;;; procedures in a write job: account A (alice) with key 1, account B (bob)
@@ -142,7 +150,7 @@
 ;; Node N for OWNER at revision 1, made at 5000, straight through the store.
 (define (seed-node! g owner n kind)
   (run-write (rig-store g)
-             (lambda (tx) (insert-node! tx (nid n) owner kind "seed" "seed body" "text/plain" "{}" 5000))))
+             (lambda (tx) (insert-node! tx (nid n) owner kind "seed" "seed body" "text/plain" "{}" #f 5000))))
 
 ;; tables : Rig -> (List ...)
 ;; The three tables whole, and every key's id and last_used.
@@ -253,6 +261,27 @@
 
 (define (get! g who path) ((rig-call g) 'GET path (list (key-h who))))
 
+;; The two moves (slice 5a), each a POST with a body.
+(define (move-path-of path) (string-append path "/move"))
+(define (move-children-path-of path) (string-append path "/move-children"))
+(define (move-path n) (move-path-of (node-path n)))
+(define (move-children-path n) (move-children-path-of (node-path n)))
+
+;; move-body : (U Natural #f) -> String     {"parent": P's id}, or {"parent": null} for #f
+(define (move-body p)
+  (json->string (list (cons "parent" (if p (nid-text p) 'null)))))
+
+;; move! : Rig Natural Natural Natural (U Natural #f) -> Answer
+;; WHO's move of node N, at If-Match REV, under P (#f: the top level).
+(define (move! g who n rev p)
+  ((rig-call g) 'POST (move-path n) (list (key-h who) json-type (match-h rev)) (move-body p)))
+
+;; move-children! : Rig Natural Natural Natural (U Natural #f) -> Answer
+;; WHO's bulk move of node N's children, at N's If-Match REV, under P.
+(define (move-children! g who n rev p)
+  ((rig-call g) 'POST (move-children-path n) (list (key-h who) json-type (match-h rev))
+                (move-body p)))
+
 ;;; What answers look like
 
 ;; status+code : Answer -> (List Natural Any)
@@ -265,10 +294,12 @@
 (define (names j) (map car j))
 
 ;; node-json-in : String Natural String String String String Natural Natural Natural -> Alist
-;; A node's answer in STATE: id, kind, state, title, body, content_type,
-;; props, revision, created, updated, in that order.
+;; A node's answer in STATE, at the top level: id, kind, state, parent
+;; (null), title, body, content_type, props, revision, created, updated, in
+;; that order. `under` names another parent.
 (define (node-json-in state n kind title body type revision created updated)
-  (list (cons "id" (nid-text n)) (cons "kind" kind) (cons "state" state) (cons "title" title)
+  (list (cons "id" (nid-text n)) (cons "kind" kind) (cons "state" state) (cons "parent" 'null)
+        (cons "title" title)
         (cons "body" body) (cons "content_type" type) (cons "props" '()) (cons "revision" revision)
         (cons "created" created) (cons "updated" updated)))
 
@@ -278,9 +309,17 @@
 ;; item-json-in : as node-json-in, without the body: a list's item, and a
 ;; state change's answer
 (define (item-json-in state n kind title type revision created updated)
-  (list (cons "id" (nid-text n)) (cons "kind" kind) (cons "state" state) (cons "title" title)
+  (list (cons "id" (nid-text n)) (cons "kind" kind) (cons "state" state) (cons "parent" 'null)
+        (cons "title" title)
         (cons "content_type" type) (cons "props" '()) (cons "revision" revision)
         (cons "created" created) (cons "updated" updated)))
+
+;; parent-text : (U Natural #f) -> (U String 'null)     node P's id, or JSON null
+(define (parent-text p) (if p (nid-text p) 'null))
+
+;; under : Alist (U Natural #f) -> Alist     J with P as its parent member
+(define (under j p)
+  (map (lambda (m) (if (equal? (car m) "parent") (cons "parent" (parent-text p)) m)) j))
 
 ;; item-json : as item-json-in, for an active node
 (define (item-json . args) (apply item-json-in "active" args))
@@ -313,10 +352,12 @@
     ((get-revision) (list 'GET (revision-path 1 1) '() #f))
     ((restore) (list 'POST (restore-path 1 1) (list (match-h 1)) #f))
     ((archive unarchive trash untrash purge) (event-request which 1 (list (match-h 1))))
+    ((move) (list 'POST (move-path 1) (list json-type (match-h 1)) (move-body #f)))
+    ((move-children) (list 'POST (move-children-path 1) (list json-type (match-h 1)) (move-body #f)))
     (else (assertion-violation 'route-request "no such route" which))))
 
 (define route-names (append '(list-nodes get-node create replace list-revisions get-revision restore)
-                            events))
+                            events '(move move-children)))
 
 ;; send : Rig Symbol (Listof Header) -> Answer     the route, with KEY-HEADERS first
 (define (send g which key-headers)
@@ -366,9 +407,13 @@
       ((restore) (list 'POST (string-append p "/revisions/1/restore") (list (key-h 1) (match-h 1)) #f))
       ((archive unarchive trash untrash purge)
        (let ((t (event-target which p))) (list (car t) (cdr t) (list (key-h 1) (match-h 1)) #f)))
+      ((move) (list 'POST (move-path-of p) (list (key-h 1) json-type (match-h 1)) (move-body #f)))
+      ((move-children)
+       (list 'POST (move-children-path-of p) (list (key-h 1) json-type (match-h 1)) (move-body #f)))
       (else (assertion-violation 'id-request "no such route" which)))))
 
-(define id-routes (append '(get-node create replace list-revisions get-revision restore) events))
+(define id-routes (append '(get-node create replace list-revisions get-revision restore) events
+                          '(move move-children)))
 
 (define (send-id g which text)
   (let ((r (id-request which text)))
@@ -440,13 +485,19 @@
     ((get-revision) (list 'GET (revision-path n 1) (list (key-h 1)) #f))
     ((restore) (list 'POST (restore-path n 1) (list (key-h 1) (match-h 1)) #f))
     ((archive unarchive trash untrash purge) (event-request which n (list (key-h 1) (match-h 1))))
+    ((move) (list 'POST (move-path n) (list (key-h 1) json-type (match-h 1)) (move-body #f)))
+    ((move-children)
+     (list 'POST (move-children-path n) (list (key-h 1) json-type (match-h 1)) (move-body #f)))
     (else (assertion-violation 'missing-request "no such route" which))))
+
+;; Routes with a body run two jobs: the key's read job, then the write job.
+(define body-routes '(replace move move-children))
 
 (for-each
  (lambda (which)
    (test-equal (string-append "owner: " (symbol->string which)
-                              " on B's node and on a missing one: the same 404, one job each (a PUT's two), B's node untouched")
-     (list '(404 "not_found") '(404 "not_found") #t #t (if (eq? which 'replace) 4 2) #t)
+                              " on B's node and on a missing one: the same 404, one job each (a PUT's and a move's two), B's node untouched")
+     (list '(404 "not_found") '(404 "not_found") #t #t (if (memq which body-routes) 4 2) #t)
      (attempt
       (lambda ()
         (with-rig "other.db"
@@ -463,7 +514,7 @@
                     ((rig-jobs g))
                     (equal? (map (lambda (t) (list-ref before t)) '(0 1 2))
                             (let ((after (tables g))) (map (lambda (t) (list-ref after t)) '(0 1 2))))))))))))
- (append '(get-node replace list-revisions get-revision restore) events))
+ (append '(get-node replace list-revisions get-revision restore) events '(move move-children)))
 
 (test-equal "owner: A's list holds A's nodes and never B's"
   (list (nid-text 1) (nid-text 3))
@@ -1139,7 +1190,7 @@
        (lambda (g)
          (run-write (rig-store g)
                     (lambda (tx) (insert-node! tx (nid 1) acct-a "note" "props-title" "props-body"
-                                               "text/plain" "{\"a\":1}" 5000)))
+                                               "text/plain" "{\"a\":1}" #f 5000)))
          (let-values (((a text) (capture-output (lambda () (get! g 1 (node-path 1))))))
            (list (status+code a) (contains? text "handler-failed")
                  (contains? text "props-title") (contains? text "props-body")
@@ -1155,11 +1206,11 @@
                (let loop ((n 10))
                  (when (<= n 114)
                    (insert-node! tx (nid n) acct-a "note" (string-append "n" (number->string n))
-                                 "body" "text/plain" "{}" (+ 6000 n))
+                                 "body" "text/plain" "{}" #f (+ 6000 n))
                    (loop (+ n 1))))
                (let loop ((n 200))
                  (when (<= n 204)
-                   (insert-node! tx (nid n) acct-b "note" "b" "body" "text/plain" "{}" 7000)
+                   (insert-node! tx (nid n) acct-b "note" "b" "body" "text/plain" "{}" #f 7000)
                    (loop (+ n 1)))))))
 
 ;; page : Rig String -> (List Natural (U String 'null) (U String #f))
@@ -1288,7 +1339,7 @@
 (define (five-revisions! g)
   (run-write (rig-store g)
              (lambda (tx)
-               (insert-node! tx (nid 1) acct-a "note" "r1" "body 1" "text/plain" "{}" 100)
+               (insert-node! tx (nid 1) acct-a "note" "r1" "body 1" "text/plain" "{}" #f 100)
                (let loop ((r 1))
                  (when (< r 5)
                    (write-node! tx (nid 1) acct-a r (string-append "r" (number->string (+ r 1)))
@@ -1644,7 +1695,7 @@
 (define (seed-state! g owner n kind state)
   (run-write (rig-store g)
              (lambda (tx)
-               (insert-node! tx (nid n) owner kind "seed" "seed body" "text/plain" "{}" 5000)
+               (insert-node! tx (nid n) owner kind "seed" "seed body" "text/plain" "{}" #f 5000)
                (write-node! tx (nid n) owner 1 "seed 2" "seed body 2" "text/markdown" "{}" "update" 5500)
                (case state
                  ((active) 2)
@@ -2117,7 +2168,7 @@
                     (lambda (tx)
                       (let loop ((n 10))
                         (when (<= n 25)
-                          (insert-node! tx (nid n) acct-a "note" "t" "b" "text/plain" "{}" 5000)
+                          (insert-node! tx (nid n) acct-a "note" "t" "b" "text/plain" "{}" #f 5000)
                           (when (even? n) (set-node-state! tx (nid n) acct-a 1 "archived" "archive" 5100))
                           (loop (+ n 1))))))
          (list (page g "?state=archived&limit=3")
@@ -2258,7 +2309,7 @@
 
 ;; req-like? : Any -> Boolean     a request, or a member of a parsed JSON object
 (define (req-like? x)
-  (or (req? x) (and (pair? x) (member (car x) '("title" "body" "kind" "content_type")) #t)))
+  (or (req? x) (and (pair? x) (member (car x) '("title" "body" "kind" "content_type" "parent")) #t)))
 
 (test-equal "job: a create's job holds its content, and reaches no request and no parsed JSON"
   '(201 #t #t #f)
@@ -2327,7 +2378,7 @@
        (lambda (g)
          (run-write (rig-store g)
                     (lambda (tx) (insert-node! tx (nid 1) acct-a "note" "secret-title-4" "secret-body-4"
-                                               "text/plain" "{}" 5000)))
+                                               "text/plain" "{}" #f 5000)))
          (let* ((as (in-order (lambda (step) (lifecycle! g 1 1 (car step) (cdr step)))
                               '((archive . 1) (unarchive . 2) (trash . 3) (untrash . 4) (trash . 5)
                                 (purge . 6))))
@@ -2349,6 +2400,1304 @@
          (let* ((a (lifecycle! g 1 1 'archive 1))
                 (b (lifecycle! g 1 1 'unarchive 2)))
            (map (lambda (x) (list (answer-status x) (contains? (answer-body x) "num"))) (list a b))))))))
+
+;;; Slice 5a: the tree
+
+;; create-in! : Rig Natural Natural String (U Natural #f 'text String) -> Answer
+;; WHO's create of node N, of KIND, title "t", body "b", text/plain, under
+;; P: a node's number, #f for JSON null, or a string sent as it is.
+(define (create-in! g who n kind p)
+  (put! g n (list (key-h who) json-type none-match)
+        (json->string (list (cons "kind" kind) (cons "title" "t") (cons "body" "b")
+                            (cons "content_type" "text/plain")
+                            (cons "parent" (cond ((string? p) p) (p (nid-text p)) (else 'null)))))))
+
+;; seed-in! : Rig Bytevector Natural String (U Natural #f) -> Void
+;; Node N for OWNER, of KIND, under P (#f: the top level), at revision 1,
+;; made at 5000, through the store, which judges nothing.
+(define (seed-in! g owner n kind p)
+  (run-write (rig-store g)
+             (lambda (tx) (insert-node! tx (nid n) owner kind "seed" "seed body" "text/plain" "{}"
+                                        (and p (nid p)) 5000))))
+
+;; set-state-at! : Rig Bytevector Natural Natural String String -> Void
+;; Node N, at revision REV, moved to STATE by OP at 6000, through the store.
+(define (set-state-at! g owner n rev state op)
+  (run-write (rig-store g) (lambda (tx) (set-node-state! tx (nid n) owner rev state op 6000))))
+
+(define (trashed-at! g owner n rev) (set-state-at! g owner n rev "trashed" "trash"))
+(define (archived-at! g owner n rev) (set-state-at! g owner n rev "archived" "archive"))
+
+;; purged-at! : Rig Bytevector Natural Natural -> Void
+;; Node N, active at revision REV, trashed and purged through the store: at
+;; REV + 2.
+(define (purged-at! g owner n rev)
+  (run-write (rig-store g)
+             (lambda (tx)
+               (set-node-state! tx (nid n) owner rev "trashed" "trash" 6000)
+               (purge-node! tx (nid n) owner (+ rev 1) 6100))))
+
+;; parent-of : Rig Natural -> (U Bytevector #f)     node N's stored parent
+(define (parent-of g n)
+  (run-read (rig-store g)
+            (lambda (tx)
+              (let ((r (tx-query-row tx "SELECT parent FROM nodes WHERE id = ?" (nid n))))
+                (and r (let ((v (vector-ref r 0))) (and (bytevector? v) v)))))))
+
+;; row-of : Rig Natural -> (U (Vectorof Any) #f)     node N's whole row
+(define (row-of g n)
+  (run-read (rig-store g) (lambda (tx) (tx-query-row tx "SELECT * FROM nodes WHERE id = ?" (nid n)))))
+
+;; holds-kind? : String String -> Boolean
+;; T2, written out here and not read from (techo nodes): a Project holds
+;; every kind, a Journal only Notes, the others nothing.
+(define (holds-kind? parent child)
+  (or (string=? parent "project") (and (string=? parent "journal") (string=? child "note"))))
+
+;; forest-faults : Rig -> (Listof (List Symbol Bytevector))
+;; What breaks the forest (P1, P2, P3, P8) in the whole nodes table, each
+;; as a fault and the row's id: a purged row with a parent; a parent that
+;; is no row, another owner's, purged, or of a kind that may not hold the
+;; row's; a row whose walk up does not reach a root within the count of
+;; rows. '() for a forest.
+(define (forest-faults g)
+  (let* ((rows (run-read (rig-store g)
+                         (lambda (tx)
+                           (map vector->list
+                                (tx-query tx "SELECT id, owner, kind, state, parent FROM nodes ORDER BY num")))))
+         (by-id (make-hashtable equal-hash equal?))
+         (count (length rows))
+         (parent (lambda (r) (let ((p (list-ref r 4))) (and (bytevector? p) p))))
+         (state (lambda (r) (list-ref r 3))))
+    (for-each (lambda (r) (hashtable-set! by-id (car r) r)) rows)
+    (let loop ((rs rows) (faults '()))
+      (if (null? rs)
+          (reverse faults)
+          (let* ((r (car rs))
+                 (p (parent r))
+                 (pr (and p (hashtable-ref by-id p #f)))
+                 (fault (cond ((and p (string=? (state r) "purged")) 'purged-has-parent)
+                              ((and p (not pr)) 'parent-no-row)
+                              ((and pr (not (bytevector=? (cadr pr) (cadr r)))) 'parent-other-owner)
+                              ((and pr (string=? (state pr) "purged")) 'parent-purged)
+                              ((and pr (not (holds-kind? (caddr pr) (caddr r)))) 'parent-wrong-kind)
+                              ((not (let walk ((x r) (steps 0))
+                                      (let ((q (parent x)))
+                                        (cond ((not q) #t)
+                                              ((>= steps count) #f)
+                                              (else (let ((qr (hashtable-ref by-id q #f)))
+                                                      (and qr (walk qr (+ steps 1)))))))))
+                               'no-root)
+                              (else #f))))
+            (loop (cdr rs) (if fault (cons (list fault (car r)) faults) faults)))))))
+
+;; new-changes : (Listof (List ...)) (Listof (List ...)) -> (Listof (List ...))
+;; The change rows in AFTER past BEFORE's, each seq counted from BEFORE's last.
+(define (new-changes before after)
+  (let ((last (if (null? before) 0 (car (car (reverse before))))))
+    (map (lambda (r) (cons (- (car r) last) (cdr r))) (list-tail after (length before)))))
+
+(define (children-query p) (string-append "/v1/nodes?parent=" (nid-text p)))
+
+;;; A create with a parent (T3)
+
+(test-equal "tree: a create in a Project: 201; the answer and the GET name the parent after the state; the row holds it; the Project's list holds the node; the forest holds"
+  (list 201 (under (node-json 2 "note" "t" "b" "text/plain" 1 now0 now0) 1)
+        (under (node-json 2 "note" "t" "b" "text/plain" 1 now0 now0) 1)
+        (nid 1) (list (nid-text 2)) '())
+  (attempt
+   (lambda ()
+     (with-rig "tree-create.db"
+       (lambda (g)
+         (seed-in! g acct-a 1 "project" #f)
+         (let* ((a (create-in! g 1 2 "note" 1))
+                (r (get! g 1 (node-path 2)))
+                (l (get! g 1 (children-query 1))))
+           (list (answer-status a) (answer-json a) (answer-json r) (parent-of g 2)
+                 (map id-of (items l)) (forest-faults g))))))))
+
+;; create-cases : (Listof (List String String Symbol String (U 201 String)))
+;; The parent's kind and state, the kind made under it, and 201 or the 409's code.
+(define create-cases
+  '(("a Note in a Journal" "journal" active "note" 201)
+    ("a Task in a Journal" "journal" active "task" "invalid_parent")
+    ("a Journal in a Journal" "journal" active "journal" "invalid_parent")
+    ("a Project in a Journal" "journal" active "project" "invalid_parent")
+    ("a Contact in a Journal" "journal" active "contact" "invalid_parent")
+    ("a Project in a Project" "project" active "project" 201)
+    ("a Journal in a Project" "project" active "journal" 201)
+    ("a Task in a Project" "project" active "task" 201)
+    ("a Contact in a Project" "project" active "contact" 201)
+    ("a Note in a Note" "note" active "note" "invalid_parent")
+    ("a Note in a Task" "task" active "note" "invalid_parent")
+    ("a Note in a Contact" "contact" active "note" "invalid_parent")
+    ("a Note in a trashed Project" "project" trashed "note" "invalid_parent")
+    ("a Note in a trashed Journal" "journal" trashed "note" "invalid_parent")
+    ("a Note in an archived Project" "project" archived "note" 201)
+    ("a Note in an archived Journal" "journal" archived "note" 201)))
+
+(for-each
+ (lambda (cc)
+   (let ((what (car cc)) (kind (cadr cc)) (state (caddr cc)) (child (cadddr cc))
+         (answer (car (cddddr cc))))
+     (test-equal (string-append "tree: a create of " what ": "
+                                (if (eqv? answer 201)
+                                    "201, the row under it, last_used set"
+                                    (string-append "409 " answer ", nothing written, last_used null")))
+       (if (eqv? answer 201)
+           (list 201 'absent (nid-text 1) (nid 1) #f now0 '())
+           (list 409 answer 'absent #f #t #f '()))
+       (attempt
+        (lambda ()
+          (with-rig "tree-create-case.db"
+            (lambda (g)
+              (seed-in! g acct-a 1 kind #f)
+              (case state
+                ((trashed) (trashed-at! g acct-a 1 1))
+                ((archived) (archived-at! g acct-a 1 1))
+                (else #f))
+              (let* ((before (tables g))
+                     (a (create-in! g 1 2 child 1))
+                     (after (tables g)))
+                (list (answer-status a) (member-of (answer-json a) "code")
+                      (member-of (answer-json a) "parent") (parent-of g 2)
+                      (equal? before after) (last-used g 1) (forest-faults g))))))))))
+ create-cases)
+
+(test-equal "tree: a create under a missing id, under B's Project and under A's purged Project: 409 invalid_parent each, the same bytes and headers (P12), nothing written, last_used null"
+  '((409 "invalid_parent") (409 "invalid_parent") (409 "invalid_parent") #t #t #t #t #t #f ())
+  (attempt
+   (lambda ()
+     (with-rig "tree-create-missing.db"
+       (lambda (g)
+         (seed-in! g acct-b 20 "project" #f)
+         (seed-in! g acct-a 8 "project" #f)
+         (purged-at! g acct-a 8 1)
+         (let* ((before (tables g))
+                (a (create-in! g 1 2 "note" 99))
+                (b (create-in! g 1 3 "note" 20))
+                (c (create-in! g 1 4 "note" 8)))
+           (list (status+code a) (status+code b) (status+code c)
+                 (equal? (answer-body a) (answer-body b)) (equal? (answer-body a) (answer-body c))
+                 (equal? (answer-headers a) (answer-headers b))
+                 (equal? (answer-headers a) (answer-headers c))
+                 (equal? before (tables g)) (last-used g 1) (forest-faults g))))))))
+
+(test-equal "tree: a create with \"parent\": null is at the top level, as one with no parent; a parent in capitals is the same id, answered in lower case"
+  (list (list 201 'null #f) (list 201 'null #f) (list 201 (nid-text 1) (nid 1)))
+  (attempt
+   (lambda ()
+     (with-rig "tree-create-null.db"
+       (lambda (g)
+         (seed-in! g acct-a 1 "project" #f)
+         (let* ((a (create-in! g 1 2 "note" #f))
+                (b (create! g 1 3 "note" "t" "b" "text/plain"))
+                (c (create-in! g 1 4 "note" (string-upcase (nid-text 1)))))
+           (map (lambda (x n) (list (answer-status x) (member-of (answer-json x) "parent")
+                                    (parent-of g n)))
+                (list a b c) '(2 3 4))))))))
+
+(test-equal "tree: a create on an id in use, A's or B's, under a missing id, a Note, a trashed Project or itself, is 412 precondition_failed: stale before the parent; nothing written"
+  '((412 "precondition_failed") (412 "precondition_failed") (412 "precondition_failed")
+    (412 "precondition_failed") (412 "precondition_failed") #t)
+  (attempt
+   (lambda ()
+     (with-rig "tree-create-used.db"
+       (lambda (g)
+         (seed-in! g acct-a 2 "project" #f)
+         (seed-in! g acct-a 6 "note" #f)
+         (seed-in! g acct-a 7 "project" #f)
+         (trashed-at! g acct-a 7 1)
+         (seed-in! g acct-b 20 "note" #f)
+         (let* ((before (tables g))
+                (a (create-in! g 1 2 "note" 99))
+                (b (create-in! g 1 2 "note" 6))
+                (c (create-in! g 1 2 "note" 7))
+                (d (create-in! g 1 2 "note" 2))
+                (e (create-in! g 1 20 "note" 6)))
+           (append (map status+code (list a b c d e)) (list (equal? before (tables g))))))))))
+
+(test-equal "tree: a create with a parent that is no id is 400 before any write job: a number, false, {}, a v4 id; and a replace naming parent, even its own, is 400"
+  '((400 "invalid_request") (400 "invalid_request") (400 "invalid_request") (400 "invalid_request")
+    (400 "invalid_request") 5 0)
+  (attempt
+   (lambda ()
+     (with-rig "tree-create-bad.db"
+       (lambda (g)
+         (seed-in! g acct-a 1 "note" #f)
+         (let* ((send (lambda (n v)
+                        (put! g n (list (key-h 1) json-type none-match)
+                              (string-append "{\"kind\":\"note\",\"title\":\"t\",\"body\":\"b\","
+                                             "\"content_type\":\"text/plain\",\"parent\":" v "}"))))
+                (a (send 2 "5"))
+                (b (send 3 "false"))
+                (c (send 4 "{}"))
+                (d (send 5 (string-append "\"" v4-text "\"")))
+                (e (put! g 1 (list (key-h 1) json-type (match-h 1))
+                         "{\"title\":\"t\",\"body\":\"b\",\"content_type\":\"text/plain\",\"parent\":null}")))
+           (append (map status+code (list a b c d e)) (list ((rig-reads g)) ((rig-writes g))))))))))
+
+;;; A move (T4, P4)
+
+(test-equal "move: under a Project, to the top level, and back: 200 each, the ETag the new revision, the answer's parent and the row's; the forest holds"
+  (list (list 200 (tag 2) (nid-text 1) (nid 1))
+        (list 200 (tag 3) 'null #f)
+        (list 200 (tag 4) (nid-text 1) (nid 1))
+        '())
+  (attempt
+   (lambda ()
+     (with-rig "move.db"
+       (lambda (g)
+         (seed-in! g acct-a 1 "project" #f)
+         (seed-in! g acct-a 2 "note" #f)
+         (let* ((shown (lambda (a) (list (answer-status a) (answer-header a "etag")
+                                         (member-of (answer-json a) "parent") (parent-of g 2))))
+                (a (move! g 1 2 1 1))
+                (sa (shown a))
+                (b (move! g 1 2 2 #f))
+                (sb (shown b))
+                (c (move! g 1 2 3 1))
+                (sc (shown c)))
+           (list sa sb sc (forest-faults g))))))))
+
+(test-equal "move: revision + 1, one change row move, no snapshot; title, body, content type, props, kind, created, state and author as they were, updated the clock; the answer is the GET's node but its body, with no body member and no num"
+  (list 200 (tag 3) "application/json" #t 'absent #t (list (nid-text 1) 3 now0) #t
+        (list (list 1 (nid 2) 3 "move" now0)) (list 3 "note" acct-a 5000 now0) #f #f)
+  (attempt
+   (lambda ()
+     (with-rig "move-what.db"
+       (lambda (g)
+         (seed-in! g acct-a 1 "project" #f)
+         (seed-state! g acct-a 2 "note" 'active)
+         (let* ((before (answer-json (get! g 1 (node-path 2))))
+                (snaps (snapshot-rows g 2))
+                (changes (change-rows g acct-a))
+                (a (move! g 1 2 2 1))
+                (after (answer-json (get! g 1 (node-path 2))))
+                (row (stored g 2))
+                (same '("id" "kind" "state" "title" "body" "content_type" "props" "created")))
+           (list (answer-status a) (answer-header a "etag") (answer-header a "content-type")
+                 (equal? (answer-json a) (but-body after))
+                 (member-of (answer-json a) "body")
+                 (equal? (members before same) (members after same))
+                 (map (lambda (k) (member-of after k)) '("parent" "revision" "updated"))
+                 (equal? snaps (snapshot-rows g 2))
+                 (new-changes changes (change-rows g acct-a))
+                 (list (car row) (cadr row) (caddr row) (cadddr row) (list-ref row 4))
+                 (contains? (answer-body a) "seed body") (contains? (answer-body a) "num"))))))))
+
+(test-equal "move: to the parent it already has is a move: a new revision and a change row move, under a Project and at the top level"
+  (list (list 200 (tag 2) (nid-text 1)) (list 200 (tag 2) 'null)
+        (list (list 1 (nid 2) 2 "move" now0) (list 2 (nid 3) 2 "move" now0)))
+  (attempt
+   (lambda ()
+     (with-rig "move-same.db"
+       (lambda (g)
+         (seed-in! g acct-a 1 "project" #f)
+         (seed-in! g acct-a 2 "note" 1)
+         (seed-in! g acct-a 3 "note" #f)
+         (let* ((changes (change-rows g acct-a))
+                (a (move! g 1 2 1 1))
+                (b (move! g 1 3 1 #f)))
+           (list (list (answer-status a) (answer-header a "etag") (member-of (answer-json a) "parent"))
+                 (list (answer-status b) (answer-header b "etag") (member-of (answer-json b) "parent"))
+                 (new-changes changes (change-rows g acct-a)))))))))
+
+(test-equal "move: the id and the parent in capitals are the same ids; the answer is in lower case"
+  (list 200 (nid-text 2) (nid-text 1) (nid 1))
+  (attempt
+   (lambda ()
+     (with-rig "move-upper.db"
+       (lambda (g)
+         (seed-in! g acct-a 1 "project" #f)
+         (seed-in! g acct-a 2 "note" #f)
+         (let ((a ((rig-call g) 'POST (move-path-of (node-path-of (string-upcase (nid-text 2))))
+                                (list (key-h 1) json-type (match-h 1))
+                                (json->string (list (cons "parent" (string-upcase (nid-text 1))))))))
+           (list (answer-status a) (id-of (answer-json a)) (member-of (answer-json a) "parent")
+                 (parent-of g 2))))))))
+
+;; tree! : Rig -> Void
+;; A's tree, through the store, each node at revision 1 unless said:
+;;   1 Project, at the top: 2 Project in it, 3 Project in 2, 4 Project in 3
+;;   5 Journal, 6 Note, 9 Task, at the top
+;;   7 Project, at the top, trashed (revision 2)
+;;   8 Project, at the top, purged (revision 3)
+;; and B's 20, a Project at the top.
+(define (tree! g)
+  (seed-in! g acct-a 1 "project" #f)
+  (seed-in! g acct-a 2 "project" 1)
+  (seed-in! g acct-a 3 "project" 2)
+  (seed-in! g acct-a 4 "project" 3)
+  (seed-in! g acct-a 5 "journal" #f)
+  (seed-in! g acct-a 6 "note" #f)
+  (seed-in! g acct-a 7 "project" #f)
+  (trashed-at! g acct-a 7 1)
+  (seed-in! g acct-a 8 "project" #f)
+  (purged-at! g acct-a 8 1)
+  (seed-in! g acct-a 9 "task" #f)
+  (seed-in! g acct-b 20 "project" #f))
+
+;; move-verdicts : (Listof (List String Natural Natural String))
+;; In tree!: the node moved (each at revision 1), the parent, and the 409's
+;; code (P17).
+(define move-verdicts
+  '(("a Note under a missing id" 6 99 "invalid_parent")
+    ("a Note under B's Project" 6 20 "invalid_parent")
+    ("a Note under A's purged Project" 6 8 "invalid_parent")
+    ("a Note under a trashed Project" 6 7 "invalid_parent")
+    ("a Task under a Journal" 9 5 "invalid_parent")
+    ("a Project under a Journal" 2 5 "invalid_parent")
+    ("a Note under a Task" 6 9 "invalid_parent")
+    ("a Task under a Note" 9 6 "invalid_parent")
+    ("a Note under itself" 6 6 "would_loop")
+    ("a Project under itself" 1 1 "would_loop")
+    ("a Journal under itself, which may not hold a Journal" 5 5 "would_loop")
+    ("a Project under its child" 1 2 "would_loop")
+    ("a Project under its deepest descendant" 1 4 "would_loop")
+    ("a Project under its child, from the middle" 2 3 "would_loop")))
+
+(for-each
+ (lambda (v)
+   (test-equal (string-append "move: " (car v) ": 409 " (cadddr v)
+                              ", in its write job; nodes, revisions, changes and last_used as they were (P5)")
+     (list (list 409 (cadddr v)) '(read write) #t #f '())
+     (attempt
+      (lambda ()
+        (with-rig "move-verdict.db"
+          (lambda (g)
+            (tree! g)
+            (let* ((before (tables g))
+                   (a (move! g 1 (cadr v) 1 (caddr v))))
+              (list (status+code a) ((rig-order g)) (equal? before (tables g)) (last-used g 1)
+                    (forest-faults g)))))))))
+ move-verdicts)
+
+(test-equal "move: under a missing id, under B's Project and under A's purged Project, the same bytes and headers (P12)"
+  '((409 "invalid_parent") #t #t #t #t)
+  (attempt
+   (lambda ()
+     (with-rig "move-same-bytes.db"
+       (lambda (g)
+         (tree! g)
+         (let* ((a (move! g 1 6 1 99))
+                (b (move! g 1 6 1 20))
+                (c (move! g 1 6 1 8)))
+           (list (status+code a)
+                 (equal? (answer-body a) (answer-body b)) (equal? (answer-body a) (answer-body c))
+                 (equal? (answer-headers a) (answer-headers b))
+                 (equal? (answer-headers a) (answer-headers c)))))))))
+
+;; chain! : Rig Natural Natural -> Void
+;; A's Projects FROM to TO, through the store in one job, each under the
+;; one before and FROM at the top: node FROM + k has k ancestors.
+(define (chain! g from to)
+  (run-write (rig-store g)
+             (lambda (tx)
+               (let loop ((n from))
+                 (when (<= n to)
+                   (insert-node! tx (nid n) acct-a "project" "c" "b" "text/plain" "{}"
+                                 (and (> n from) (nid (- n 1))) 5000)
+                   (loop (+ n 1)))))))
+
+(test-equal "depth: a parent with 63 ancestors takes a create and a move; one with 64 refuses both, 409 invalid_parent (P18); the forest holds"
+  (list 201 (nid 163) '(409 "invalid_parent") 200 (nid 163) '(409 "invalid_parent") #f '())
+  (attempt
+   (lambda ()
+     (with-rig "depth.db"
+       (lambda (g)
+         (chain! g 100 163)
+         (seed-in! g acct-a 300 "note" #f)
+         (seed-in! g acct-a 301 "note" #f)
+         (let* ((a (create-in! g 1 200 "project" 163))
+                (b (create-in! g 1 201 "note" 200))
+                (c (move! g 1 300 1 163))
+                (d (move! g 1 301 1 200)))
+           (list (answer-status a) (parent-of g 200) (status+code b)
+                 (answer-status c) (parent-of g 300) (status+code d) (parent-of g 301)
+                 (forest-faults g))))))))
+
+(test-equal "depth: a loop above the new parent's 64th ancestor is invalid_parent (too deep), not would_loop; one at its 64th is would_loop"
+  '((409 "invalid_parent") (409 "would_loop") #t)
+  (attempt
+   (lambda ()
+     (with-rig "depth-loop.db"
+       (lambda (g)
+         (chain! g 100 165)
+         (let* ((before (tables g))
+                (a (move! g 1 100 1 165))
+                (b (move! g 1 100 1 164)))
+           (list (status+code a) (status+code b) (equal? before (tables g)))))))))
+
+(test-equal "move: order (P6): a stale If-Match is 412 before a trashed node's wrong_state, before a missing parent's invalid_parent and before a loop's would_loop; a trashed node under a missing parent is wrong_state; nothing written"
+  '((412 "precondition_failed") (412 "precondition_failed") (412 "precondition_failed")
+    (409 "wrong_state") (409 "wrong_state") #t #f)
+  (attempt
+   (lambda ()
+     (with-rig "move-order.db"
+       (lambda (g)
+         (seed-in! g acct-a 1 "project" #f)
+         (seed-in! g acct-a 2 "note" #f)
+         (trashed-at! g acct-a 2 1)
+         (seed-in! g acct-a 3 "note" #f)
+         (let* ((before (tables g))
+                (a (move! g 1 2 1 1))
+                (b (move! g 1 3 2 99))
+                (c (move! g 1 3 2 3))
+                (d (move! g 1 2 2 99))
+                (e (move! g 1 2 2 1)))
+           (list (status+code a) (status+code b) (status+code c) (status+code d) (status+code e)
+                 (equal? before (tables g)) (last-used g 1))))))))
+
+(test-equal "move: an archived node moves and stays archived, into an archived Project too; an archived Journal takes a Note (T8)"
+  (list (list 200 "archived" (nid-text 1) 3) (list 200 "active" (nid-text 5) 2) "archived" '())
+  (attempt
+   (lambda ()
+     (with-rig "move-archived.db"
+       (lambda (g)
+         (seed-in! g acct-a 1 "project" #f)
+         (archived-at! g acct-a 1 1)
+         (seed-in! g acct-a 2 "note" #f)
+         (archived-at! g acct-a 2 1)
+         (seed-in! g acct-a 5 "journal" #f)
+         (archived-at! g acct-a 5 1)
+         (seed-in! g acct-a 6 "note" #f)
+         (let* ((shown (lambda (a) (map (lambda (k) (member-of (answer-json a) k))
+                                        '("state" "parent" "revision"))))
+                (a (move! g 1 2 2 1))
+                (b (move! g 1 6 1 5)))
+           (list (cons (answer-status a) (shown a)) (cons (answer-status b) (shown b))
+                 (state-of g 2) (forest-faults g))))))))
+
+(test-equal "move: a missing node, B's node and A's purged node are 404 not_found in the write job, the same bytes; under a good parent; nothing written"
+  '((404 "not_found") (404 "not_found") (404 "not_found") #t #t #t (read write read write read write))
+  (attempt
+   (lambda ()
+     (with-rig "move-missing.db"
+       (lambda (g)
+         (tree! g)
+         (let* ((before (tables g))
+                (a (move! g 1 99 1 1))
+                (b (move! g 1 20 1 1))
+                (c (move! g 1 8 3 1)))
+           (list (status+code a) (status+code b) (status+code c)
+                 (equal? (answer-body a) (answer-body b)) (equal? (answer-body a) (answer-body c))
+                 (equal? before (tables g)) ((rig-order g)))))))))
+
+(test-equal "move: a time read once the body had come: the head, then the clock moves, then the body; updated is the later time, and the change row's"
+  (list 200 (+ now0 7000) (+ now0 7000))
+  (attempt
+   (lambda ()
+     (with-rig "move-time.db"
+       (lambda (g)
+         (seed-in! g acct-a 2 "note" #f)
+         (let ((bytes (string->utf8 (move-body #f))))
+           (let-values (((answers waiting? closed?)
+                         (exchange-steps (rig-handler g)
+                                         (list (request-bytes 'POST (move-path 2)
+                                                              (list (key-h 1) json-type (match-h 1)
+                                                                    (cons "Content-Length"
+                                                                          (number->string (bytevector-length bytes)))))
+                                               (lambda () ((rig-set-now! g) (+ now0 7000)))
+                                               bytes))))
+             (let ((a (car answers)))
+               (list (answer-status a) (member-of (answer-json a) "updated")
+                     (list-ref (car (reverse (change-rows g acct-a))) 4))))))))))
+
+;;; The two moves' checks before the job
+
+(define move-routes
+  (list (cons "move" move-path-of) (cons "move-children" move-children-path-of)))
+
+;; padded-move : Natural -> String
+;; {"parent":null} of exactly N bytes, spaces before its member.
+(define (padded-move n)
+  (let* ((base "{\"parent\":null}") (k (string-length base)))
+    (string-append "{" (make-string (- n k) #\space) (substring base 1 k))))
+
+;; bad-move-bodies : (Listof (Pair String String))     each a 400 invalid_request
+(define bad-move-bodies
+  (list (cons "an empty object, which is no top level" "{}")
+        (cons "a parent of 5" "{\"parent\":5}")
+        (cons "a parent of false" "{\"parent\":false}")
+        (cons "a parent of true" "{\"parent\":true}")
+        (cons "a parent of {}" "{\"parent\":{}}")
+        (cons "a parent of []" "{\"parent\":[]}")
+        (cons "a parent of \"\"" "{\"parent\":\"\"}")
+        (cons "a parent of \"null\"" "{\"parent\":\"null\"}")
+        (cons "a v4 id" (string-append "{\"parent\":\"" v4-text "\"}"))
+        (cons "another member beside it" "{\"parent\":null,\"x\":1}")
+        (cons "another member alone" "{\"x\":null}")
+        (cons "the member twice" "{\"parent\":null,\"parent\":null}")
+        (cons "a member in capitals" "{\"Parent\":null}")
+        (cons "an array" "[]")
+        (cons "an array holding it" "[{\"parent\":null}]")
+        (cons "null" "null")
+        (cons "a string" "\"x\"")
+        (cons "a number" "1")
+        (cons "an empty body" "")))
+
+(for-each
+ (lambda (route)
+   (let* ((name (car route))
+          (path-of (cdr route))
+          (path (path-of (node-path 1)))
+          (send (lambda (g headers text) ((rig-call g) 'POST path headers text)))
+          (label (lambda (s) (string-append name ": " s))))
+     (test-equal (label "no key is 401 unauthorized, no job")
+       '(401 "unauthorized" 0)
+       (attempt
+        (lambda ()
+          (with-rig "mv-nokey.db"
+            (lambda (g)
+              (seed-in! g acct-a 1 "project" #f)
+              (let ((a (send g (list json-type (match-h 1)) (move-body #f))))
+                (append (status+code a) (list ((rig-jobs g))))))))))
+     (test-equal (label "no If-Match is 428 precondition_required, no job")
+       '(428 "precondition_required" 0)
+       (attempt
+        (lambda ()
+          (with-rig "mv-none.db"
+            (lambda (g)
+              (seed-in! g acct-a 1 "project" #f)
+              (let ((a (send g (list (key-h 1) json-type) (move-body #f))))
+                (append (status+code a) (list ((rig-jobs g))))))))))
+     (for-each
+      (lambda (bad)
+        (test-equal (label (string-append (car bad) " is 400 invalid_request, no job"))
+          '(400 "invalid_request" 0)
+          (attempt
+           (lambda ()
+             (with-rig "mv-bad-pre.db"
+               (lambda (g)
+                 (seed-in! g acct-a 1 "project" #f)
+                 (let ((a (send g (append (list (key-h 1) json-type) (cdr bad)) (move-body #f))))
+                   (append (status+code a) (list ((rig-jobs g)))))))))))
+      (list (list "If-None-Match: *" none-match)
+            (list "both headers" (match-h 1) none-match)
+            (list "If-Match: *" (cons "If-Match" "*"))
+            (list "a weak tag" (cons "If-Match" "W/\"1\""))
+            (list "a list in If-Match" (cons "If-Match" "\"1\", \"2\""))
+            (list "If-Match twice" (match-h 1) (match-h 1))
+            (list "a tag of 0" (cons "If-Match" "\"0\""))))
+     (test-equal (label "order: a bad id with no precondition is the 400; with an unknown key a bad id is still the 400 and no precondition the 428; a bad precondition with JSON that does not parse the 400; no job")
+       '((400 "invalid_request") (400 "invalid_request") (428 "precondition_required")
+         (400 "invalid_request") 0)
+       (attempt
+        (lambda ()
+          (with-rig "mv-order-cheap.db"
+            (lambda (g)
+              (let* ((bad (path-of (node-path-of v4-text)))
+                     (a ((rig-call g) 'POST bad (list (key-h 1) json-type) (move-body #f)))
+                     (b ((rig-call g) 'POST bad (list (key-h 9) json-type (match-h 1)) (move-body #f)))
+                     (c (send g (list (key-h 9) json-type) (move-body #f)))
+                     (d (send g (list (key-h 1) json-type (cons "If-Match" "*")) "{nope")))
+                (list (status+code a) (status+code b) (status+code c) (status+code d)
+                      ((rig-jobs g)))))))))
+     (test-equal (label "no precondition and no Content-Type is the 428, no job")
+       '(428 "precondition_required" 0)
+       (attempt
+        (lambda ()
+          (with-rig "mv-order-pre.db"
+            (lambda (g)
+              (let ((a (send g (list (key-h 1)) (move-body #f))))
+                (append (status+code a) (list ((rig-jobs g))))))))))
+     (test-equal (label "an unknown key is 401 in the key's read job, no write job; with a bad body, one over the cap and one that does not parse, still the 401: the key before the body")
+       '((401 "unauthorized") (401 "unauthorized") (401 "unauthorized") (401 "unauthorized")
+         (read read read read) #t)
+       (attempt
+        (lambda ()
+          (with-rig "mv-unknown.db"
+            (lambda (g)
+              (seed-in! g acct-a 1 "project" #f)
+              (let* ((before (tables g))
+                     (h (list (key-h 9) json-type (match-h 1)))
+                     (a (send g h (move-body #f)))
+                     (b (send g h "{\"parent\":5}"))
+                     (c (send g h (padded-move 20000)))
+                     (d (send g h "{nope")))
+                (list (status+code a) (status+code b) (status+code c) (status+code d)
+                      ((rig-order g)) (equal? before (tables g)))))))))
+     (test-equal (label "a revoked key is the 401 in the key's read job, the body not read")
+       '(401 "unauthorized" (read))
+       (attempt
+        (lambda ()
+          (with-rig "mv-revoked.db"
+            (lambda (g)
+              (seed-in! g acct-a 1 "project" #f)
+              (run-write (rig-store g) (lambda (tx) (revoke-key! tx acct-a (kid 1) 1500)))
+              (let ((a (send g (list (key-h 1) json-type (match-h 1)) "{nope")))
+                (append (status+code a) (list ((rig-order g))))))))))
+     (for-each
+      (lambda (bad)
+        (test-equal (label (string-append (car bad) " is 415 unsupported_media_type, after the key's read job, no write job"))
+          '(415 "unsupported_media_type" (read))
+          (attempt
+           (lambda ()
+             (with-rig "mv-type.db"
+               (lambda (g)
+                 (seed-in! g acct-a 1 "project" #f)
+                 (let ((a (send g (append (list (key-h 1) (match-h 1)) (cdr bad)) (move-body #f))))
+                   (append (status+code a) (list ((rig-order g)))))))))))
+      (list (list "no Content-Type")
+            (list "text/plain" (cons "Content-Type" "text/plain"))
+            (list "a +json type" (cons "Content-Type" "application/merge-patch+json"))
+            (list "two Content-Types" json-type json-type)))
+     (test-equal (label "text/plain with a body over the cap, or one that does not parse, is the 415: the media type before the body")
+       '((415 "unsupported_media_type") (415 "unsupported_media_type") (read read))
+       (attempt
+        (lambda ()
+          (with-rig "mv-type-body.db"
+            (lambda (g)
+              (seed-in! g acct-a 1 "project" #f)
+              (let* ((h (list (key-h 1) (match-h 1) (cons "Content-Type" "text/plain")))
+                     (a (send g h (padded-move 20000)))
+                     (b (send g h "{nope")))
+                (list (status+code a) (status+code b) ((rig-order g)))))))))
+     (test-equal (label "the body's cap is 16 KiB: exactly 16384 bytes is 200; one byte more is 413 payload_too_large, after the key's read job, no write job, nothing written")
+       '((16384 200) (16385 413 "payload_too_large" (read) #t))
+       (attempt
+        (lambda ()
+          (list (with-rig "mv-at-cap.db"
+                  (lambda (g)
+                    (seed-in! g acct-a 1 "project" #f)
+                    (let* ((text (padded-move 16384))
+                           (a (send g (list (key-h 1) json-type (match-h 1)) text)))
+                      (list (bytevector-length (string->utf8 text)) (answer-status a)))))
+                (with-rig "mv-over-cap.db"
+                  (lambda (g)
+                    (seed-in! g acct-a 1 "project" #f)
+                    (let* ((before (tables g))
+                           (text (padded-move 16385))
+                           (a (send g (list (key-h 1) json-type (match-h 1)) text)))
+                      (append (list (bytevector-length (string->utf8 text))) (status+code a)
+                              (list ((rig-order g)) (equal? before (tables g)))))))))))
+     (test-equal (label "JSON that does not parse is 400 invalid_json, after the key's read job, no write job")
+       '(400 "invalid_json" (read))
+       (attempt
+        (lambda ()
+          (with-rig "mv-bad-json.db"
+            (lambda (g)
+              (seed-in! g acct-a 1 "project" #f)
+              (let ((a (send g (list (key-h 1) json-type (match-h 1)) "{\"parent\": nope")))
+                (append (status+code a) (list ((rig-order g))))))))))
+     (for-each
+      (lambda (bad)
+        (test-equal (label (string-append (car bad) " is 400 invalid_request, after the key's read job, no write job, nothing written"))
+          '(400 "invalid_request" (read) #t)
+          (attempt
+           (lambda ()
+             (with-rig "mv-bad-body.db"
+               (lambda (g)
+                 (seed-in! g acct-a 1 "project" #f)
+                 (let* ((before (tables g))
+                        (a (send g (list (key-h 1) json-type (match-h 1)) (cdr bad))))
+                   (append (status+code a) (list ((rig-order g)) (equal? before (tables g)))))))))))
+      bad-move-bodies)
+     (test-equal (label "the head alone, no byte of the body sent: of a 2 MB body with an unknown key, the 401 at once from the key's read job; with A's key, the 413 at once after it, the Content-Length past the cap; of 16 KiB with A's key, no answer yet: it waits for the body")
+       (list (list '((401 "unauthorized")) #f '(read))
+             (list '((413 "payload_too_large")) #f '(read))
+             (list '() #t '(read)))
+       (attempt
+        (lambda ()
+          (let* ((head (lambda (k n) (request-bytes 'POST path
+                                                    (list (key-h k) json-type (match-h 1)
+                                                          (cons "Content-Length" n)))))
+                 (one (lambda (name k n)
+                        (with-rig name
+                          (lambda (g)
+                            (seed-in! g acct-a 1 "project" #f)
+                            (let-values (((answers waiting? closed?)
+                                          (exchange-steps (rig-handler g) (list (head k n)))))
+                              (list (map status+code answers) waiting? ((rig-order g)))))))))
+            (let* ((a (one "mv-head.db" 9 "2000000"))
+                   (b (one "mv-head-big.db" 1 "2000000"))
+                   (c (one "mv-head-a.db" 1 "16384")))
+              (list a b c))))))))
+ move-routes)
+
+;;; The bulk move (T7, P11, P16)
+
+;; family! : Rig -> Void
+;; A's Project 1 and its children, through the store, each at revision 1
+;; unless said: 10 Note; 11 Note, archived (2); 12 Note, trashed (2); 13
+;; Task; 14 Contact, archived (2); 15 Project, holding 16, a Note. At the
+;; top: 2 Journal, 3 Project, 4 Note, 5 Project trashed (2), 8 Project
+;; purged (3). B's 20, a Project.
+(define (family! g)
+  (seed-in! g acct-a 1 "project" #f)
+  (seed-in! g acct-a 10 "note" 1)
+  (seed-in! g acct-a 11 "note" 1)
+  (archived-at! g acct-a 11 1)
+  (seed-in! g acct-a 12 "note" 1)
+  (trashed-at! g acct-a 12 1)
+  (seed-in! g acct-a 13 "task" 1)
+  (seed-in! g acct-a 14 "contact" 1)
+  (archived-at! g acct-a 14 1)
+  (seed-in! g acct-a 15 "project" 1)
+  (seed-in! g acct-a 16 "note" 15)
+  (seed-in! g acct-a 2 "journal" #f)
+  (seed-in! g acct-a 3 "project" #f)
+  (seed-in! g acct-a 4 "note" #f)
+  (seed-in! g acct-a 5 "project" #f)
+  (trashed-at! g acct-a 5 1)
+  (seed-in! g acct-a 8 "project" #f)
+  (purged-at! g acct-a 8 1)
+  (seed-in! g acct-b 20 "project" #f))
+
+;; parents : Rig (Listof Natural) -> (Listof (U Bytevector #f))
+(define (parents g ns) (map (lambda (n) (parent-of g n)) ns))
+
+;; bulk-moved : Rig Natural (U Natural #f) -> (List ...)
+;; In family!, node 1's children moved under P at node 1's revision 1:
+;; the status, the ETag, the content type, the JSON; whether node 1's row
+;; is as it was; the new change rows; whether the snapshots are; the
+;; parents of 10 to 16; the forest's faults.
+(define (bulk-moved g p)
+  (family! g)
+  (let* ((row (row-of g 1))
+         (snaps (run-read (rig-store g) (lambda (tx) (tx-query tx "SELECT * FROM revisions ORDER BY node, revision"))))
+         (changes (change-rows g acct-a))
+         (a (move-children! g 1 1 1 p)))
+    (list (answer-status a) (answer-header a "etag") (answer-header a "content-type") (answer-json a)
+          (equal? row (row-of g 1))
+          (new-changes changes (change-rows g acct-a))
+          (equal? snaps (run-read (rig-store g)
+                                  (lambda (tx) (tx-query tx "SELECT * FROM revisions ORDER BY node, revision"))))
+          (parents g '(10 11 12 13 14 15 16))
+          (forest-faults g))))
+
+(test-equal "bulk: into a Journal, only the Notes that are not trashed move: moved 2, left 4; each a revision + 1 with a change row move, by id; no row and no change row for the node itself, no ETag, no snapshot; the grandchild stays under its parent"
+  (list 200 #f "application/json" '(("moved" . 2) ("left" . 4)) #t
+        (list (list 1 (nid 10) 2 "move" now0) (list 2 (nid 11) 3 "move" now0))
+        #t
+        (list (nid 2) (nid 2) (nid 1) (nid 1) (nid 1) (nid 1) (nid 15))
+        '())
+  (attempt (lambda () (with-rig "bulk-journal.db" (lambda (g) (bulk-moved g 2))))))
+
+(test-equal "bulk: into a Project, every child not trashed moves, of any kind: moved 5, left 1; the Project child takes its own child along"
+  (list 200 #f "application/json" '(("moved" . 5) ("left" . 1)) #t
+        (list (list 1 (nid 10) 2 "move" now0) (list 2 (nid 11) 3 "move" now0)
+              (list 3 (nid 13) 2 "move" now0) (list 4 (nid 14) 3 "move" now0)
+              (list 5 (nid 15) 2 "move" now0))
+        #t
+        (list (nid 3) (nid 3) (nid 1) (nid 3) (nid 3) (nid 3) (nid 15))
+        '())
+  (attempt (lambda () (with-rig "bulk-project.db" (lambda (g) (bulk-moved g 3))))))
+
+(test-equal "bulk: to the top level, as into a Project: moved 5, left 1"
+  (list 200 #f "application/json" '(("moved" . 5) ("left" . 1)) #t
+        (list (list 1 (nid 10) 2 "move" now0) (list 2 (nid 11) 3 "move" now0)
+              (list 3 (nid 13) 2 "move" now0) (list 4 (nid 14) 3 "move" now0)
+              (list 5 (nid 15) 2 "move" now0))
+        #t
+        (list #f #f (nid 1) #f #f #f (nid 15))
+        '())
+  (attempt (lambda () (with-rig "bulk-top.db" (lambda (g) (bulk-moved g #f))))))
+
+(test-equal "bulk: the moved children keep their state, kind, content and created; each answer and list shows the new parent"
+  (list (list "note" "active" 2 (nid-text 3)) (list "note" "archived" 3 (nid-text 3))
+        (list "contact" "archived" 3 (nid-text 3))
+        (list (nid-text 10) (nid-text 11) (nid-text 13) (nid-text 14) (nid-text 15)))
+  (attempt
+   (lambda ()
+     (with-rig "bulk-shown.db"
+       (lambda (g)
+         (bulk-moved g 3)
+         (let ((shown (lambda (n) (let ((j (answer-json (get! g 1 (node-path n)))))
+                                    (map (lambda (k) (member-of j k)) '("kind" "state" "revision" "parent"))))))
+           (let* ((a (shown 10)) (b (shown 11)) (c (shown 14))
+                  (l (append (items (get! g 1 (children-query 3)))
+                             (items (get! g 1 (string-append (children-query 3) "&state=archived"))))))
+             (list a b c (list-sort string<? (map id-of l))))))))))
+
+;; brood! : Rig Natural Natural Natural -> Void
+;; A's Project 1 and under it the Notes FROM to TO, through the store in
+;; one job; those up to TRASHED-TO trashed (revision 2), the others at 1.
+(define (brood! g from to trashed-to)
+  (run-write (rig-store g)
+             (lambda (tx)
+               (insert-node! tx (nid 1) acct-a "project" "p" "b" "text/plain" "{}" #f 5000)
+               (let loop ((n from))
+                 (when (<= n to)
+                   (insert-node! tx (nid n) acct-a "note" "c" "b" "text/plain" "{}" (nid 1) 5000)
+                   (when (<= n trashed-to)
+                     (set-node-state! tx (nid n) acct-a 1 "trashed" "trash" 5100))
+                   (loop (+ n 1)))))))
+
+;; top-ids : Rig -> (Listof Bytevector)     A's rows at the top level but 1, by id
+(define (top-ids g)
+  (run-read (rig-store g)
+            (lambda (tx)
+              (map (lambda (r) (vector-ref r 0))
+                   (tx-query tx "SELECT id FROM nodes WHERE owner = ? AND parent IS NULL AND id <> ? ORDER BY id"
+                             acct-a (nid 1))))))
+
+;; ids-from : Natural Natural -> (Listof Bytevector)     nodes FROM to TO
+(define (ids-from from to) (if (> from to) '() (cons (nid from) (ids-from (+ from 1) to))))
+
+(test-equal "bulk: of 1,005 children, exactly the first 1,000 by id move, each with a change row move, by id; left 5; a second call moves the 5, a third moves none"
+  (list '(("moved" . 1000) ("left" . 5)) #t #t #t
+        '(("moved" . 5) ("left" . 0)) #t '(("moved" . 0) ("left" . 0)) '())
+  (attempt
+   (lambda ()
+     (with-rig "bulk-1005.db"
+       (lambda (g)
+         (brood! g 1000 2004 0)
+         (let* ((changes (change-rows g acct-a))
+                (a (move-children! g 1 1 1 #f))
+                (top-a (top-ids g))
+                (new (new-changes changes (change-rows g acct-a)))
+                (b (move-children! g 1 1 1 #f))
+                (top-b (top-ids g))
+                (c (move-children! g 1 1 1 #f)))
+           (list (answer-json a)
+                 (equal? top-a (ids-from 1000 1999))
+                 (equal? (map cadr new) (ids-from 1000 1999))
+                 (for-all (lambda (r) (equal? (cddr r) (list 2 "move" now0))) new)
+                 (answer-json b) (equal? top-b (ids-from 1000 2004)) (answer-json c)
+                 (forest-faults g))))))))
+
+(test-equal "bulk: 1,000 trashed children sorting first and 5 active after them: moved 5, left 1,000 (the review's blocker 2)"
+  (list '(("moved" . 5) ("left" . 1000)) #t)
+  (attempt
+   (lambda ()
+     (with-rig "bulk-trashed-first.db"
+       (lambda (g)
+         (brood! g 1000 2004 1999)
+         (let ((a (move-children! g 1 1 1 #f)))
+           (list (answer-json a) (equal? (top-ids g) (ids-from 2000 2004)))))))))
+
+(test-equal "bulk: a trashed Project's children may be moved out (T7): moved 2, left 0; the node stays trashed, at its revision"
+  (list 200 '(("moved" . 2) ("left" . 0)) (list #f #f) "trashed" 2)
+  (attempt
+   (lambda ()
+     (with-rig "bulk-trashed-node.db"
+       (lambda (g)
+         (seed-in! g acct-a 1 "project" #f)
+         (seed-in! g acct-a 10 "note" 1)
+         (seed-in! g acct-a 11 "task" 1)
+         (trashed-at! g acct-a 1 1)
+         (let ((a (move-children! g 1 1 2 #f)))
+           (list (answer-status a) (answer-json a) (parents g '(10 11)) (state-of g 1)
+                 (car (stored g 1)))))))))
+
+(test-equal "bulk: a node with no children: moved 0, left 0; a Note's too"
+  '((200 (("moved" . 0) ("left" . 0))) (200 (("moved" . 0) ("left" . 0))))
+  (attempt
+   (lambda ()
+     (with-rig "bulk-empty.db"
+       (lambda (g)
+         (seed-in! g acct-a 1 "project" #f)
+         (seed-in! g acct-a 4 "note" #f)
+         (let* ((a (move-children! g 1 1 1 #f))
+                (b (move-children! g 1 4 1 #f)))
+           (list (list (answer-status a) (answer-json a)) (list (answer-status b) (answer-json b)))))))))
+
+;; The tests below close the 5a review's gaps.
+
+(test-equal "bulk: an archived Project's children move (T7): 200, moved 2, left 0; the node stays archived, at its revision"
+  (list 200 '(("moved" . 2) ("left" . 0)) (list #f #f) "archived" 2)
+  (attempt
+   (lambda ()
+     (with-rig "bulk-archived-node.db"
+       (lambda (g)
+         (seed-in! g acct-a 1 "project" #f)
+         (seed-in! g acct-a 10 "note" 1)
+         (seed-in! g acct-a 11 "task" 1)
+         (archived-at! g acct-a 1 1)
+         (let ((a (move-children! g 1 1 2 #f)))
+           (list (answer-status a) (answer-json a) (parents g '(10 11)) (state-of g 1)
+                 (car (stored g 1)))))))))
+
+(test-equal "move: a parent too deep (64 ancestors) and of a kind that cannot hold the node is invalid_parent, both verdicts' one code; nothing written, forest holds"
+  '((409 "invalid_parent") (409 "invalid_parent") #t ())
+  (attempt
+   (lambda ()
+     (with-rig "move-deep-wrong-kind.db"
+       (lambda (g)
+         (chain! g 100 163)
+         (seed-in! g acct-a 164 "note" 163)       ; 64 ancestors, and no kind under it
+         (seed-in! g acct-a 300 "project" #f)
+         (let* ((before (tables g))
+                (a (move! g 1 300 1 164))
+                (b (create-in! g 1 301 "project" 164)))
+           (list (status+code a) (status+code b) (equal? before (tables g)) (forest-faults g))))))))
+
+(test-equal "move: a new parent that is trashed AND would make a loop is invalid_parent, not would_loop: trashed is judged first; a bulk move too; nothing written"
+  '((409 "invalid_parent") (409 "invalid_parent") #t)
+  (attempt
+   (lambda ()
+     (with-rig "move-trashed-loop.db"
+       (lambda (g)
+         (seed-in! g acct-a 1 "project" #f)
+         (seed-in! g acct-a 2 "project" 1)
+         (trashed-at! g acct-a 2 1)
+         (let* ((before (tables g))
+                (a (move! g 1 1 1 2))
+                (b (move-children! g 1 1 1 2)))
+           (list (status+code a) (status+code b) (equal? before (tables g)))))))))
+
+;; bulk-refusals : (Listof (List String Natural Natural Natural (List Natural String)))
+;; In family!: the node whose children move, its If-Match, the new parent,
+;; and the answer.
+(define bulk-refusals
+  '(("into the node itself" 1 1 1 (409 "would_loop"))
+    ("under one of its children" 1 1 15 (409 "would_loop"))
+    ("under a grandchild, a Note" 1 1 16 (409 "would_loop"))
+    ("into a Note" 1 1 4 (409 "invalid_parent"))
+    ("into a trashed Project" 1 1 5 (409 "invalid_parent"))
+    ("into a missing id" 1 1 99 (409 "invalid_parent"))
+    ("into B's Project" 1 1 20 (409 "invalid_parent"))
+    ("into A's purged Project" 1 1 8 (409 "invalid_parent"))
+    ("at a stale If-Match" 1 2 3 (412 "precondition_failed"))
+    ("at a stale If-Match, into the node itself" 1 2 1 (412 "precondition_failed"))
+    ("of a missing node" 99 1 3 (404 "not_found"))
+    ("of B's node" 20 1 3 (404 "not_found"))
+    ("of A's purged node" 8 3 3 (404 "not_found"))))
+
+(for-each
+ (lambda (r)
+   (test-equal (string-append "bulk: " (car r) ": " (number->string (car (list-ref r 4))) " "
+                              (cadr (list-ref r 4))
+                              ", in its write job, no ETag; nodes, revisions, changes and last_used as they were")
+     (list (list-ref r 4) '(read write) #f #t #f '())
+     (attempt
+      (lambda ()
+        (with-rig "bulk-refused.db"
+          (lambda (g)
+            (family! g)
+            (let* ((before (tables g))
+                   (a (move-children! g 1 (cadr r) (caddr r) (cadddr r))))
+              (list (status+code a) ((rig-order g)) (answer-header a "etag")
+                    (equal? before (tables g)) (last-used g 1) (forest-faults g)))))))))
+ bulk-refusals)
+
+(test-equal "bulk: into a missing id, B's Project and A's purged Project: 409 invalid_parent, the same bytes and headers (P12)"
+  '((409 "invalid_parent") #t #t #t #t)
+  (attempt
+   (lambda ()
+     (with-rig "bulk-same-bytes.db"
+       (lambda (g)
+         (family! g)
+         (let* ((a (move-children! g 1 1 1 99))
+                (b (move-children! g 1 1 1 20))
+                (c (move-children! g 1 1 1 8)))
+           (list (status+code a) (equal? (answer-body a) (answer-body b)) (equal? (answer-body a) (answer-body c))
+                 (equal? (answer-headers a) (answer-headers b))
+                 (equal? (answer-headers a) (answer-headers c)))))))))
+
+;;; Another account (G7)
+
+(test-equal "G7: B's move and bulk move of A's node, at A's revision, to the top level: 404 not_found, the bytes an id no one holds gets; every table as it was; A's own pass after them"
+  '((404 "not_found") (404 "not_found") #t #t #t 200 200)
+  (attempt
+   (lambda ()
+     (with-rig "g7-tree.db"
+       (lambda (g)
+         (seed-in! g acct-a 1 "project" #f)
+         (seed-in! g acct-a 10 "note" 1)
+         (let* ((before (tables g))
+                (a (move! g 3 10 1 #f))
+                (b (move-children! g 3 1 1 #f))
+                (m (move! g 3 99 1 #f))
+                (after (tables g))
+                (c (move! g 1 10 1 #f))
+                (d (move-children! g 1 1 1 #f)))
+           (list (status+code a) (status+code b)
+                 (equal? (answer-body a) (answer-body m)) (equal? (answer-body b) (answer-body m))
+                 (equal? before after) (answer-status c) (answer-status d))))))))
+
+;;; A purge of a parent (T7, P8, P9)
+
+(for-each
+ (lambda (state)
+   (test-equal (string-append "purge: a trashed Project with one " state
+                              " child is 409 has_children: nodes, revisions, changes and last_used as they were")
+     '((409 "has_children") #t #f)
+     (attempt
+      (lambda ()
+        (with-rig "purge-parent.db"
+          (lambda (g)
+            (seed-in! g acct-a 1 "project" #f)
+            (trashed-at! g acct-a 1 1)
+            (seed-in! g acct-a 10 "note" 1)
+            (cond ((string=? state "archived") (archived-at! g acct-a 10 1))
+                  ((string=? state "trashed") (trashed-at! g acct-a 10 1)))
+            (let* ((before (tables g))
+                   (a (lifecycle! g 1 1 'purge 2)))
+              (list (status+code a) (equal? before (tables g)) (last-used g 1)))))))))
+ '("active" "archived" "trashed"))
+
+(test-equal "purge: with a child, an active Project is 409 wrong_state and a trashed one at a stale If-Match 412: both before has_children"
+  '((409 "wrong_state") (412 "precondition_failed") (412 "precondition_failed") #t)
+  (attempt
+   (lambda ()
+     (with-rig "purge-parent-order.db"
+       (lambda (g)
+         (seed-in! g acct-a 1 "project" #f)
+         (seed-in! g acct-a 10 "note" 1)
+         (seed-in! g acct-a 2 "project" #f)
+         (trashed-at! g acct-a 2 1)
+         (seed-in! g acct-a 20 "note" 2)
+         (let* ((before (tables g))
+                (a (lifecycle! g 1 1 'purge 1))
+                (b (lifecycle! g 1 2 'purge 1))
+                (c (lifecycle! g 1 2 'purge 3)))
+           (list (status+code a) (status+code b) (status+code c) (equal? before (tables g)))))))))
+
+(test-equal "purge: once its one child is moved out, the trashed Project purges: 204; its row and the child's have no parent"
+  '(200 204 #f #f ())
+  (attempt
+   (lambda ()
+     (with-rig "purge-after-move.db"
+       (lambda (g)
+         (seed-in! g acct-a 1 "project" #f)
+         (seed-in! g acct-a 10 "note" 1)
+         (trashed-at! g acct-a 1 1)
+         (let* ((a (move! g 1 10 1 #f))
+                (b (lifecycle! g 1 1 'purge 2)))
+           (list (answer-status a) (answer-status b) (parent-of g 1) (parent-of g 10)
+                 (forest-faults g))))))))
+
+(test-equal "purge: once its trashed child is purged, the Project purges: a purged child does not block it, and the purged child's row has no parent (P8)"
+  '(204 #f 204 ())
+  (attempt
+   (lambda ()
+     (with-rig "purge-after-purge.db"
+       (lambda (g)
+         (seed-in! g acct-a 1 "project" #f)
+         (seed-in! g acct-a 10 "note" 1)
+         (trashed-at! g acct-a 10 1)
+         (trashed-at! g acct-a 1 1)
+         (let* ((a (lifecycle! g 1 10 'purge 2))
+                (p (parent-of g 10))
+                (b (lifecycle! g 1 1 'purge 2)))
+           (list (answer-status a) p (answer-status b) (forest-faults g))))))))
+
+(test-equal "purge: once a bulk move has emptied it, the Project purges"
+  '((200 (("moved" . 2) ("left" . 0))) 204 ())
+  (attempt
+   (lambda ()
+     (with-rig "purge-after-bulk.db"
+       (lambda (g)
+         (seed-in! g acct-a 1 "project" #f)
+         (seed-in! g acct-a 10 "note" 1)
+         (seed-in! g acct-a 11 "note" 1)
+         (archived-at! g acct-a 11 1)
+         (trashed-at! g acct-a 1 1)
+         (let* ((a (move-children! g 1 1 2 #f))
+                (b (lifecycle! g 1 1 'purge 2)))
+           (list (list (answer-status a) (answer-json a)) (answer-status b) (forest-faults g))))))))
+
+(test-equal "purge: a Project with only a grandchild left, under a child moved away, purges; the child keeps its own"
+  '(200 204 (#f) ())
+  (attempt
+   (lambda ()
+     (with-rig "purge-grandchild.db"
+       (lambda (g)
+         (seed-in! g acct-a 1 "project" #f)
+         (seed-in! g acct-a 10 "project" 1)
+         (seed-in! g acct-a 11 "note" 10)
+         (trashed-at! g acct-a 1 1)
+         (let* ((a (move! g 1 10 1 #f))
+                (b (lifecycle! g 1 1 'purge 2)))
+           (list (answer-status a) (answer-status b)
+                 (list (parent-of g 10)) (forest-faults g))))))))
+
+;;; The parent through every other write (P15)
+
+(test-equal "tree: a replace, a restore, an archive, an unarchive, a trash and an untrash each keep the parent, in the answer and in the row"
+  (list (list 200 (nid-text 1)) (list 200 (nid-text 1)) (list 200 (nid-text 1))
+        (list 200 (nid-text 1)) (list 200 (nid-text 1)) (list 200 (nid-text 1)) (nid 1) '())
+  (attempt
+   (lambda ()
+     (with-rig "tree-keep.db"
+       (lambda (g)
+         (seed-in! g acct-a 1 "project" #f)
+         (seed-in! g acct-a 2 "note" 1)
+         (let* ((shown (lambda (a) (list (answer-status a) (member-of (answer-json a) "parent"))))
+                (a (shown (replace! g 1 2 1 #f "t2" "b2" "text/plain")))
+                (b (shown (restore! g 1 2 1 2)))
+                (c (shown (lifecycle! g 1 2 'archive 3)))
+                (d (shown (lifecycle! g 1 2 'unarchive 4)))
+                (e (shown (lifecycle! g 1 2 'trash 5)))
+                (f (shown (lifecycle! g 1 2 'untrash 6))))
+           (list a b c d e f (parent-of g 2) (forest-faults g))))))))
+
+;;; The list's ?parent= (T9, P13)
+
+;; family-list! : Rig -> Void
+;; A's Project 1, at the top, holding 10, 13 and 14 active, 11 archived and
+;; 12 trashed; at the top too, 20 a Note and 21 a Note archived; 40 a
+;; Project trashed, holding 41. B's 30, a Project holding 31. A's 8, a
+;; Project purged.
+(define (family-list! g)
+  (seed-in! g acct-a 1 "project" #f)
+  (for-each (lambda (n) (seed-in! g acct-a n "note" 1)) '(10 11 12 13 14))
+  (archived-at! g acct-a 11 1)
+  (trashed-at! g acct-a 12 1)
+  (seed-in! g acct-a 20 "note" #f)
+  (seed-in! g acct-a 21 "note" #f)
+  (archived-at! g acct-a 21 1)
+  (seed-in! g acct-a 40 "project" #f)
+  (seed-in! g acct-a 41 "note" 40)
+  (trashed-at! g acct-a 40 1)
+  (seed-in! g acct-b 30 "project" #f)
+  (seed-in! g acct-b 31 "note" 30)
+  (seed-in! g acct-a 8 "project" #f)
+  (purged-at! g acct-a 8 1))
+
+;; listed-parent : Rig String -> (List (Listof (List String Any Any)) Any)
+;; The page's items as id, state and parent, and next.
+(define (listed-parent g query)
+  (let ((a (get! g 1 (string-append "/v1/nodes" query))))
+    (list (map (lambda (j) (list (id-of j) (member-of j "state") (member-of j "parent"))) (items a))
+          (member-of (answer-json a) "next"))))
+
+(test-equal "list: ?parent= a node is its children in a state, active by default; ?parent=null the top level; each item shows its parent; the flat list holds every active node whatever its parent (P13)"
+  (let ((in1 (lambda (n s) (list (nid-text n) s (nid-text 1))))
+        (top (lambda (n s) (list (nid-text n) s 'null))))
+    (list (list (list (in1 10 "active") (in1 13 "active") (in1 14 "active")) 'null)
+          (list (list (in1 11 "archived")) 'null)
+          (list (list (in1 12 "trashed")) 'null)
+          (list (list (top 1 "active") (top 20 "active")) 'null)
+          (list (list (top 21 "archived")) 'null)
+          (list (list (top 40 "trashed")) 'null)
+          (list (list (list (nid-text 41) "active" (nid-text 40))) 'null)
+          (list (list (top 1 "active") (in1 10 "active") (in1 13 "active") (in1 14 "active")
+                      (top 20 "active") (list (nid-text 41) "active" (nid-text 40)))
+                'null)))
+  (attempt
+   (lambda ()
+     (with-rig "list-parent.db"
+       (lambda (g)
+         (family-list! g)
+         (let* ((p (string-append "?parent=" (nid-text 1)))
+                (a (listed-parent g p))
+                (b (listed-parent g (string-append p "&state=archived")))
+                (c (listed-parent g (string-append "?state=trashed&parent=" (nid-text 1))))
+                (d (listed-parent g "?parent=null"))
+                (e (listed-parent g "?parent=null&state=archived"))
+                (f (listed-parent g "?state=trashed&parent=null"))
+                (h (listed-parent g (string-append "?parent=" (nid-text 40))))
+                (i (listed-parent g "")))
+           (list a b c d e f h i)))))))
+
+(test-equal "list: ?parent= pages by after and limit, as the flat list does, and in capitals is the same id"
+  (list (list (list (nid-text 10) (nid-text 13)) (nid-text 13))
+        (list (list (nid-text 14)) 'null)
+        (list (list (nid-text 1)) (nid-text 1))
+        (list (list (nid-text 20)) 'null)
+        (list (list (nid-text 10) (nid-text 13) (nid-text 14)) 'null))
+  (attempt
+   (lambda ()
+     (with-rig "list-parent-pages.db"
+       (lambda (g)
+         (family-list! g)
+         (let* ((ids (lambda (q) (let ((r (listed-parent g q))) (list (map car (car r)) (cadr r)))))
+                (p (string-append "?parent=" (nid-text 1)))
+                (a (ids (string-append p "&limit=2")))
+                (b (ids (string-append p "&limit=2&after=" (nid-text 13))))
+                (c (ids "?parent=null&limit=1"))
+                (d (ids (string-append "?parent=null&limit=1&after=" (nid-text 1))))
+                (e (ids (string-append "?parent=" (string-upcase (nid-text 1))))))
+           (list a b c d e)))))))
+
+(test-equal "list: ?parent= a missing id, B's Project and A's purged Project: 404 not_found, the bytes and headers of any 404, in one read job each"
+  '((404 "not_found") (404 "not_found") (404 "not_found") #t #t #t #t (read read read read))
+  (attempt
+   (lambda ()
+     (with-rig "list-parent-missing.db"
+       (lambda (g)
+         (family-list! g)
+         (let* ((a (get! g 1 (children-query 99)))
+                (b (get! g 1 (children-query 30)))
+                (c (get! g 1 (children-query 8)))
+                (m (get! g 1 (node-path 99))))
+           (list (status+code a) (status+code b) (status+code c)
+                 (equal? (answer-body a) (answer-body m)) (equal? (answer-body b) (answer-body m))
+                 (equal? (answer-body c) (answer-body m))
+                 (and (equal? (answer-headers a) (answer-headers m))
+                      (equal? (answer-headers b) (answer-headers m))
+                      (equal? (answer-headers c) (answer-headers m)))
+                 ((rig-order g)))))))))
+
+(test-equal "list: ?parent= a Note, which holds nothing, is 200 and an empty page; B's own Project lists B's child"
+  (list (list 200 (list (cons "items" (vector)) (cons "next" 'null))) (list (nid-text 31)))
+  (attempt
+   (lambda ()
+     (with-rig "list-parent-note.db"
+       (lambda (g)
+         (family-list! g)
+         (let* ((a (get! g 1 (children-query 20)))
+                (b (get! g 3 (children-query 30))))
+           (list (list (answer-status a) (answer-json a)) (map id-of (items b)))))))))
+
+(for-each
+ (lambda (q)
+   (test-equal (string-append "list: ?" q " is a 400 invalid_request, no job")
+     '(400 "invalid_request" 0)
+     (attempt
+      (lambda ()
+        (with-rig "list-bad-parent.db"
+          (lambda (g)
+            (let ((a (get! g 1 (string-append "/v1/nodes?" q))))
+              (append (status+code a) (list ((rig-jobs g)))))))))))
+ (list "parent=" "parent=NULL" "parent=Null" "parent=nil" "parent=x" (string-append "parent=" v4-text)
+       "parent=null&parent=null" (string-append "parent=" (nid-text 1) "&parent=" (nid-text 1))
+       (string-append "parent=" (nid-text 1) "&state=purged")))
+
+(test-equal "list: a bad ?parent= with no key is the 401, with an unknown key the 400: the key's shape, then the query, then the key"
+  '((401 "unauthorized" 0) (400 "invalid_request" 0))
+  (attempt
+   (lambda ()
+     (with-rig "list-parent-key.db"
+       (lambda (g)
+         (let* ((a ((rig-call g) 'GET "/v1/nodes?parent=x"))
+                (ja ((rig-jobs g)))
+                (b ((rig-call g) 'GET "/v1/nodes?parent=x" (list (key-h 9))))
+                (jb ((rig-jobs g))))
+           (list (append (status+code a) (list ja)) (append (status+code b) (list jb)))))))))
+
+;;; Jobs and the log
+
+(test-equal "job: a move's job and a bulk move's hold plain data: no request, no parsed JSON"
+  '(200 #f 200 #f)
+  (attempt
+   (lambda ()
+     (with-rig "job-move.db"
+       (lambda (g)
+         (seed-in! g acct-a 1 "project" #f)
+         (seed-in! g acct-a 2 "note" #f)
+         (let* ((a (move! g 1 2 1 1))
+                (ja ((rig-job g)))
+                (b (move-children! g 1 1 1 #f))
+                (jb ((rig-job g))))
+           (list (answer-status a) (reaches? ja req-like?)
+                 (answer-status b) (reaches? jb req-like?))))))))
+
+(test-equal "log: a move's line and a bulk move's name their route and the account and hold no title and no body; so does a refused move's"
+  (list '(200 200 409) 3 #t (list #t #t #t) #f #f)
+  (attempt
+   (lambda ()
+     (with-rig "log-move.db"
+       (lambda (g)
+         (seed-in! g acct-a 1 "project" #f)
+         (run-write (rig-store g)
+                    (lambda (tx) (insert-node! tx (nid 2) acct-a "note" "secret-title-5" "secret-body-5"
+                                               "text/plain" "{}" #f 5000)))
+         (let* ((a (move! g 1 2 1 1))
+                (b (move-children! g 1 1 1 #f))
+                (c (move! g 1 2 3 2))
+                (lines ((rig-lines g)))
+                (text (apply string-append lines)))
+           (list (map answer-status (list a b c)) (length lines)
+                 (for-all (lambda (l) (contains? l (string-append "account=" (id->string acct-a))))
+                          lines)
+                 (map (lambda (l p) (contains? l (string-append "path=" p " ")))
+                      lines (list (move-path 2) (move-children-path 1) (move-path 2)))
+                 (contains? text "secret-title-5") (contains? text "secret-body-5"))))))))
 
 (test-end "node-routes")
 

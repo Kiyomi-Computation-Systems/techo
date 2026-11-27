@@ -4,39 +4,61 @@ Generated from the table in `src/techo/nodes.sls`. Do not edit.
 Regenerate with `scripts/guix-env make machines`; a test fails when this file differs.
 
 A node starts `active`, and `purged` is the one end. `write` is a replace or a
-revision's restore. A refusal and `allow` leave the state.
+revision's restore. `move` puts the node under a new parent; `move-children`
+moves its children and leaves the node as it is. A refusal and `allow` leave
+the state.
 
 One function, `node-command`, answers a request from this table and the write
-machine's. It looks first at what the job found:
+machine's, with two facts more: the verdict on the new parent, and whether the
+node has children. It looks first at what the job found:
 
-- `none`: the write machine's answer. A state change is a 404.
-- `differ`: a 412, whatever the state. Stale comes before the state.
-- `match`: this table. Its refusal comes before the kind and before a missing
-  snapshot. After `allow`, the write machine answers.
+- `none`: the write machine's answer. A create's is the verdict's: an insert
+  when it is `ok`. A state change, a move and a bulk move are a 404.
+- `differ`: a 412, whatever the state. Stale comes before the state, and a
+  create on an id in use is a 412 before its parent is judged.
+- `match`: this table. Its refusal comes before the kind, before a missing
+  snapshot and before the new parent. After `allow`, the write machine answers
+  a write, and the verdict a move or a bulk move. A purge is refused while the
+  node has children.
 
 A purged node is found as `none`, so it never reaches this table.
 
 ```mermaid
 stateDiagram-v2
     active --> archived: archive
-    active --> active: unarchive, untrash, purge, write
+    active --> active: unarchive, untrash, purge, write, move, move-children
     active --> trashed: trash
-    archived --> archived: archive, untrash, purge, write
+    archived --> archived: archive, untrash, purge, write, move, move-children
     archived --> active: unarchive
     archived --> trashed: trash
-    trashed --> trashed: archive, unarchive, trash, write
+    trashed --> trashed: archive, unarchive, trash, write, move, move-children
     trashed --> active: untrash
     trashed --> purged: purge
 ```
 
 ## The answer each cell names
 
-| State | archive | unarchive | trash | untrash | purge | write |
-|---|---|---|---|---|---|---|
-| active | -> archived, set-state | refuse-wrong-state | -> trashed, set-state | refuse-wrong-state | refuse-wrong-state | allow |
-| archived | refuse-wrong-state | -> active, set-state | -> trashed, set-state | refuse-wrong-state | refuse-wrong-state | allow |
-| trashed | refuse-wrong-state | refuse-wrong-state | refuse-wrong-state | -> active, set-state | -> purged, purge | refuse-wrong-state |
-| purged | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen |
+| State | archive | unarchive | trash | untrash | purge | write | move | move-children |
+|---|---|---|---|---|---|---|---|---|
+| active | -> archived, set-state | refuse-wrong-state | -> trashed, set-state | refuse-wrong-state | refuse-wrong-state | allow | allow | allow |
+| archived | refuse-wrong-state | -> active, set-state | -> trashed, set-state | refuse-wrong-state | refuse-wrong-state | allow | allow | allow |
+| trashed | refuse-wrong-state | refuse-wrong-state | refuse-wrong-state | -> active, set-state | -> purged, purge | refuse-wrong-state | refuse-wrong-state | allow |
+| purged | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen |
+
+## The answer each verdict names
+
+`parent-verdict` judges the new parent. The first that applies: `ok` for the
+top level, then `missing`, `trashed`, `loop`, `wrong-kind` and `too-deep`; else
+`ok`.
+
+| Verdict | Answer |
+|---|---|
+| ok | the request's own: insert, move or move-children |
+| missing | refuse-invalid-parent |
+| trashed | refuse-invalid-parent |
+| loop | refuse-would-loop |
+| wrong-kind | refuse-invalid-parent |
+| too-deep | refuse-invalid-parent |
 
 ## Why a cell cannot happen
 
@@ -48,3 +70,5 @@ stateDiagram-v2
 | purged | untrash | a purged node is found as none, so its state is never stepped |
 | purged | purge | a purged node is found as none, so its state is never stepped |
 | purged | write | a purged node is found as none, so its state is never stepped |
+| purged | move | a purged node is found as none, so its state is never stepped |
+| purged | move-children | a purged node is found as none, so its state is never stepped |

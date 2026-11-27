@@ -53,11 +53,16 @@ close-out under **Close-outs**, newest first.
   write's body is read ([the plan](2026-11-25-slice-4-nodes.md); ADR-0002,
   ADR-0003, ADR-0004 and ADR-0006, amended 2026-11-25). A person can now store
   notes and read their history.
-- **Slice 4b is built**, on `slice-4b-lifecycle`, not merged: migration 4, the
+- **Slice 4b is merged** (#18, `77398a8`): migration 4, the
   lifecycle as a table, five routes to archive, trash and purge a node
   ([the plan](2026-11-25-slice-4b-node-lifecycle.md); ADR-0002, ADR-0004,
   ADR-0007 and ADR-0008, amended 2026-11-25 and 26). A person can now put a note
   away, and delete it for good.
+- **Slice 5a is built**, on `slice-5a-tree`, not merged: migration 5, folders,
+  a move and a bulk move of children, the list by parent
+  ([the plan](2026-11-26-slice-5a-tree.md); ADR-0002, ADR-0003, ADR-0004 and
+  ADR-0007, amended 2026-11-26). A person can now keep notes in Projects and
+  Journals.
 - **ADR-0006's amendment is accepted** (owner, 2026-11-23): a key is looked up by its
   BLAKE2b hash.
 - **T5 is restated** (owner, 2026-11-23; ADR-0008's second amendment), since circuit's
@@ -65,9 +70,19 @@ close-out under **Close-outs**, newest first.
 
 ## Next
 
-**Slice 5: the tree and move; links.** Not planned yet. Its plan decides how a
-move is kept from making a loop, whether a snapshot holds the parent, and what
-a trash or a purge does to a node's children.
+**Slice 5b: links.** Not planned yet. Its plan decides the link types, whether
+a link bumps either node's revision, what a trash or a purge does to a node's
+links, and whether links block a purge as children do.
+
+**Kept ready, from slice 5a (owner, 2026-11-26):**
+
+- **"Inherit on read":** a node counts as trashed when any folder above it is.
+  Today trash touches one node (T6), and a client hides what is inside a
+  trashed folder itself. If clients struggle, this is the way out: no
+  migration, under 1 ms a page at depth 5. It needs its own cap on the walk,
+  and past that cap it would be wrong, since a tree's depth has no bound.
+- **A bulk purge of a folder and what is in it** (T7): its own slice, with
+  measured limits, if emptying a folder by hand hurts.
 
 **chez-sodium is pinned at its v0.1.0** (981ba2e, moved 2026-11-25): no export
 changed since d53e83c. Its docs say to bound a password before verify: Techo's
@@ -102,6 +117,14 @@ trashed, refused a replace (409 `wrong_state`) and a stale untrash (412),
 untrashed, refused a `DELETE` while active (409), trashed again, purged (204, no
 body, no `ETag`), and then a 404.
 
+**And for slice 5a, 2026-11-26, on its branch before the merge:** `make test`
+passed 35 of 35 suites. Against a real server: a Note made inside a Project,
+the top level and the folder listed, a Task moved in (200, revision 2), refused
+by a Journal (409 `invalid_parent`), a Project refused under its own child (409
+`would_loop`), the Project trashed with the Task inside still active, its
+`DELETE` refused (409 `has_children`), its children moved out in one call
+(`{"moved":2,"left":0}`), and then deleted (204).
+
 ## Slices
 
 | # | Slice | State | Waits on |
@@ -112,8 +135,9 @@ body, no `ETag`), and then a 404.
 | 3a | The tables, the key check, the key routes, the error format, the request log | merged (PR #9) | |
 | 3b | `techo user add`, login, the rate limit, the hashing worker | merged (PR #12) | |
 | 4 | Node create, read, update; revisions; `If-Match` | merged, #15 | |
-| 4b | The node lifecycle: archive, trash, purge | built, on `slice-4b-lifecycle` | |
-| 5 | The tree and move; links | not planned | |
+| 4b | The node lifecycle: archive, trash, purge | merged, #18 | |
+| 5a | The tree and move | built, on `slice-5a-tree` | |
+| 5b | Links | not planned | |
 | 6 | Kinds and props; task transitions | not planned | |
 | 7 | Tags and search | not planned | |
 | 8 | The change feed | not planned | |
@@ -138,11 +162,14 @@ From [outline.md](outline.md) §14, each for the slice named:
 
 | Question | Slice |
 |---|---|
-| What a trash or a purge does to a node's children | 5 |
+| The link types; whether links block a purge | 5b |
+| Whether a move into a Journal checks a Note's timestamp, and what of Notes moved in before | 6 |
+| A kind that holds some kinds but not all, in the bulk move's filter | 6 |
+| Whether a search shows what is inside a trashed folder | 7 |
+| Whether the feed gives a moved node's parent: a `move` row names none | 8 |
 | Whether `state` behind a large `props` costs the list and the write's check | 6 |
 | How the search index forgets a purged node's words | 7 |
 | What the feed says of a revision that has no snapshot, or whose node is purged | 8 |
-| Whether a snapshot holds the parent, so a restore can undo a move | 5 |
 | Search over a join of each node and its newest snapshot, measured at size | 7 |
 | Whether `VACUUM INTO` keeps a search index true (it did in a small probe) | 9 |
 | A Contact's first fields, exactly | 6 |
@@ -150,7 +177,41 @@ From [outline.md](outline.md) §14, each for the slice named:
 
 ## Close-outs
 
-### Slice 4b: the node lifecycle (built 2026-11-26)
+### Slice 5a: the tree and move (built 2026-11-26)
+
+- **Built:** migration 5 (`nodes.parent`, `nodes_parent`); `may-hold?`,
+  `parent-verdict` and two more events in `(techo nodes)`; `ancestors`,
+  `children-heads`, `move-node!`; two routes, `move` and `move-children`; the
+  list's `?parent=`; three codes. No new suite: 35, with the pure suite at
+  4,383 tests, the route suite at about 570, and the model at about 24,400
+  requests a run in 22 s.
+- **Answered:** only a Project or a Journal has children; a parent is set at
+  the make or by a move; a move writes no snapshot; a loop is refused and a
+  parent may have 63 ancestors; trash touches one node; a purge waits for the
+  node to be empty; a bulk move, and no bulk purge yet (T1 to T10).
+- **Moved on:** links, to 5b.
+- **What the reviews caught that the builders could not:**
+  - the plan's: the walk up was fast in my probe by luck, and 375 ms written
+    the plain way; a bulk move could answer "moved 0" with movable children
+    left; it had no place in the tables; migration 5 broke four test files no
+    task owned; the model's laws were false for a bulk move;
+  - the build's: the bulk move's rule was said twice with nothing holding the
+    copies equal; the guide's folder section was wrong in six places. No bug,
+    and none of its 29 mutants survived.
+- **Two holes in the decisions, documented and left:** a folder inside a
+  trashed one still takes new nodes; a tree's depth has no bound, and a folder
+  64 levels down holds nothing.
+- **What I got wrong:** the walk's probe; "the depth cap bounds it" of inherit
+  on read; a brief that said every 400 logs no account.
+- **The agents:** the plan's review (Opus, 285k tokens, 19 min); task 1, the
+  store (Sonnet, 163k, 30 min); 2, the pure rules (Opus, 245k, 16 min); 3, the
+  routes (Opus, 355k, 43 min); 4a, the model (Opus, 534k, 71 min); 4b,
+  integration (Sonnet, 148k, 55 min); the build's review (Opus, 299k, 24 min);
+  its fixes (Sonnet, 104k, 10 min).
+- **Run on the owner's Mac, by hand, before the merge:** see "Run on the owner's
+  Mac" above.
+
+### Slice 4b: the node lifecycle (merged 2026-11-26, #18)
 
 - **Built:** migration 4 (`nodes.state`); the lifecycle's table and
   `node-command` in `(techo nodes)`; `set-node-state!` and `purge-node!`; five

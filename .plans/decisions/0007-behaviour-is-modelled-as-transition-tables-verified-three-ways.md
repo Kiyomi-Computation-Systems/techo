@@ -56,3 +56,14 @@ Plan: [slice 4b](../2026-11-25-slice-4b-node-lifecycle.md)
 - **Two tables answer one request through one pure function,** which takes what
   was found, the state and the event. Stale is answered before the state, and
   the state before the kind.
+
+## Amendment, 2026-11-26: a move in the lifecycle
+
+Status: accepted (owner, 2026-11-26, as slice 5a's T8)
+Plan: [slice 5a](../2026-11-26-slice-5a-tree.md)
+
+- **The lifecycle's table gains `move`,** refused for a trashed node, and
+  `move-children`, allowed in every state.
+- **The one function takes two facts more:** the verdict on the new parent, and
+  whether the node has children. The order is: stale, the state, the parent,
+  the children.
