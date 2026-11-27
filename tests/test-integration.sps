@@ -271,10 +271,10 @@
 ;; The shipped schema, as the file's facts count it: accounts, api_keys, the
 ;; index, and the automatic indexes of the primary and unique keys, and migration 5's index.
 (define shipped-latest (latest-version migrations))
-(define shipped-objects 15)
+(define shipped-objects 17)
 ;; A version no shipped migration reaches: what "a file from a newer Techo" holds.
 (define ahead-version (+ shipped-latest 1))
-(define shipped-tables '("accounts" "api_keys" "changes" "nodes" "revisions"))
+(define shipped-tables '("accounts" "api_keys" "changes" "links" "nodes" "revisions"))
 
 ;; applied-lines : (Listof Natural) -> (Listof String)
 ;; The lines `techo migrate` prints for the versions it applied.
@@ -1510,6 +1510,251 @@
                  (col "SELECT op FROM changes WHERE owner = (SELECT owner FROM nodes ORDER BY num LIMIT 1) ORDER BY seq")
                  (col "SELECT lower(hex(node)) || ':' || revision FROM changes WHERE op = 'move' AND owner = (SELECT owner FROM nodes ORDER BY num LIMIT 1) ORDER BY seq"))))))))
 
+
+;; --- links over the wire (slice 5b): the observing ---------------------------
+
+(define (ln-id n)
+  (string-append "0190b3a4-5c6d-7e8f-9a0b-0000000000" (if (< n 16) "0" "") (number->string n 16)))
+(define ln-x (ln-id 1))
+(define ln-y (ln-id 2))
+(define ln-z (ln-id 3))
+(define ln-t (ln-id 4))
+(define ln-s (ln-id 5))
+(define ln-h (ln-id 6))
+(define ln-a (ln-id 7))
+(define ln-bn (ln-id 8))
+(define ln-nobody (ln-id 9))
+(define ln-nobody2 (ln-id 10))
+(define ln-v4 "0190b3a4-5c6d-4e8f-9a0b-00000000000b")
+(define ln-title-word "ocelottitle")
+
+;; ln-doc : String String -> String
+(define (ln-doc kind n)
+  (string-append "{\"kind\":\"" kind "\",\"title\":\"" ln-title-word " " n
+                 "\",\"body\":\"ocelotbody " n "\",\"content_type\":\"text/plain\"}"))
+
+;; ln-url : String String String -> String
+(define (ln-url src type tgt) (string-append "/v1/nodes/" src "/links/" type "/" tgt))
+(define (ln-list id query) (string-append "/v1/nodes/" id "/links" query))
+
+;; ln-summary : Json -> (List String String)    an item's type and its node's id
+(define (ln-summary i) (list (jget i "type") (jget (jget i "node") "id")))
+
+;; ln-pages : Nat String String String -> (Listof (List Status (Listof (List String String)) Next))
+;; Follows `next` from BASE (a path with its query) with KEY until it is null,
+;; at most 12 pages.
+(define (ln-pages port key base)
+  (let loop ((after #f) (n 0) (acc '()))
+    (let* ((r (hcall port 'get (if after (string-append base "&after=" after) base) #f ""
+                     (bearer key)))
+           (j (lg-json r))
+           (next (jget j "next"))
+           (page (list (lg-status r)
+                       (if (= (lg-status r) 200) (map ln-summary (jitems j)) 'none)
+                       next)))
+      (if (and (string? next) (< n 12))
+          (loop next (+ n 1) (cons page acc))
+          (reverse (cons page acc))))))
+
+;; observe-links! : String -> Void
+(define (observe-links! dir)
+  (define db (string-append dir "/links.db"))
+  (define env (list (string-append "TECHO_DB_PATH=" db)))
+  (define (add! name pw user)
+    (id-of-added (run-cli-in dir name (string-append pw "\n") '() env
+                             (list "user" "add" "--username" user "--email" (string-append user "@example.com")))))
+  (obs-set! "ln:migrate" (car (run-cli-in dir "lnmigrate" "" '() env '("migrate"))))
+  (obs-set! "ln:a-id" (add! "ln-add-a" nd-pw-a "linka"))
+  (obs-set! "ln:b-id" (add! "ln-add-b" nd-pw-b "linkb"))
+  (with-server dir "lnsrv" db #f
+    (lambda (port)
+      (define (key-of email pw)
+        (let* ((r (hcall port 'post "/v1/login" "application/json" (login-json email pw "links") '()))
+               (k (jget (lg-json r) "key")))
+          (if (string? k) k "techo_missing")))
+      (let* ((ka (key-of "linka@example.com" nd-pw-a))
+             (kb (key-of "linkb@example.com" nd-pw-b))
+             (path (lambda (id) (string-append "/v1/nodes/" id)))
+             (pause (lambda () (sleep (make-time 'time-duration 30000000 0)))))
+        (define (call! key name method target headers body ctype)
+          (obs-set! name (attempt (lambda ()
+                                    (hcall port method target ctype (or body "")
+                                           (append (if key (bearer key) '()) headers))))))
+        (define (a! name method target) (call! ka name method target '() #f #f))
+        (define (ah! name method target headers) (call! ka name method target headers #f #f))
+        (define (b! name method target) (call! kb name method target '() #f #f))
+        (define (pages! name key base) (obs-set! name (attempt (lambda () (ln-pages port key base)))))
+        ;; the nodes
+        (for-each (lambda (spec)
+                    (call! ka (string-append "ln:create-" (cadr spec)) 'put (path (car spec)) nd-create
+                           (ln-doc "note" (cadr spec)) "application/json"))
+                  (list (list ln-x "x") (list ln-y "y") (list ln-z "z") (list ln-t "t")
+                        (list ln-s "s") (list ln-h "h") (list ln-a "a")))
+        (call! kb "ln:create-bn" 'put (path ln-bn) nd-create (ln-doc "note" "bn") "application/json")
+        ;; a link, twice; the nodes as they were
+        (a! "ln:x-0" 'get (path ln-x))
+        (a! "ln:y-0" 'get (path ln-y))
+        (a! "ln:put-1" 'put (ln-url ln-x "related" ln-y))
+        (pause)
+        (a! "ln:put-2" 'put (ln-url ln-x "related" ln-y))
+        (a! "ln:x-1" 'get (path ln-x))
+        (a! "ln:y-1" 'get (path ln-y))
+        (a! "ln:out-x-1" 'get (ln-list ln-x ""))
+        (a! "ln:in-y-1" 'get (ln-list ln-y "?direction=in"))
+        (a! "ln:nodes-list" (quote get) "/v1/nodes")
+        (a! "ln:out-y-0" 'get (ln-list ln-y "?direction=out"))
+        ;; three types between the same two nodes, the reverse, a second source
+        (a! "ln:put-m" 'put (ln-url ln-x "mentions" ln-y))
+        (a! "ln:put-b" 'put (ln-url ln-x "blocks" ln-y))
+        (a! "ln:put-rev" 'put (ln-url ln-y "related" ln-x))
+        (a! "ln:put-z" 'put (ln-url ln-z "related" ln-y))
+        (a! "ln:out-x-3" 'get (ln-list ln-x "?direction=out"))
+        (a! "ln:in-y-4" 'get (ln-list ln-y "?direction=in"))
+        (a! "ln:out-y-1" 'get (ln-list ln-y ""))
+        (a! "ln:in-x-1" 'get (ln-list ln-x "?direction=in"))
+        (a! "ln:out-x-mentions" 'get (ln-list ln-x "?type=mentions"))
+        (a! "ln:in-y-related" 'get (ln-list ln-y "?direction=in&type=related"))
+        (a! "ln:in-x-blocks" 'get (ln-list ln-x "?direction=in&type=blocks"))
+        ;; paging
+        (pages! "ln:pg-out-x" ka (ln-list ln-x "?limit=1"))
+        (pages! "ln:pg-in-y" ka (ln-list ln-y "?direction=in&limit=1"))
+        (pages! "ln:pg-in-y-2" ka (ln-list ln-y "?direction=in&limit=2"))
+        (pages! "ln:pg-in-y-related" ka (ln-list ln-y "?direction=in&type=related&limit=1"))
+        (pages! "ln:pg-out-x-100" ka (ln-list ln-x "?limit=100"))
+        (a! "ln:after-typed" 'get (ln-list ln-y (string-append "?direction=in&type=related&after=related:" ln-x)))
+        (a! "ln:after-untyped" 'get (ln-list ln-y (string-append "?direction=in&after=mentions:" ln-x)))
+        ;; a link removed
+        (a! "ln:del-1" 'delete (ln-url ln-x "related" ln-y))
+        (a! "ln:del-2" 'delete (ln-url ln-x "related" ln-y))
+        (a! "ln:out-x-del" 'get (ln-list ln-x ""))
+        (a! "ln:in-y-del" 'get (ln-list ln-y "?direction=in"))
+        (a! "ln:out-y-del" 'get (ln-list ln-y ""))
+        (a! "ln:x-del" 'get (path ln-x))
+        (a! "ln:y-del" 'get (path ln-y))
+        ;; a trashed target
+        (a! "ln:put-t" 'put (ln-url ln-x "related" ln-t))
+        (pause)
+        (ah! "ln:t-trash" 'post (string-append (path ln-t) "/trash") (nd-match 1))
+        (a! "ln:put-t-new" 'put (ln-url ln-x "mentions" ln-t))
+        (a! "ln:put-from-t" 'put (ln-url ln-t "mentions" ln-x))
+        (a! "ln:put-from-t-to-nobody" 'put (ln-url ln-t "mentions" ln-nobody))
+        (a! "ln:put-t-again" 'put (ln-url ln-x "related" ln-t))
+        (a! "ln:out-x-t" 'get (ln-list ln-x "?type=related"))
+        (a! "ln:in-t" 'get (ln-list ln-t "?direction=in"))
+        (a! "ln:out-t" 'get (ln-list ln-t ""))
+        (a! "ln:del-t" 'delete (ln-url ln-x "related" ln-t))
+        (a! "ln:out-x-t-del" 'get (ln-list ln-x "?type=related"))
+        ;; a trashed source
+        (a! "ln:put-s" 'put (ln-url ln-s "related" ln-x))
+        (ah! "ln:s-trash" 'post (string-append (path ln-s) "/trash") (nd-match 1))
+        (a! "ln:out-s" 'get (ln-list ln-s ""))
+        (a! "ln:del-s" 'delete (ln-url ln-s "related" ln-x))
+        (a! "ln:out-s-del" 'get (ln-list ln-s ""))
+        ;; an archived target
+        (ah! "ln:a-archive" 'post (string-append (path ln-a) "/archive") (nd-match 1))
+        (a! "ln:put-a" 'put (ln-url ln-x "related" ln-a))
+        (a! "ln:out-x-a" 'get (ln-list ln-x "?type=related"))
+        ;; a body on a PUT
+        (call! ka "ln:put-body" 'put (ln-url ln-x "related" ln-z) '() "{\"note\":\"ignored\"}" "application/json")
+        (call! ka "ln:put-body-2" 'put (ln-url ln-x "related" ln-z) '() "{\"note\":\"ignored\"}" "application/json")
+        (call! ka "ln:put-body-text" 'put (ln-url ln-z "mentions" ln-x) '() "not json" "text/plain")
+        ;; a node linked both ways, trashed, purged
+        (a! "ln:h-1" 'put (ln-url ln-h "related" ln-x))
+        (a! "ln:h-2" 'put (ln-url ln-x "mentions" ln-h))
+        (a! "ln:h-3" 'put (ln-url ln-z "blocks" ln-h))
+        (a! "ln:h-4" 'put (ln-url ln-h "blocks" ln-z))
+        (a! "ln:x-pre" 'get (path ln-x))
+        (a! "ln:z-pre" 'get (path ln-z))
+        (a! "ln:out-x-pre" 'get (ln-list ln-x ""))
+        (a! "ln:in-x-pre" 'get (ln-list ln-x "?direction=in"))
+        (a! "ln:out-z-pre" 'get (ln-list ln-z ""))
+        (a! "ln:in-z-pre" 'get (ln-list ln-z "?direction=in"))
+        (a! "ln:out-h-pre" 'get (ln-list ln-h ""))
+        (ah! "ln:h-trash" 'post (string-append (path ln-h) "/trash") (nd-match 1))
+        (a! "ln:out-h-trashed" 'get (ln-list ln-h ""))
+        (a! "ln:in-h-trashed" 'get (ln-list ln-h "?direction=in"))
+        (ah! "ln:h-purge" 'delete (path ln-h) (nd-match 2))
+        (a! "ln:h-get" 'get (path ln-h))
+        (a! "ln:out-h-purged" 'get (ln-list ln-h ""))
+        (a! "ln:put-to-h" 'put (ln-url ln-x "related" ln-h))
+        (a! "ln:put-from-h" 'put (ln-url ln-h "related" ln-x))
+        (a! "ln:del-to-h" 'delete (ln-url ln-x "mentions" ln-h))
+        (a! "ln:out-x-post" 'get (ln-list ln-x ""))
+        (a! "ln:in-x-post" 'get (ln-list ln-x "?direction=in"))
+        (a! "ln:out-z-post" 'get (ln-list ln-z ""))
+        (a! "ln:in-z-post" 'get (ln-list ln-z "?direction=in"))
+        (a! "ln:x-post" 'get (path ln-x))
+        (a! "ln:z-post" 'get (path ln-z))
+        ;; the other account
+        (b! "ln:b-put-src" 'put (ln-url ln-x "related" ln-bn))
+        (b! "ln:b-put-src-nobody" 'put (ln-url ln-nobody "related" ln-bn))
+        (b! "ln:b-put-tgt" 'put (ln-url ln-bn "related" ln-x))
+        (b! "ln:b-put-tgt-nobody" 'put (ln-url ln-bn "related" ln-nobody))
+        (b! "ln:b-del" 'delete (ln-url ln-x "mentions" ln-y))
+        (b! "ln:b-del-nobody" 'delete (ln-url ln-nobody "mentions" ln-y))
+        (b! "ln:b-get" 'get (ln-list ln-x ""))
+        (b! "ln:b-get-in" 'get (ln-list ln-y "?direction=in"))
+        (b! "ln:b-get-nobody" 'get (ln-list ln-nobody ""))
+        (a! "ln:a-put-bn" 'put (ln-url ln-x "related" ln-bn))
+        (a! "ln:a-put-nobody" 'put (ln-url ln-x "related" ln-nobody))
+        (a! "ln:out-x-after-b" 'get (ln-list ln-x ""))
+        (a! "ln:in-y-after-b" 'get (ln-list ln-y "?direction=in"))
+        (b! "ln:out-bn" 'get (ln-list ln-bn ""))
+        ;; refused before anything is read
+        (a! "ln:bad-type" 'put (ln-url ln-x "friend" ln-y))
+        (a! "ln:bad-type-case" 'put (ln-url ln-x "Related" ln-y))
+        (a! "ln:bad-type-del" 'delete (ln-url ln-x "friend" ln-y))
+        (a! "ln:bad-type-nobody" 'put (ln-url ln-nobody "friend" ln-nobody2))
+        (a! "ln:bad-source" 'put (ln-url "junk" "related" ln-y))
+        (a! "ln:bad-target" 'put (ln-url ln-x "related" "junk"))
+        (a! "ln:bad-target-del" 'delete (ln-url ln-x "related" "junk"))
+        (a! "ln:v4-source" 'put (ln-url ln-v4 "related" ln-y))
+        (a! "ln:v4-target" 'put (ln-url ln-x "related" ln-v4))
+        (a! "ln:self-put" 'put (ln-url ln-x "related" ln-x))
+        (a! "ln:self-del" 'delete (ln-url ln-x "related" ln-x))
+        (ah! "ln:if-match-put" 'put (ln-url ln-x "related" ln-y) (nd-match 1))
+        (ah! "ln:if-match-del" 'delete (ln-url ln-x "mentions" ln-y) (nd-match 1))
+        (ah! "ln:if-none-match-put" 'put (ln-url ln-x "related" ln-y) nd-create)
+        (ah! "ln:if-none-match-del" 'delete (ln-url ln-x "mentions" ln-y) nd-create)
+        (ah! "ln:if-match-get" 'get (ln-list ln-x "?type=mentions") (nd-match 7))
+        (a! "ln:q-direction" 'get (ln-list ln-x "?direction=sideways"))
+        (a! "ln:q-direction-upper" 'get (ln-list ln-x "?direction=OUT"))
+        (a! "ln:q-direction-twice" 'get (ln-list ln-x "?direction=out&direction=in"))
+        (a! "ln:q-direction-empty" 'get (ln-list ln-x "?direction="))
+        (a! "ln:q-type" 'get (ln-list ln-x "?type=friend"))
+        (a! "ln:q-type-upper" 'get (ln-list ln-x "?type=Related"))
+        (a! "ln:q-type-twice" 'get (ln-list ln-x "?type=related&type=blocks"))
+        (a! "ln:q-type-empty" 'get (ln-list ln-x "?type="))
+        (a! "ln:q-limit-0" 'get (ln-list ln-x "?limit=0"))
+        (a! "ln:q-limit-twice" 'get (ln-list ln-x "?limit=1&limit=2"))
+        (a! "ln:q-limit-empty" 'get (ln-list ln-x "?limit="))
+        (a! "ln:q-after-junk" 'get (ln-list ln-x "?after=junk"))
+        (a! "ln:q-after-no-colon" 'get (ln-list ln-x (string-append "?after=blocks" ln-y)))
+        (a! "ln:q-after-type" 'get (ln-list ln-x "?after=friend:" ))
+        (a! "ln:q-after-v4" 'get (ln-list ln-x (string-append "?after=blocks:" ln-v4)))
+        (a! "ln:q-after-extra" 'get (ln-list ln-x (string-append "?after=blocks:" ln-y "x")))
+        (a! "ln:q-after-other-type" 'get (ln-list ln-x (string-append "?type=related&after=blocks:" ln-y)))
+        (a! "ln:q-after-twice" 'get (ln-list ln-x (string-append "?after=blocks:" ln-y "&after=blocks:" ln-y)))
+        (a! "ln:q-after-empty" 'get (ln-list ln-x "?after="))
+        (a! "ln:q-bad-id" 'get "/v1/nodes/junk/links")
+        (call! #f "ln:no-key" 'put (ln-url ln-x "related" ln-y) '() #f #f)
+        ;; no route
+        (call! ka "ln:post-link" 'post (ln-url ln-x "related" ln-y) '() "" #f)
+        (a! "ln:get-link" 'get (ln-url ln-x "related" ln-y))
+        (call! ka "ln:post-list" 'post (ln-list ln-x "") '() "" #f))))
+  (obs-set! "ln:db"
+    (attempt
+     (lambda ()
+       (with-db (open-techo-db db 'read-only)
+         (lambda (c)
+           (define (col sql) (map (lambda (r) (vector-ref r 0)) (query c sql)))
+           (list (col "SELECT count(*) FROM links")
+                 (col "SELECT count(DISTINCT owner) FROM links")
+                 (col "SELECT op FROM changes WHERE owner = (SELECT owner FROM nodes ORDER BY num LIMIT 1) ORDER BY seq")
+                 (col "SELECT lower(hex(node)) || ':' || revision || ':' || op FROM changes WHERE op IN ('link','unlink') ORDER BY seq")
+                 (col "SELECT revision FROM nodes ORDER BY num")
+                 (col "SELECT state FROM nodes ORDER BY num")
+                 (col "SELECT count(*) FROM revisions"))))))))
 ;; leftovers : String -> (Listof Boolean)
 ;; Whether DB's `-wal` and `-shm` exist.
 (define (leftovers db)
@@ -1554,6 +1799,7 @@
     (observe "nodes-run" (observe-nodes! dir))
     (observe "lifecycle-run" (observe-lifecycle! dir))
     (observe "tree-run" (observe-tree! dir))
+    (observe "links-run" (observe-links! dir))
     ;; The command line.
     (set! cli-version (attempt (lambda () (run-cli dir "version" '() '() '("version")))))
     (set! cli-none (attempt (lambda () (run-cli dir "none" '() '() '()))))
@@ -2908,6 +3154,265 @@
 (test-equal "tree: the file's parents: the purged project, the journal, the task, the two projects made top level and the second account's note have none; the notes are under the journal and the second task under its project"
   (map (lambda (p) (if p (tr-hex p) "")) (list #f tr-j #f #f #f #f #f tr-j #f tr-p2 tr-j #f))
   (let ((d (obs "tr:db"))) (if (list? d) (list-ref d 3) d)))
+
+;; --- links over the wire (slice 5b) -----------------------------------------
+
+(define (ln-got k) (list (lg-st k) (nd-h k "content-type") (lg-code k)))
+(define (ln-problem status code) (list status nd-problem code))
+(define (ln-hex id) (tr-hex id))
+;; ln-items : String -> (Listof (List Type Id Kind State))
+(define (ln-items k)
+  (let ((is (jitems (nd-j k))))
+    (if (list? is)
+        (map (lambda (i) (let ((n (jget i "node"))) (list (jget i "type") (jget n "id") (jget n "kind") (jget n "state")))) is)
+        is)))
+(define (ln-ids k) (let ((is (ln-items k))) (if (list? is) (map (lambda (i) (list (car i) (cadr i))) is) is)))
+(define (ln-created k)
+  (let ((is (jitems (nd-j k)))) (if (list? is) (map (lambda (i) (jget i "created")) is) is)))
+;; ln-link : String -> (List Status ContentType Members ETag Location)
+(define (ln-link k) (list (lg-st k) (nd-h k "content-type") (members (nd-j k)) (nd-h k "etag") (nd-h k "location")))
+(define ln-link-members '("source" "type" "target" "created"))
+(define ln-nf (ln-problem 404 "not_found"))
+(define ln-bad (ln-problem 400 "invalid_request"))
+(define ln-wrong (ln-problem 409 "wrong_state"))
+(define (ln-text k) (if (lg-ok? k) (lg-text (obs k)) (obs k)))
+(define (ln-nodes-same? a b) (equal? (ln-text a) (ln-text b)))
+
+(test-equal "links: the run's setup worked: migrated, two accounts, the server stopped with 0 and raised nothing"
+  '(0 #t #t 0 unobserved)
+  (list (obs "ln:migrate")
+        (and (string? (obs "ln:a-id")) (= 36 (string-length (obs "ln:a-id"))))
+        (and (string? (obs "ln:b-id")) (not (equal? (obs "ln:a-id") (obs "ln:b-id"))))
+        (obs "lnsrv:exit") (obs "lnsrv:raised")))
+
+(test-equal "links: the nodes are made: 201 for each of the seven and the other account's"
+  (list 201 201 201 201 201 201 201 201)
+  (map lg-st '("ln:create-x" "ln:create-y" "ln:create-z" "ln:create-t" "ln:create-s" "ln:create-h"
+               "ln:create-a" "ln:create-bn")))
+
+;; making a link
+(test-equal "links: a PUT makes a link: 201, application/json, the four members, the ends and the type as given, an integer created, no ETag, no Location"
+  (list 201 "application/json" ln-link-members #f #f (list ln-x "related" ln-y) #t)
+  (let ((j (nd-j "ln:put-1")))
+    (append (ln-link "ln:put-1")
+            (list (list (jget j "source") (jget j "type") (jget j "target"))
+                  (exact? (jget j "created"))))))
+
+(test-equal "links: the same PUT again, 30 ms later, is 200 with the same four members, the first created, no ETag, no Location"
+  (list (list 200 "application/json" ln-link-members #f #f) #t)
+  (list (ln-link "ln:put-2")
+        (equal? (nd-j "ln:put-1") (nd-j "ln:put-2"))))
+
+(test-equal "links: a link changes neither node: each GET is byte for byte the same before and after, with ETag \"1\", revision 1, and after the removals and the purge too"
+  (list #t #t #t #t (list 200 "\"1\"" 1 1))
+  (list (ln-nodes-same? "ln:x-0" "ln:x-1") (ln-nodes-same? "ln:y-0" "ln:y-1")
+        (and (ln-nodes-same? "ln:x-0" "ln:x-del") (ln-nodes-same? "ln:y-0" "ln:y-del"))
+        (and (ln-nodes-same? "ln:x-0" "ln:x-pre") (ln-nodes-same? "ln:x-0" "ln:x-post"))
+        (list (lg-st "ln:x-1") (nd-h "ln:x-1" "etag") (jget (nd-j "ln:x-1") "revision")
+              (jget (nd-j "ln:y-1") "revision"))))
+
+;; listing
+(test-equal "links: out from the source lists the target: 200, application/json, items of type, created and node, the created of the PUT, the node's id, kind and state, next null"
+  (list 200 "application/json" '("items" "next") '("type" "created" "node")
+        (list (list "related" ln-y "note" "active")) (list (jget (nd-j "ln:put-1") "created")) 'null)
+  (let ((j (nd-j "ln:out-x-1")))
+    (list (lg-st "ln:out-x-1") (nd-h "ln:out-x-1" "content-type") (members j)
+          (members (car (jitems j))) (ln-items "ln:out-x-1") (ln-created "ln:out-x-1") (jget j "next"))))
+
+(test-equal "links: in at the target lists the source, with the same created; the target's out list is empty before; direction=out is the default"
+  (list (list (list "related" ln-x "note" "active")) (list (jget (nd-j "ln:put-1") "created")) '()
+        (ln-items "ln:out-x-1"))
+  (list (ln-items "ln:in-y-1") (ln-created "ln:in-y-1") (ln-items "ln:out-y-0") (ln-items "ln:out-x-1")))
+
+(test-equal "links: a page's node is the nodes list's item for it, byte for byte, without a body"
+  (list #t 10)
+  (let* ((item (car (jitems (nd-j "ln:in-y-1"))))
+         (node (jget item "node"))
+         (listed (filter (lambda (n) (equal? (jget n "id") ln-x)) (jitems (nd-j "ln:nodes-list")))))
+    (list (and (pair? listed) (equal? node (car listed)))
+          (length (members node)))))
+
+(test-equal "links: a link of each type between the same two nodes is three links, listed by type name: blocks, mentions, related, each with its own created"
+  (list (list (list "blocks" ln-y) (list "mentions" ln-y) (list "related" ln-y)) 3
+        (list 201 201 201))
+  (list (ln-ids "ln:out-x-3")
+        (distinct-count (ln-created "ln:out-x-3"))
+        (map lg-st '("ln:put-1" "ln:put-m" "ln:put-b"))))
+
+(test-equal "links: the reverse direction is its own link: 201; y lists x out, x lists y in"
+  (list 201 (list (list "related" ln-x)) (list (list "related" ln-y)))
+  (list (lg-st "ln:put-rev") (ln-ids "ln:out-y-1") (ln-ids "ln:in-x-1")))
+
+(test-equal "links: in lists by type then by the source's id: a second source of the same type comes after the first"
+  (list (list "blocks" ln-x) (list "mentions" ln-x) (list "related" ln-x) (list "related" ln-z))
+  (ln-ids "ln:in-y-4"))
+
+(test-equal "links: ?type= narrows: out of one type, in of one type with two sources, in of a type with none"
+  (list (list (list "mentions" ln-y)) (list (list "related" ln-x) (list "related" ln-z)) '())
+  (list (ln-ids "ln:out-x-mentions") (ln-ids "ln:in-y-related") (ln-ids "ln:in-x-blocks")))
+
+;; paging
+(test-equal "links: out of x with limit=1 gives one item a page and follows next, which is <type>:<id>, to a null; each link once, in order"
+  (list (list 200 (list (list "blocks" ln-y)) (string-append "blocks:" ln-y))
+        (list 200 (list (list "mentions" ln-y)) (string-append "mentions:" ln-y))
+        (list 200 (list (list "related" ln-y)) 'null))
+  (obs "ln:pg-out-x"))
+
+(test-equal "links: in at y with limit=1 follows next through four pages, across the type's boundary and within it; with limit=2, two pages; typed, two pages"
+  (list (list (list 200 (list (list "blocks" ln-x)) (string-append "blocks:" ln-x))
+              (list 200 (list (list "mentions" ln-x)) (string-append "mentions:" ln-x))
+              (list 200 (list (list "related" ln-x)) (string-append "related:" ln-x))
+              (list 200 (list (list "related" ln-z)) 'null))
+        (list (list 200 (list (list "blocks" ln-x) (list "mentions" ln-x)) (string-append "mentions:" ln-x))
+              (list 200 (list (list "related" ln-x) (list "related" ln-z)) 'null))
+        (list (list 200 (list (list "related" ln-x)) (string-append "related:" ln-x))
+              (list 200 (list (list "related" ln-z)) 'null))
+        (list (list 200 (list (list "blocks" ln-y) (list "mentions" ln-y) (list "related" ln-y)) 'null)))
+  (list (obs "ln:pg-in-y") (obs "ln:pg-in-y-2") (obs "ln:pg-in-y-related") (obs "ln:pg-out-x-100")))
+
+(test-equal "links: after names a place, not a link that must be there: the page after related:<x> typed, and after mentions:<x> untyped"
+  (list (list (list "related" ln-z)) (list (list "related" ln-x) (list "related" ln-z)))
+  (list (ln-ids "ln:after-typed") (ln-ids "ln:after-untyped")))
+
+;; removing
+(test-equal "links: a DELETE removes the link: 204 with an empty body, no ETag; again is 404 not_found"
+  (list 204 "" #f ln-nf)
+  (list (lg-st "ln:del-1") (lg-text (obs "ln:del-1")) (nd-h "ln:del-1" "etag") (ln-got "ln:del-2")))
+
+(test-equal "links: after it, x's out list and y's in list are without it, and the other links stay: the other types, the second source, and the reverse"
+  (list (list (list "blocks" ln-y) (list "mentions" ln-y))
+        (list (list "blocks" ln-x) (list "mentions" ln-x) (list "related" ln-z))
+        (list (list "related" ln-x)))
+  (list (ln-ids "ln:out-x-del") (ln-ids "ln:in-y-del") (ln-ids "ln:out-y-del")))
+
+;; states
+(test-equal "links: with the target trashed, a new link is 409 wrong_state, so is one from a trashed source, and a trashed source with a missing target is 404"
+  (list 200 ln-wrong ln-wrong ln-nf)
+  (list (lg-st "ln:t-trash") (ln-got "ln:put-t-new") (ln-got "ln:put-from-t") (ln-got "ln:put-from-t-to-nobody")))
+
+(test-equal "links: a link made before the trashing stays listed, out and in, with the node's state trashed; the trashed node's own out list is readable"
+  (list (list (list "related" ln-t "note" "trashed")) (list (list "related" ln-x "note" "active")) '())
+  (list (ln-items "ln:out-x-t") (ln-items "ln:in-t") (ln-items "ln:out-t")))
+
+(test-equal "links: a repeated PUT of that older link is 200 with the first created, no ETag; the 409s left no link"
+  (list (list 200 "application/json" ln-link-members #f #f) #t)
+  (list (ln-link "ln:put-t-again") (equal? (nd-j "ln:put-t") (nd-j "ln:put-t-again"))))
+
+(test-equal "links: a DELETE with the target trashed is 204, and the list is without the link"
+  (list 204 '())
+  (list (lg-st "ln:del-t") (ln-items "ln:out-x-t-del")))
+
+(test-equal "links: a trashed source's link is listed and a DELETE of it is 204: 201, listed with the target active, 204, gone"
+  (list 201 (list (list "related" ln-x "note" "active")) 204 '())
+  (list (lg-st "ln:put-s") (ln-items "ln:out-s") (lg-st "ln:del-s") (ln-items "ln:out-s-del")))
+
+(test-equal "links: an archived node can be linked to, and is listed with its state archived"
+  (list 200 201 (list (list "related" ln-a "note" "archived")))
+  (list (lg-st "ln:a-archive") (lg-st "ln:put-a") (ln-items "ln:out-x-a")))
+
+;; the body of a PUT is not read
+(test-equal "links: a PUT with a JSON body and Content-Type gets the same answer as one without: 201 then 200, the same members; a text/plain body that is not JSON too"
+  (list (list 201 "application/json" ln-link-members #f #f) (list 200 "application/json" ln-link-members #f #f) #t
+        (list 201 "application/json" ln-link-members #f #f))
+  (list (ln-link "ln:put-body") (ln-link "ln:put-body-2")
+        (equal? (nd-j "ln:put-body") (nd-j "ln:put-body-2"))
+        (ln-link "ln:put-body-text")))
+
+;; a purge
+(test-equal "links: before the purge h links both ways: x lists h out (mentions) and in (related), z lists h out (blocks) and in (blocks), and h lists its two out links and its two in links while trashed"
+  (list #t #t #t #t (list (list "blocks" ln-z) (list "related" ln-x))
+        (list (list "blocks" ln-z) (list "mentions" ln-x)) 200)
+  (let ((has (lambda (k t) (let ((is (ln-ids k))) (and (member (list t ln-h) is) #t)))))
+    (list (has "ln:out-x-pre" "mentions") (has "ln:in-x-pre" "related")
+          (has "ln:out-z-pre" "blocks") (has "ln:in-z-pre" "blocks")
+          (ln-ids "ln:out-h-trashed") (ln-ids "ln:in-h-trashed") (lg-st "ln:h-trash"))))
+
+(test-equal "links: the purge of h is 204 and h is 404 after, and no list of any other node shows it, either direction, and the lists of every other link are as they were"
+  (list 204 ln-nf ln-nf
+        (list (list "blocks" ln-y) (list "mentions" ln-y) (list "related" ln-z) (list "related" ln-a))
+        (list (list "mentions" ln-z) (list "related" ln-y))
+        (list (list "mentions" ln-x) (list "related" ln-y))
+        (list (list "related" ln-x)))
+  (list (lg-st "ln:h-purge") (ln-got "ln:h-get") (ln-got "ln:out-h-purged")
+        (ln-ids "ln:out-x-post") (ln-ids "ln:in-x-post") (ln-ids "ln:out-z-post") (ln-ids "ln:in-z-post")))
+
+(test-equal "links: the purge bumped no other node: x and z are byte for byte as before it, with ETag \"1\""
+  (list #t #t "\"1\"" "\"1\"")
+  (list (ln-nodes-same? "ln:x-pre" "ln:x-post") (ln-nodes-same? "ln:z-pre" "ln:z-post")
+        (nd-h "ln:x-post" "etag") (nd-h "ln:z-post" "etag")))
+
+(test-equal "links: nothing links to or from the purged h: PUT either way and DELETE of a link to it are 404"
+  (list ln-nf ln-nf ln-nf)
+  (map ln-got '("ln:put-to-h" "ln:put-from-h" "ln:del-to-h")))
+
+;; another account
+(test-equal "links: the other account's PUT, DELETE and GET on the first account's nodes are 404 not_found, the same bytes as for an id nobody holds: source, target, delete, list out and list in"
+  (list ln-nf ln-nf ln-nf ln-nf ln-nf #t #t #t #t #t)
+  (list (ln-got "ln:b-put-src") (ln-got "ln:b-put-tgt") (ln-got "ln:b-del") (ln-got "ln:b-get") (ln-got "ln:b-get-in")
+        (ln-nodes-same? "ln:b-put-src" "ln:b-put-src-nobody")
+        (ln-nodes-same? "ln:b-put-tgt" "ln:b-put-tgt-nobody")
+        (ln-nodes-same? "ln:b-del" "ln:b-del-nobody")
+        (ln-nodes-same? "ln:b-get" "ln:b-get-nobody")
+        (ln-nodes-same? "ln:b-get-in" "ln:b-get-nobody")))
+
+(test-equal "links: the first account's PUT to the other account's node is 404, the same bytes as to an id nobody holds; and the attempts changed nothing: the lists are as they were, the other account has no link"
+  (list ln-nf ln-nf #t (ln-ids "ln:out-x-post") (ln-ids "ln:in-y-del") '())
+  (list (ln-got "ln:a-put-bn") (ln-got "ln:a-put-nobody") (ln-nodes-same? "ln:a-put-bn" "ln:a-put-nobody")
+        (ln-ids "ln:out-x-after-b") (ln-ids "ln:in-y-after-b") (ln-ids "ln:out-bn")))
+
+;; refusals
+(test-equal "links: each refusal is application/problem+json with its code: a type not in the list (any case, on PUT and DELETE, before a missing node is looked for), a bad id at either end, a v4 id, a node linked to itself, If-Match and If-None-Match on a PUT and a DELETE"
+  (map (lambda (k) ln-bad)
+       '(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15))
+  (map ln-got '("ln:bad-type" "ln:bad-type-case" "ln:bad-type-del" "ln:bad-type-nobody"
+                "ln:bad-source" "ln:bad-target" "ln:bad-target-del" "ln:v4-source" "ln:v4-target"
+                "ln:self-put" "ln:self-del" "ln:if-match-put" "ln:if-match-del"
+                "ln:if-none-match-put" "ln:if-none-match-del")))
+
+(test-equal "links: a bad query is 400 invalid_request: direction (other, other case, twice, empty), type (other, other case, twice, empty), limit (0, twice, empty), after (junk, no colon, a type not in the list, a v4 id, text after the id, another type than ?type=, twice, empty), and a bad id in the path"
+  (map (lambda (k) ln-bad) (quote (1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20)))
+  (map ln-got '("ln:q-direction" "ln:q-direction-upper" "ln:q-direction-twice" "ln:q-direction-empty"
+                "ln:q-type" "ln:q-type-upper" "ln:q-type-twice" "ln:q-type-empty"
+                "ln:q-limit-0" "ln:q-limit-twice" "ln:q-limit-empty"
+                "ln:q-after-junk" "ln:q-after-no-colon" "ln:q-after-type" "ln:q-after-v4"
+                "ln:q-after-extra" "ln:q-after-other-type" "ln:q-after-twice" "ln:q-after-empty"
+                "ln:q-bad-id")))
+
+(test-equal "links: If-Match on the GET is ignored: 200 and the list"
+  (list 200 (list (list "mentions" ln-y)))
+  (list (lg-st "ln:if-match-get") (ln-ids "ln:if-match-get")))
+
+(test-equal "links: no key is 401 unauthorized"
+  (ln-problem 401 "unauthorized")
+  (ln-got "ln:no-key"))
+
+(test-equal "links: POST and GET on one link are 405 method_not_allowed with allow PUT, DELETE; POST on the list is 405 with allow GET, HEAD"
+  (list (list (ln-problem 405 "method_not_allowed") "PUT, DELETE")
+        (list (ln-problem 405 "method_not_allowed") "PUT, DELETE")
+        (list (ln-problem 405 "method_not_allowed") "GET, HEAD"))
+  (map (lambda (k) (list (ln-got k) (nd-h k "allow"))) '("ln:post-link" "ln:get-link" "ln:post-list")))
+
+;; the file
+(test-equal "links: the file after the server stops: 7 links of one account; the first account's changes: a link or unlink row for each link made or removed and none for a repeat, a refusal or the purge; each at its source's revision; revisions and states as the story leaves them"
+  (list 7 1
+        '("create" "create" "create" "create" "create" "create" "create" "link" "link" "link" "link" "link" "unlink"
+          "link" "trash" "unlink" "link" "trash" "unlink" "archive" "link" "link" "link" "link" "link" "link" "link"
+          "trash" "purge")
+        (list (string-append (ln-hex ln-x) ":1:link") (string-append (ln-hex ln-x) ":1:link")
+              (string-append (ln-hex ln-x) ":1:link") (string-append (ln-hex ln-y) ":1:link")
+              (string-append (ln-hex ln-z) ":1:link") (string-append (ln-hex ln-x) ":1:unlink")
+              (string-append (ln-hex ln-x) ":1:link") (string-append (ln-hex ln-x) ":1:unlink")
+              (string-append (ln-hex ln-s) ":1:link") (string-append (ln-hex ln-s) ":2:unlink")
+              (string-append (ln-hex ln-x) ":1:link") (string-append (ln-hex ln-x) ":1:link")
+              (string-append (ln-hex ln-z) ":1:link") (string-append (ln-hex ln-h) ":1:link")
+              (string-append (ln-hex ln-x) ":1:link") (string-append (ln-hex ln-z) ":1:link")
+              (string-append (ln-hex ln-h) ":1:link"))
+        '(1 1 1 2 2 3 2 1)
+        '("active" "active" "active" "trashed" "trashed" "purged" "archived" "active"))
+  (let ((d (obs "ln:db")))
+    (if (list? d)
+        (list (car (list-ref d 0)) (car (list-ref d 1)) (list-ref d 2) (list-ref d 3) (list-ref d 4) (list-ref d 5))
+        d)))
 
 (test-end "integration")
 

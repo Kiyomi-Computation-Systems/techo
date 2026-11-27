@@ -9,8 +9,8 @@ Document storage API specifically geared for note taking.
 ** Status
 
 Early. The server makes accounts and API keys, lets a person log in, and stores
-notes with their history, in folders, which can be archived, trashed and
-deleted. Links, tags, search and sync are not built yet.
+notes with their history, in folders, with links between them, which can be
+archived, trashed and deleted. Tags, search and sync are not built yet.
 [[file:.plans/outline.md][The outline]] says what is planned, and
 [[file:.plans/progress.md][the ledger]] where it stands.
 

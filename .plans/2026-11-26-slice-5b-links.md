@@ -3,7 +3,7 @@
 Date: 2026-11-26
 Status: the owner decided K1 to K8 on 2026-11-26 (below). Reviewed (the review
 section, at the end): where it and the text above disagree, the review wins.
-The records are amended. Not built.
+The records are amended. Built, and the build reviewed (the last section).
 Records: ADR-0002 (the API), ADR-0003 (nodes), ADR-0004 (revisions), ADR-0005
 (the server never reads a body), ADR-0007 (machines), ADR-0012 (migrations),
 ADR-0013 (the doorway). Read [global-constraints.md](global-constraints.md)
@@ -496,3 +496,68 @@ target's state asked of an `unlink`; `created` overwritten by a second `PUT`.
 - **Slice 8:** the three K5 notes above; a `link` row names no target.
 - **Not measured:** where a purge of a node's links meets the 10 s deadline
   (the review guesses 3 to 4 million links).
+
+## The review of the build (Opus, 2026-11-27)
+
+Read-only, with probes and 42 mutants of its own under
+`build/review-5b-build/`. **No bug found: no 500, no leak between accounts, no
+wrong write, no broken invariant.** It raced real requests in 100 rounds (a
+`PUT` against a purge and a trash of either end; five `PUT`s of one link at
+once; a `PUT` against a `DELETE`; a `DELETE` against a purge): never two 201s,
+no link with a purged end, one change row a link made or removed. A missing
+id, another account's and a purged one gave the same 114 bytes and the same
+time. Migration 6 ran on a file made by the code before it. The guide's
+examples, run, matched field for field.
+
+**Measured, through the server**
+
+| Request | Time |
+|---|---|
+| A page of 100 of a hub's 121,000 backlinks: start, middle, end; typed or not | 0 to 5 ms |
+| A `PUT` or a `DELETE` on the hub | 0 to 3 ms |
+| A purge of a node with 110,000 links | 0.2 s; reads beside it 2 to 6 ms |
+| A purge of 1,000,000 links | 2.6 s, a `-wal` of 361 MB |
+| A purge of 3,000,000 links | 6 s; every write waited 6 s. On a busy machine: a 504 at 10 s, and the purge landed |
+
+No link statement scans.
+
+**What it found, and what was done**
+
+| Finding | Done |
+|---|---|
+| No test held a link's 204 headers: one with a JSON `Content-Type` passed | a test holds them |
+| No test held that a link's time is read once | a test with a clock that steps |
+| "No longer purged" was held by text alone on three of the four page statements | the hand-made row's test covers all four |
+| A test's name said it planned `insert-link` | renamed |
+| K1's "a type once shipped stays" was held by nothing | a test with the shipped types written out |
+| The guide: "send the `PUT` to learn whether it is there"; a kept link's 200 with a trashed end not said; `related` reads as two-way | corrected |
+| The disk note priced a purge at 180,000 links only | the figures to 3 million, and the 504 |
+
+Of its 42 mutants, 35 were caught. Five that lived are equivalent. Two were
+not, and are the first two rows above.
+
+**Holes in the decisions, left as decided and documented**
+
+- **K7, no cap.** A purge of a node with millions of links holds every
+  account's writes for seconds, and past 10 s answers 504 though it lands.
+  Building 3 million links takes about an hour of requests. A cap on a node's
+  links, or a purge in steps, would close it.
+- **K1.** Were a type ever dropped, a page ending on one of its links would be
+  a 500, and the link could not be removed. The test above holds the rule.
+- **K2.** `related` is directed like the rest: a client lists both ways.
+- **A link left at a purged node could not be seen through the API** but by a
+  `DELETE` of it. Three checks of the tables in the model, and the store's and
+  routes' tests, are what hold the purge's deletes.
+
+**Left as they are**
+
+- A dropped `ORDER BY` and `INSERT OR IGNORE` are held by the statements'
+  text: no answer shows either.
+- A `DELETE` that read its target would answer the same.
+
+**Handed on, added**
+
+- **Slice 8:** as the plan's review said. And a 503 from the queue under five
+  `PUT`s at once is a "no", as everywhere.
+- **Later:** a cap on a node's links, with K7's numbers.
+

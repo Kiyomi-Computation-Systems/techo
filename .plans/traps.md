@@ -229,6 +229,10 @@ it.
   `map` queued them in that order.
 - **See it again:** `(map (lambda (i) (display i) i) '(1 2 3 4 5 6 7 8))`.
 - **Rule:** never run side effects through `map`. Use `for-each` or a named `let`.
+- **A call's arguments are the same** (slice 5b's routes task; reproduced):
+  `(append (say 1) (say 2) (say 3))` ran 3, 2, 1, while `(list ...)` ran 1, 2, 3
+  in the same program. R6RS fixes no order. A test that made requests as
+  arguments ran its reads before its writes. Sequence them with `let*`.
 
 ## `#\xe9;` starts a comment
 

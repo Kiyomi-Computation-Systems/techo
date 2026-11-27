@@ -1,9 +1,9 @@
 #!r6rs
 ;;; (nodes-model): the model-based test of nodes, ADR-0007's third layer,
 ;;; for tests/test-nodes-model.sps: D5's versioned write (slice 4, task 5a),
-;;; the node lifecycle (slice 4b, task 4a) and the tree (slice 5a, task 4a).
-;;; Test-only: it lives in tests/, which make test puts on Chez's library
-;;; path.
+;;; the node lifecycle (slice 4b, task 4a), the tree (slice 5a, task 4a) and
+;;; links (slice 5b, task 4a). Test-only: it lives in tests/, which make
+;;; test puts on Chez's library path.
 ;;;
 ;;; The model (pure)
 ;;; ----------------
@@ -44,6 +44,27 @@
 ;;; in id order, and leaves the node. The model walks its own tree: it
 ;;; never asks (techo nodes) or the store's ancestors.
 ;;;
+;;; Links (slice 5b) are the brief's rules written again here too, never
+;;; (techo links)' link-command nor the lifecycle's table: each account's
+;;; set of links, each (source type target created), directed, one per
+;;; triple, of the three types. A link's PUT or DELETE is 400 before any
+;;; job for a type not of the three, a target that is no v7 id, a node
+;;; linked to itself, or any If-Match or If-None-Match. Then a PUT: no
+;;; live source of the account's is 404; no live target of its, 404; the
+;;; link there, 200 and its stored created, nothing written; either end
+;;; trashed, 409 wrong_state; else 201 and the link made. A DELETE: no
+;;; source, 404; the link there, 204 and removed, whatever the states; else
+;;; 404, the target never read. A link made or removed changes no node and
+;;; no snapshot, and adds one change row on the source at its present
+;;; revision, link or unlink. A purge removes every link of the node, both
+;;; ways, and writes only its own row. A link list is the node's links one
+;;; way (out by default), of one type or all, by type name then the other
+;;; node's id, each item that node as the nodes list shows it; paged by
+;;; <type>:<id>, an after of another type than ?type= the 400. Each link's
+;;; request names the cell of link-command it would step, by the model's
+;;; reading (the source's state, the target's, the event, whether the link
+;;; is there), which the suite counts with the outcomes (link-aims).
+;;;
 ;;; A Twist stands between the decision and its performance. The run uses
 ;;; `as-planned`, which changes nothing; the suite's teeth pass a twisted
 ;;; rule, and the model must then disagree with the handlers. A Twist sees
@@ -62,32 +83,36 @@
 ;;; The run (the shell)
 ;;; -------------------
 ;;; `run-sequence` empties one migrated file, seeds the two accounts and
-;;; their four keys through the store, generates a seeded sequence of 60 to
-;;; 87 requests (xorshift32), and sends each as raw HTTP through make-app
-;;; inside wrap-server, in a test host, with a wall clock the sequence
-;;; steps. After every request it compares the status, the code of a
-;;; refusal, the ETag, Location and the body of a 2xx (every page of a
-;;; list, for the ?state= and ?parent= asked) with the model's; holds the
-;;; answer to laws that need no model (G14, H6, H14, H18', and P12: every
-;;; refusal of one code in a sequence has one body); reads the three tables
-;;; and every key's last_used whole, and holds them to laws that need no
-;;; model (H1 to H6, H11, H2', H3', H15', H16, G3, G6, G9, G11, G12, G16,
-;;; P4, P15, P16, and the bulk move's, against the tables before the
-;;; request; P1, P2, P3 and P8 on every row, by its own walk) and to the
-;;; model's world. The first request with a difference ends the sequence
-;;; with a report that replays from its seed.
+;;; their four keys through the store, generates a seeded sequence of 82 to
+;;; 119 requests (xorshift32; 60 to 87 before links took a quarter of
+;;; them), and sends each as raw HTTP through make-app inside wrap-server,
+;;; in a test host, with a wall clock the sequence steps. After every
+;;; request it compares the status, the code of a refusal, the ETag,
+;;; Location and the body of a 2xx (every page of a list, for the ?state=
+;;; and ?parent= asked, and of a link list) with the model's; holds the answer to laws that need no model (G14, H6, H14,
+;;; H14', H18', and P12: every refusal of one code in a sequence has one
+;;; body); reads the four tables and every key's last_used whole, and holds
+;;; them to laws that need no model (H1 to H6, H11, H2', H3', H15'', H16,
+;;; G3', G6', G7', G9, G11, G12, G16, P4, P15, P16, H1', H4'', Q9, and the
+;;; bulk move's, against the tables before the request; P1, P2, P3 and P8
+;;; on every row, by its own walk; Q1, Q2 and Q8 on every link) and to the
+;;; model's world, its links among it. The first request with a difference
+;;; ends the sequence with a report that replays from its seed.
 ;;;
 ;;; One seed in fifteen (a multiple of fifteen) is deep: it first makes a
 ;;; chain of 65 Projects by creates with a parent, one under the last, so
 ;;; the 65th is made under a parent with 63 ancestors and a 66th is refused
 ;;; under one with 64; then a short script of creates, moves and bulk
 ;;; moves reaches the boundary from both sides, a loop at the 64th ancestor
-;;; and one above it; then 10 to 20 requests (a request in a deep world
+;;; and one above it; then 14 to 27 requests (a request in a deep world
 ;;; costs four of another's). One in five (ending in 3 or 7) is a family:
 ;;; it first makes a mixed tree (family-event), so that bulk moves meet
 ;;; children of every state and kind and loops close two and three levels
-;;; down; then its 60 to 87. No sequence reaches a bulk move's cap of
-;;; 1,000 children: the route suite holds it.
+;;; down; then its 82 to 119. One in five more (ending in 1 or 9) is
+;;; linked: it first makes a hub of links both ways (linked-event), so that
+;;; link lists page and a purge takes links both ways; then its 82 to 119.
+;;; No sequence reaches a bulk move's cap of 1,000 children: the route
+;;; suite holds it.
 (library (nodes-model)
   (export model-accounts start-keys model-start kinds
           make-event make-content node-id-of
@@ -101,8 +126,10 @@
           situation-loop-at situation-depth situation-if-ok situation-children situation-by-kind
           msnap-revision msnap-title msnap-body msnap-type msnap-created
           mchange-seq mchange-node mchange-revision mchange-op mchange-created
+          link-type-names make-link-spec make-link-event world-links
+          mlink-tag mlink-source mlink-type mlink-target mlink-created
           run-sequence verdict-seed verdict-steps verdict-requests verdict-cells
-          verdict-aims verdict-report verdict-style deep-seed? family-seed?)
+          verdict-aims verdict-report verdict-style deep-seed? family-seed? linked-seed?)
   (import (rnrs)
           (only (chezscheme) format)
           (only (chez-sqlite3) sql-null?)
@@ -168,8 +195,11 @@
   (define (etag-of n) (string-append "\"" (number->string n) "\""))
 
   (define (sorted alist) (list-sort (lambda (x y) (string<? (car x) (car y))) alist))
+  ;; sorted-json : Any -> Any     an object's members by name, an object inside it too
   (define (sorted-json j)
-    (if (and (list? j) (for-all (lambda (p) (and (pair? p) (string? (car p)))) j)) (sorted j) j))
+    (if (and (list? j) (for-all (lambda (p) (and (pair? p) (string? (car p)))) j))
+        (sorted (map (lambda (p) (cons (car p) (sorted-json (cdr p)))) j))
+        j))
 
   ;;; Randomness: xorshift32, seeded, as the key and login models have it.
   ;;; Every call to the generator is sequenced by a let* or let*-values:
@@ -264,15 +294,24 @@
   ;; mchange-op : MChange -> String
   (define-record-type mchange (fields seq node revision op created))
 
+  ;; MLink: tag source type target created     slice 5b's link, of TAG's
+  ;; mlink-tag : MLink -> Tag     the account that owns it
+  ;; mlink-source, mlink-target : MLink -> Bytevector
+  ;; mlink-type : MLink -> String
+  ;; mlink-created : MLink -> Natural     its first PUT's time (Q15)
+  (define-record-type mlink (fields tag source type target created))
+
   ;; World: nodes (in the order made), keys (as start-keys, each last_used
   ;; as now), changes (an alist of tag to that owner's rows, oldest first),
   ;; held (the id of every node that has had a child, for the generator and
-  ;; the counts alone: no answer depends on it)
+  ;; the counts alone: no answer depends on it), links (each account's, in
+  ;; the order made)
   ;; world-nodes : World -> (Listof MNode)
-  (define-record-type world (fields nodes keys changes held))
+  ;; world-links : World -> (Listof MLink)
+  (define-record-type world (fields nodes keys changes held links))
 
-  ;; model-start : World      no node, no change, no key used
-  (define model-start (make-world '() start-keys '((a) (b)) '()))
+  ;; model-start : World      no node, no change, no key used, no link
+  (define model-start (make-world '() start-keys '((a) (b)) '() '()))
 
   ;;; The plan's rules, in the model's own words (L1, L2, L5, L6, L8)
 
@@ -336,7 +375,8 @@
                     (append (world-nodes w) (list n)))
                 (world-keys w) (world-changes w)
                 (let ((p (mnode-parent n)))
-                  (if (and p (not (member p (world-held w)))) (cons p (world-held w)) (world-held w)))))
+                  (if (and p (not (member p (world-held w)))) (cons p (world-held w)) (world-held w)))
+                (world-links w)))
 
   ;; world-with-change : World Tag Bytevector Natural String Natural -> World
   ;; The owner's next change row: one more than the rows it has (H4).
@@ -346,7 +386,8 @@
       (make-world (world-nodes w) (world-keys w)
                   (map (lambda (p) (if (eq? (car p) tag) (cons tag (append old (list c))) p))
                        (world-changes w))
-                  (world-held w))))
+                  (world-held w)
+                  (world-links w))))
 
   (define (world-touched w id now)
     (make-world (world-nodes w)
@@ -357,7 +398,12 @@
                            k))
                      (world-keys w))
                 (world-changes w)
-                (world-held w)))
+                (world-held w)
+                (world-links w)))
+
+  ;; world-with-links : World (Listof MLink) -> World     W with LINKS as its links
+  (define (world-with-links w links)
+    (make-world (world-nodes w) (world-keys w) (world-changes w) (world-held w) links))
 
   ;; with-snap : MNode String String String String Natural -> MNode
   ;; N at its next revision, the content given as its newest snapshot, made
@@ -469,6 +515,41 @@
                         (else 'ok))
                   p at depth))))))
 
+  ;;; The links' rules, in the model's own words (slice 5b: K1, K2, K6, K8)
+
+  ;; link-type-names : (Listof String)     K1's three, written here, not imported
+  (define link-type-names '("related" "mentions" "blocks"))
+
+  ;; linkable-states : (Listof Symbol)
+  ;; K6: a link is made only when both ends are in these; a trashed end
+  ;; refuses it. A link is removed from any live state.
+  (define linkable-states '(active archived))
+
+  (define (same-link? l tag source type target)
+    (and (eq? (mlink-tag l) tag) (bytevector=? (mlink-source l) source) (string=? (mlink-type l) type)
+         (bytevector=? (mlink-target l) target)))
+
+  ;; link-in : World Tag Bytevector String Bytevector -> (U MLink #f)     TAG's link, if there
+  (define (link-in w tag source type target)
+    (find (lambda (l) (same-link? l tag source type target)) (world-links w)))
+
+  ;; links-at : World Bytevector -> (Listof MLink)     every link with ID at either end
+  (define (links-at w id)
+    (filter (lambda (l) (or (bytevector=? (mlink-source l) id) (bytevector=? (mlink-target l) id))) (world-links w)))
+
+  ;; world-without-links-at : World Bytevector -> World
+  ;; K7: a purge takes every link of the node, both ways, and no other.
+  (define (world-without-links-at w id)
+    (world-with-links w (filter (lambda (l) (not (or (bytevector=? (mlink-source l) id)
+                                                     (bytevector=? (mlink-target l) id))))
+                                (world-links w))))
+
+  ;; link<? : String Bytevector String Bytevector -> Boolean
+  ;; A link page's order (K3, the review): the type's name, then the other
+  ;; node's id, unsigned byte by byte.
+  (define (link<? t1 id1 t2 id2)
+    (or (string<? t1 t2) (and (string=? t1 t2) (bytevector<? id1 id2))))
+
   ;;; Requests
 
   ;; ParentRef: a parent as a request names it.
@@ -517,10 +598,40 @@
   ;;   aims      what the generator aimed at, for counting
   ;;   parent    a move's and a bulk move's new parent, 'null or an id; a
   ;;             list's ?parent=; 'absent for every other request
+  ;;   link      a link's request (link, unlink, list-links): its LinkSpec;
+  ;;             #f for every other
   ;; make-event : Symbol Natural Tag Bytevector (U Bytevector #f) Any (Listof Header)
   ;;              (U Content #f) (U Natural #f) (U Natural #f) (U String 'twice #f)
   ;;              Boolean (Listof Symbol) ParentRef -> Event
-  (define-record-type event (fields kind now tag key id pre headers content snap limit query upper? aims parent))
+  (define-record-type (event make-event* event?)
+    (fields kind now tag key id pre headers content snap limit query upper? aims parent link))
+
+  (define (make-event kind now tag key id pre headers content snap limit query upper? aims parent)
+    (make-event* kind now tag key id pre headers content snap limit query upper? aims parent #f))
+
+  ;; LinkSpec: what a link's request names beside its node (slice 5b)
+  ;;   type       a PUT's or a DELETE's path type, a String sent as it is; a
+  ;;              list's ?type=: #f for none, a String, or 'twice
+  ;;   target     a PUT's or a DELETE's path target: an id, or a String sent
+  ;;              as it is (a v4 id); #f for a list
+  ;;   upper?     whether the target id is written in capitals
+  ;;   direction  a list's ?direction=: #f for none, a String, or 'twice
+  ;;   after      a list's first page's after: #f, or (type . id), sent as
+  ;;              <type>:<id>
+  ;; make-link-spec : (U String 'twice #f) (U Bytevector String #f) Boolean (U String 'twice #f)
+  ;;                  (U (Pair String Bytevector) #f) -> LinkSpec
+  (define-record-type (link-spec make-link-spec link-spec?) (fields type target upper? direction after))
+
+  ;; make-link-event : Symbol Natural Tag Bytevector Bytevector (Listof Header) (U Natural #f)
+  ;;                   Boolean (Listof Symbol) LinkSpec -> Event
+  ;; A link's request: KIND link (its PUT), unlink (its DELETE) or
+  ;; list-links (the GET), of node ID, with HEADERS, a list's LIMIT.
+  (define (make-link-event kind now tag key id headers limit upper? aims spec)
+    (make-event* kind now tag key id #f headers #f #f limit #f upper? aims 'absent spec))
+
+  ;; link-kinds : (Listof Symbol)     a link's two writes; a list is a read
+  (define link-kinds '(link unlink))
+  (define (link-kind? k) (and (memq k link-kinds) #t))
 
   ;; tree-kind? : Event -> Boolean     a request whose new parent is judged
   (define (tree-kind? e)
@@ -776,11 +887,132 @@
 
   ;; expect : Twist World Event -> Expectation
   ;; TWIST is as-planned, or a changed rule for the suite's teeth.
+  ;; A link's request is twisted as a write is: the twist sees its
+  ;; LinkCell (#f for a 400) and decision, and no Situation.
   (define (expect twist w e)
-    (if (write-kind? (event-kind e))
-        (let-values (((cell decision clause s) (decide w e)))
-          (perform w e cell (twist cell decision s) clause s))
-        (expect-read w e)))
+    (cond ((write-kind? (event-kind e))
+           (let-values (((cell decision clause s) (decide w e)))
+             (perform w e cell (twist cell decision s) clause s)))
+          ((link-kind? (event-kind e))
+           (let-values (((cell decision clause) (decide-link w e)))
+             (perform-link w e cell (twist cell decision no-situation) clause)))
+          (else (expect-read w e))))
+
+  ;;; The oracle of a link's PUT and DELETE (slice 5b)
+
+  ;; link-bad : Event -> (U Symbol #f)
+  ;; Why a link's PUT or DELETE is the 400 before any job, the first that
+  ;; applies, or #f: a type not of the three (exact case), a target that is
+  ;; no v7 id, a node linked to itself (K2), an If-Match or If-None-Match
+  ;; of any shape (a link takes no precondition).
+  (define (link-bad e)
+    (let ((spec (event-link e)))
+      (cond ((not (member (link-spec-type spec) link-type-names)) 'type)
+            ((not (bytevector? (link-spec-target spec))) 'target)
+            ((bytevector=? (event-id e) (link-spec-target spec)) 'self)
+            ((pair? (event-headers e)) 'precondition)
+            (else #f))))
+
+  ;; LinkCell = (List (U Symbol #f) (U Symbol #f) Symbol Boolean)
+  ;; link-cell : World Event -> LinkCell
+  ;; What a link's job finds, by the model's reading, in link-command's
+  ;; terms: the source's state (#f when it is no live node of the
+  ;; account's: none, another's, purged); the target's, the same, and #f
+  ;; for an unlink, whose job reads no target; the event; and whether the
+  ;; account has the link. For a request that passed link-bad.
+  (define (link-cell w e)
+    (let* ((spec (event-link e)) (tag (event-tag e)) (kind (event-kind e))
+           (source (own-node w tag (event-id e)))
+           (target (and (eq? kind 'link) (own-node w tag (link-spec-target spec)))))
+      (list (and source (mnode-state source)) (and target (mnode-state target)) kind
+            (and (link-in w tag (event-id e) (link-spec-type spec) (link-spec-target spec)) #t))))
+
+  (define (link-cell-text cell)
+    (if cell
+        (format "~a x ~a x ~a x ~a" (or (car cell) "-") (or (cadr cell) "-") (caddr cell)
+                (if (cadddr cell) "there" "absent"))
+        "no cell"))
+
+  ;; decide-link : World Event -> (values (U LinkCell #f) Decision String)
+  ;; LinkDecision = (List 'refuse Natural String) | (List 'link) | (List 'keep) | (List 'unlink)
+  ;; A link's PUT or DELETE by the brief's rules, the first that applies,
+  ;; and the clause that gives it.
+  (define (decide-link w e)
+    (let ((bad (link-bad e)))
+      (if bad
+          (values #f (refusal 400 "invalid_request")
+                  (case bad
+                    ((type) "a link's type not of the three, in another case too, is 400, before any job")
+                    ((target) "a link's target that is no v7 id is 400, before any job")
+                    ((self) "a node linked to itself is 400, before any job (K2)")
+                    (else "If-Match or If-None-Match on a link's PUT or DELETE is 400: a link takes no precondition")))
+          (let* ((cell (link-cell w e))
+                 (source (car cell)) (target (cadr cell)) (there? (cadddr cell)))
+            (let-values
+                (((decision clause)
+                  (if (eq? (caddr cell) 'link)
+                      (cond ((not source)
+                             (values not-found "a link's source that is no live node of the account's, another's or a purged one, is 404 (K8)"))
+                            ((not target)
+                             (values not-found "a link's target that is no live node of the account's is 404, before any 409 (K8)"))
+                            (there?
+                             (values '(keep) "a PUT of a link that is there is 200 with its stored created, nothing written, whatever the ends' states"))
+                            ((not (and (memq source linkable-states) (memq target linkable-states)))
+                             (values wrong-state "a link to or from a trashed node is 409 wrong_state (K6)"))
+                            (else (values '(link) "a link between two live nodes of the account's, neither trashed, is made: 201")))
+                      (cond ((not source)
+                             (values not-found "a DELETE whose source is no live node of the account's is 404 (K8)"))
+                            (there?
+                             (values '(unlink) "a DELETE of a link that is there removes it, whatever the states: 204"))
+                            (else (values not-found "a DELETE of a link that is not there is 404 (K8); its target is not read"))))))
+              (values cell decision clause))))))
+
+  ;; link-json : Bytevector String Bytevector Natural -> Alist
+  ;; A link in a PUT's answer: source, type, target (ids in lower case), created.
+  (define (link-json source type target created)
+    (sorted (list (cons "source" (id-text source)) (cons "type" type) (cons "target" (id-text target))
+                  (cons "created" created))))
+
+  ;; perform-link : World Event (U LinkCell #f) LinkDecision String -> Expectation
+  ;; The decision done to the world. link adds the account's link, made
+  ;; now, and its change row link on the source at the source's revision;
+  ;; unlink removes it, with a change row unlink; keep changes no row. Each
+  ;; of the three sets the asking key's last_used when due; a refusal
+  ;; changes nothing. One that makes no sense for the request (a link made
+  ;; that is there, a kept or removed link that is not, a link's event on
+  ;; the other route) is a step the model cannot take.
+  (define (perform-link w e cell decision clause)
+    (let* ((tag (event-tag e)) (kind (event-kind e)) (now (event-now e)) (spec (event-link e))
+           (source (event-id e)) (type (link-spec-type spec)) (target (link-spec-target spec))
+           (own (own-node w tag source))
+           (there (and cell (link-in w tag source type target)))
+           (at (format "~a names ~s" (link-cell-text cell) decision))
+           (due (touch-due? (world-key-last-used w (event-key e)) now))
+           (touched (lambda (w) (if due (world-touched w (event-key e) now) w))))
+      (case (car decision)
+        ((refuse) (refused w '() (cadr decision) (caddr decision) clause no-situation))
+        ((link)
+         (cond ((not (and cell (eq? kind 'link))) (cannot w '() (string-append at ", which only a link's PUT performs")))
+               ((not (and own (own-node w tag target))) (cannot w '() (string-append at ", but an end is no live node of the account's")))
+               (there (cannot w '() (string-append at " of a link that is there")))
+               (else
+                (let ((w1 (world-with-change (world-with-links w (append (world-links w) (list (make-mlink tag source type target now))))
+                                             tag source (node-rev own) "link" now)))
+                  (make-expectation 201 #f #f #f (link-json source type target now) #f (touched w1) '() #f due
+                                    clause no-situation)))))
+        ((keep)
+         (if (and there (eq? kind 'link))
+             (make-expectation 200 #f #f #f (link-json source type target (mlink-created there)) #f (touched w) '() #f
+                               due clause no-situation)
+             (cannot w '() (string-append at ", but no such link of the account's is there, or this is no PUT"))))
+        ((unlink)
+         (cond ((not (and there (eq? kind 'unlink) own))
+                (cannot w '() (string-append at ", but no such link of the account's is there, or this is no DELETE")))
+               (else
+                (let ((w1 (world-with-change (world-with-links w (filter (lambda (l) (not (eq? l there))) (world-links w)))
+                                             tag source (node-rev own) "unlink" now)))
+                  (make-expectation 204 #f #f #f 'empty #f (touched w1) '() #f due clause no-situation)))))
+        (else (cannot w '() (string-append at ", which no link's request performs"))))))
 
   ;; perform : World Event (U Cell #f) Decision String Situation -> Expectation
   ;; The decision done to the world. One that makes no sense for the
@@ -835,7 +1067,7 @@
         ((purge)
          (cond ((not (eq? kind 'purge)) (cannot w cells (string-append at ", which only a DELETE performs")))
                ((not at-pre?) (cannot w cells off-pre))
-               (else (accepted w e (emptied own now) "purge" 204 #f cells clause s))))
+               (else (accepted (world-without-links-at w id) e (emptied own now) "purge" 204 #f cells clause s))))
         ((move)
          (cond ((not (eq? kind 'move)) (cannot w cells (string-append at ", which only a move performs")))
                ((not at-pre?) (cannot w cells off-pre))
@@ -943,7 +1175,82 @@
                (read-answer w (snap-json s #t) #f #f "a snapshot of the account's own node is shown")
                (refused w '() 404 "not_found"
                         "a snapshot no live node of the account's has, a gap's among them, is 404" no-situation))))
+        ((list-links) (expect-links w e own))
         (else (cannot w '() (format "no such request: ~a" (event-kind e)))))))
+
+  ;; link-direction : (U String 'twice #f) -> (U 'out 'in 'invalid)
+  ;; K3 and the review: none is out; out and in, exactly; anything else,
+  ;; another case, twice, 400.
+  (define (link-direction q)
+    (cond ((not q) 'out)
+          ((equal? q "out") 'out)
+          ((equal? q "in") 'in)
+          (else 'invalid)))
+
+  ;; link-type-filter : (U String 'twice #f) -> (U String #f 'invalid)
+  ;; None is every type; one of the three, exactly, that one; else 400.
+  (define (link-type-filter q)
+    (cond ((not q) #f)
+          ((and (string? q) (member q link-type-names)) q)
+          (else 'invalid)))
+
+  ;; link-items : World Tag Bytevector (U 'out 'in) (U String #f) (U (Pair String Bytevector) #f)
+  ;;              -> (U (Listof (Pair MLink MNode)) #f)
+  ;; ID's links that way of TAG's (ID the source for out, the target for
+  ;; in), of TYPE or all, each with the node at the other end, by the type's
+  ;; name then that node's id, after AFTER's place; #f when an other end is
+  ;; no live node of TAG's, which no rule allows.
+  (define (link-items w tag id dir type after)
+    (let* ((other-of (lambda (l) (if (eq? dir 'out) (mlink-target l) (mlink-source l))))
+           (mine (filter (lambda (l) (and (eq? (mlink-tag l) tag)
+                                          (bytevector=? (if (eq? dir 'out) (mlink-source l) (mlink-target l)) id)
+                                          (or (not type) (string=? type (mlink-type l)))))
+                         (world-links w)))
+           (pairs (map (lambda (l) (cons l (own-node w tag (other-of l)))) mine)))
+      (and (for-all cdr pairs)
+           (filter (lambda (p) (or (not after)
+                                   (link<? (car after) (cdr after) (mlink-type (car p)) (mnode-id (cdr p)))))
+                   (list-sort (lambda (x y) (link<? (mlink-type (car x)) (mnode-id (cdr x))
+                                                    (mlink-type (car y)) (mnode-id (cdr y))))
+                              pairs)))))
+
+  ;; link-item-json : (Pair MLink MNode) -> Alist
+  ;; A link list's item: type, created, and the other node as the nodes
+  ;; list shows it, without its body (Q14).
+  (define (link-item-json p)
+    (sorted (list (cons "type" (mlink-type (car p))) (cons "created" (mlink-created (car p)))
+                  (cons "node" (node-json (cdr p) #f)))))
+
+  ;; expect-links : World Event (U MNode #f) -> Expectation
+  ;; GET /v1/nodes/{id}/links, the first that applies: a ?direction= or a
+  ;; ?type= of another spelling is 400; an after of another type than
+  ;; ?type= is 400 (Q21); both before the job. A node that is no live node
+  ;; of the account's is 404, not an empty page. Else its links that way,
+  ;; ordered and paged (Q10); a trashed or an archived node's too (K6). An
+  ;; If-Match on it is ignored, as on every GET.
+  (define (expect-links w e own)
+    (let* ((spec (event-link e))
+           (dir (link-direction (link-spec-direction spec)))
+           (type (link-type-filter (link-spec-type spec)))
+           (after (link-spec-after spec)))
+      (cond
+       ((or (eq? dir 'invalid) (eq? type 'invalid))
+        (refused w '() 400 "invalid_request" "a ?direction= but out or in, or a ?type= not of the three, is 400"
+                 no-situation))
+       ((and type after (not (string=? type (car after))))
+        (refused w '() 400 "invalid_request" "an after of another type than ?type= is 400, before the job (Q21)"
+                 no-situation))
+       ((not own)
+        (refused w '() 404 "not_found"
+                 "a link list of a node the account has not got, another's or a purged one, is 404, not an empty page"
+                 no-situation))
+       (else
+        (let ((items (link-items w (event-tag e) (event-id e) dir type after)))
+          (if items
+              (read-answer w #f (map link-item-json items) #f
+                           (format "a link list is the node's ~a links~a, by type then the other node's id, each that node as the nodes list shows it"
+                                   dir (if type (string-append " of " type) "")))
+              (cannot w '() "a link of the account's whose other end is no live node of its")))))))
 
   ;;; Labels, for reports
 
@@ -1003,6 +1310,18 @@
                               (ref-label w (event-parent e)) (event-limit e)))
         ((list-revisions) (format "~a GET revisions of ~a limit=~a" at target (event-limit e)))
         ((get-snapshot) (format "~a GET ~a snapshot ~a" at target (event-snap e)))
+        ((link unlink)
+         (let* ((spec (event-link e)) (t (link-spec-target spec)))
+           (format "~a ~a link from ~a, ~s, to ~a~a, ~a" at (if (eq? (event-kind e) 'link) "PUT" "DELETE") target
+                   (link-spec-type spec) (if (bytevector? t) (node-label w t) (format "~s" t))
+                   (if (link-spec-upper? spec) " (in capitals)" "") (headers-text (event-headers e)))))
+        ((list-links)
+         (let ((spec (event-link e)))
+           (format "~a GET links of ~a direction=~a type=~a limit=~a after=~a~a" at target (link-spec-direction spec)
+                   (link-spec-type spec) (event-limit e)
+                   (let ((a (link-spec-after spec)))
+                     (if a (string-append (car a) ":" (substring (id-text (cdr a)) 24 36)) "none"))
+                   (if (pair? (event-headers e)) (string-append ", " (headers-text (event-headers e))) ""))))
         (else (format "~a ~a" at (event-kind e))))))
 
   ;;; The generator
@@ -1524,6 +1843,209 @@
           (let ((n (pick-node rng tied depth))) (values (mnode-id n) n 'own))
           (choose-target rng w tag depth))))
 
+  ;;; The generator's links (slice 5b)
+
+  ;; Degree = (Bytevector -> Natural)     how many links a node has, both ways
+  ;; link-degree : World -> Degree        counted once a request
+  (define (link-degree w)
+    (let ((t (make-id-table)))
+      (for-each (lambda (l)
+                  (hashtable-update! t (mlink-source l) (lambda (n) (+ n 1)) 0)
+                  (hashtable-update! t (mlink-target l) (lambda (n) (+ n 1)) 0))
+                (world-links w))
+      (lambda (id) (hashtable-ref t id 0))))
+
+  ;; pick-end : Rng (Listof MNode) Degree (Listof Natural) -> MNode
+  ;; One of NS (not empty), its state chosen first among the states they
+  ;; are in, by WEIGHTS for active, archived and trashed; then half the
+  ;; time the one with the most links, so that lists page and purges take
+  ;; links both ways.
+  (define (pick-end rng ns degree weights)
+    (let* ((states (filter (lambda (s) (exists (lambda (n) (eq? (mnode-state n) s)) ns)) live-states))
+           (s (rng-weighted! rng (map (lambda (s) (cons (list-ref weights (if (eq? s 'active) 0 (if (eq? s 'archived) 1 2))) s))
+                                      states))))
+      (pick-node rng (in-state s ns) (lambda (n) (degree (mnode-id n))))))
+
+  ;; A fresh pair's ends are mostly linkable, so links grow; any end of
+  ;; another aim is as often trashed as archived.
+  (define fresh-weights '(6 3 1))
+  (define end-weights '(4 2 2))
+
+  ;; bad-end : Rng World Tag -> (values Bytevector Symbol)
+  ;; An id that is no live node of TAG's: a fresh id; a purged node's,
+  ;; either account's; the other account's live node.
+  ;; A purged node is the account's own half the time it can be.
+  (define (bad-end rng w tag)
+    (let* ((theirs (nodes-of w (other-tag tag)))
+           (gone (filter (lambda (n) (not (live? n))) (world-nodes w)))
+           (gone-own (purged-of w tag))
+           (aim (rng-weighted! rng (append '((3 . missing))
+                                           (if (pair? gone) '((2 . purged)) '())
+                                           (if (pair? gone-own) '((2 . purged-own)) '())
+                                           (if (pair? theirs) '((4 . other)) '())))))
+      (case aim
+        ((purged) (values (mnode-id (rng-pick! rng gone)) 'purged))
+        ((purged-own) (values (mnode-id (rng-pick! rng gone-own)) 'purged))
+        ((other) (values (mnode-id (rng-pick! rng theirs)) 'other))
+        (else (values (fresh-node-id rng w) 'missing)))))
+
+  ;; bad-link-types : (Listof String)     path types K1 refuses: other cases, other words
+  (define bad-link-types '("Related" "MENTIONS" "Blocks" "blocker" "relates" "link"))
+
+  ;; choose-link-pair : Rng World Tag Symbol Degree
+  ;;                    -> (values Bytevector String Bytevector Symbol)
+  ;; A PUT's (EVENT link) or a DELETE's (unlink) source, type and target:
+  ;; a link of the account's that is there (most often for a DELETE); a
+  ;; fresh pair of its live nodes (most often for a PUT); a source that is
+  ;; no live node of its, the target its node three times in four; its
+  ;; node and a target that is none; the other account's link, asked by
+  ;; this one; or a node to itself. Half the time a link that is there
+  ;; has an end archived or trashed (for a DELETE, its source: the target is
+  ;; not read), when one has.
+  (define (choose-link-pair rng w tag event degree)
+    (let* ((own (nodes-of w tag))
+           (mine (filter (lambda (l) (eq? (mlink-tag l) tag)) (world-links w)))
+           (theirs (filter (lambda (l) (not (eq? (mlink-tag l) tag))) (world-links w)))
+           (put? (eq? event 'link))
+           (aim (rng-weighted! rng (append (if (pair? mine) (list (cons (if put? 16 40) 'there)) '())
+                                           (if (>= (length own) 2) (list (cons (if put? 64 16) 'fresh)) '())
+                                           (list (cons (if put? 8 6) 'source-bad))
+                                           (if (pair? own) (list (cons (if put? 10 6) 'target-bad)) '())
+                                           (if (pair? theirs) '((5 . other-link)) '())
+                                           (if (pair? own) '((2 . self)) '())))))
+      (case aim
+        ((there other-link)
+         (let* ((pool (if (eq? aim 'there) mine theirs))
+                (aside (filter (lambda (l) (exists (lambda (id) (let ((n (world-node w id)))
+                                                                  (and n (not (eq? (mnode-state n) 'active)))))
+                                                   (if put? (list (mlink-source l) (mlink-target l)) (list (mlink-source l)))))
+                               pool))
+                (l (rng-pick! rng (if (and (pair? aside) (= 0 (rng-below! rng 2))) aside pool))))
+           (values (mlink-source l) (mlink-type l) (mlink-target l) (sym "link-pair-" aim))))
+        ((fresh)
+         (let* ((hub (lambda (ns)
+                       (if (= 0 (rng-below! rng 3))
+                           (fold-left (lambda (best n) (if (> (degree (mnode-id n)) (degree (mnode-id best))) n best))
+                                      (car ns) (cdr ns))
+                           (pick-end rng ns degree fresh-weights))))
+                (s (hub own))
+                (t (hub (filter (lambda (n) (not (same-node? n s))) own)))
+                (type (rng-pick! rng link-type-names)))
+           (values (mnode-id s) type (mnode-id t) 'link-pair-fresh)))
+        ((source-bad)
+         (let*-values (((s why) (bad-end rng w tag))
+                       ((t-own?) (and (pair? own) (< (rng-below! rng 4) 3)))
+                       ((t t-why) (if t-own? (values (mnode-id (pick-end rng own degree end-weights)) 'own) (bad-end rng w tag)))
+                       ((t) (if (bytevector=? s t) (fresh-node-id rng w) t))
+                       ((type) (rng-pick! rng link-type-names)))
+           (values s type t (sym "link-pair-source-" why))))
+        ((target-bad)
+         (let*-values (((s) (pick-end rng own degree end-weights))
+                       ((t why) (bad-end rng w tag))
+                       ((type) (rng-pick! rng link-type-names)))
+           (values (mnode-id s) type t (sym "link-pair-target-" why))))
+        (else
+         (let* ((s (pick-end rng own degree end-weights)) (type (rng-pick! rng link-type-names)))
+           (values (mnode-id s) type (mnode-id s) 'link-pair-self))))))
+
+  ;; link-write-event : Rng World Natural Tag Bytevector Symbol Symbol Boolean Degree -> Event
+  ;; A link's PUT or DELETE: the pair choose-link-pair gives; one time in
+  ;; 25 a type K1 refuses, one in 33 a v4 target, one in 20 a precondition
+  ;; (each the 400); the target in capitals one time in six.
+  (define (link-write-event rng w now tag key event wait upper? degree)
+    (let*-values (((source type target pair-aim) (choose-link-pair rng w tag event degree))
+                  ((r) (rng-below! rng 100))
+                  ((t-upper?) (= 0 (rng-below! rng 6)))
+                  ((type) (if (< r 4) (rng-pick! rng bad-link-types) type))
+                  ((target) (if (and (>= r 4) (< r 7)) (v4-text rng w) target))
+                  ((headers) (if (and (>= r 7) (< r 12))
+                                 (rng-pick! rng (list (list (cons "If-Match" "\"1\"")) (list (cons "If-None-Match" "*"))
+                                                      (list (cons "If-Match" "*"))))
+                                 '())))
+      (make-link-event event now tag key source headers #f upper? (list (sym event "-" pair-aim) wait)
+                       (make-link-spec type target t-upper? #f #f))))
+
+  ;; links-list-event : Rng World Natural Tag Bytevector Symbol Degree -> Event
+  ;; A link list: of the account's node that has links (most often, the
+  ;; one with the most half the time), of any node of its, of no live node
+  ;; of its, of a purged one of its, or of the other account's node that has
+  ;; links; ?direction=
+  ;; none, out, in, or another spelling; ?type= none, one of the three, or
+  ;; another spelling; limit 1, 2, 3, 100 or none; one time in eleven the
+  ;; first page after a place (an own node's id or a fresh one, of the type
+  ;; asked or any), one in fourteen of a typed list after another type (the
+  ;; 400); one in sixteen an If-Match, which a GET ignores.
+  (define (links-list-event rng w now tag key wait upper? degree)
+    (let* ((own (nodes-of w tag))
+           (linked (filter (lambda (n) (> (degree (mnode-id n)) 0)) own))
+           (theirs (filter (lambda (n) (> (degree (mnode-id n)) 0)) (nodes-of w (other-tag tag))))
+           (gone-own (purged-of w tag)))
+      (let*-values (((aim) (rng-weighted! rng (append (if (pair? linked) '((64 . linked)) '())
+                                                      (if (pair? own) '((10 . own)) '())
+                                                      '((4 . bad))
+                                                      (if (pair? gone-own) '((4 . purged-own)) '())
+                                                      (if (pair? theirs) '((4 . other-linked)) '()))))
+                    ((id node-aim) (case aim
+                                     ((linked) (values (mnode-id (pick-end rng linked degree end-weights)) 'linked))
+                                     ((own) (values (mnode-id (pick-end rng own degree end-weights)) 'own))
+                                     ((purged-own) (values (mnode-id (rng-pick! rng gone-own)) 'purged-own))
+                                     ((other-linked) (values (mnode-id (rng-pick! rng theirs)) 'other-linked))
+                                     (else (bad-end rng w tag))))
+                    ((dir) (rng-weighted! rng '((22 . #f) (22 . "out") (34 . "in") (2 . "OUT") (2 . "both") (2 . twice))))
+                    ((type) (rng-weighted! rng '((52 . #f) (13 . "related") (13 . "mentions") (13 . "blocks")
+                                                 (2 . "Related") (2 . twice))))
+                    ((steer) (rng-below! rng 3))
+                    ((dir type) (steer-list rng w id dir type (and (eq? node-aim 'linked) (< steer 2))))
+                    ((limit) (rng-weighted! rng '((30 . 1) (20 . 2) (14 . 3) (14 . #f) (10 . 100))))
+                    ((r) (rng-below! rng 100))
+                    ((place) (if (and (pair? own) (< (rng-below! rng 5) 3))
+                                 (mnode-id (rng-pick! rng own))
+                                 (fresh-node-id rng w)))
+                    ((other-type) (rng-pick! rng link-type-names))
+                    ((headers) (if (= 0 (rng-below! rng 16)) (list (cons "If-Match" "\"1\"")) '())))
+        (let* ((typed (and (string? type) (member type link-type-names) type))
+               (after (cond ((< r 9) (cons (or typed other-type) place))
+                            ((and typed (< r 16))
+                             (cons (if (string=? other-type typed)
+                                       (find (lambda (t) (not (string=? t typed))) link-type-names)
+                                       other-type)
+                                   place))
+                            (else #f))))
+          (make-link-event 'list-links now tag key id headers limit upper?
+                           (list (sym "list-links-of-" node-aim) wait)
+                           (make-link-spec type #f #f dir after))))))
+
+  ;; steer-list : Rng World Bytevector (U String 'twice #f) (U String 'twice #f) Boolean
+  ;;              -> (values (U String 'twice #f) (U String 'twice #f))
+  ;; A list's ?direction= and ?type=, when STEER?: a direction ID has links
+  ;; in (none or out for out), and for a typed list a type it has that way;
+  ;; else DIR and TYPE as drawn.
+  (define (steer-list rng w id dir type steer?)
+    (let* ((outs (filter (lambda (l) (bytevector=? (mlink-source l) id)) (world-links w)))
+           (ins (filter (lambda (l) (bytevector=? (mlink-target l) id)) (world-links w))))
+      (if (not (and steer? (or (pair? outs) (pair? ins))))
+          (values dir type)
+          (let* ((d (rng-pick! rng (append (if (pair? outs) '(#f "out") '()) (if (pair? ins) '("in" "in") '()))))
+                 (ls (if (equal? d "in") ins outs)))
+            (values d (if (member type link-type-names) (mlink-type (rng-pick! rng ls)) type))))))
+
+  ;; link-chore-options : World Forest Tag Degree -> (Listof (Pair Symbol (Listof MNode)))
+  ;; The links' chores TAG's nodes offer: trash a node with links and no
+  ;; children, so that a purge can take its links; purge a trashed one
+  ;; with links and no children, at its revision. Only those some node
+  ;; offers.
+  (define (link-chore-options w f tag degree)
+    (let ((linked (filter (lambda (n) (and (> (degree (mnode-id n)) 0) (null? (kids-in f n)))) (nodes-of w tag))))
+      (filter (lambda (c) (pair? (cdr c)))
+              (list (cons 'chore-trash-linked (open-nodes linked))
+                    (cons 'chore-purge-linked (in-state 'trashed linked))))))
+
+  ;; link-chore-event : Rng Natural Tag Bytevector (Pair Symbol (Listof MNode)) Symbol Degree -> Event
+  (define (link-chore-event rng now tag key chore wait degree)
+    (let ((n (pick-node rng (cdr chore) (lambda (n) (degree (mnode-id n))))))
+      (at-revision (if (eq? (car chore) 'chore-trash-linked) 'trash 'purge) now tag key n (list (car chore) wait)
+                   'absent)))
+
   ;; next-event : Rng World Natural -> Event
   (define (next-event rng w now0)
     (let*-values (((tag) (rng-pick! rng '(a b)))
@@ -1533,13 +2055,20 @@
              (f (forest-of w))
              (many (length (live-nodes w)))
              (chores (chore-options w f tag))
+             (degree (link-degree w))
+             (link-chores (link-chore-options w f tag degree))
              (kind (rng-weighted! rng (append (list (cons (cond ((< many 6) 30) ((< many 14) 16) (else 6)) 'create)
                                                     '(31 . replace) '(22 . restore) '(38 . lifecycle)
                                                     '(5 . no-pre) '(13 . bad-pre)
                                                     '(7 . get-node) '(12 . list-nodes) '(8 . list-revisions)
                                                     '(16 . get-snapshot) '(16 . move) '(10 . move-children))
-                                              (if (pair? chores) '((8 . chore)) '())))))
+                                              (if (pair? chores) '((8 . chore)) '())
+                                              '((36 . link) (12 . unlink) (18 . list-links))
+                                              (if (pair? link-chores) '((6 . link-chore)) '())))))
         (case kind
+          ((link unlink) (link-write-event rng w now tag key kind wait upper? degree))
+          ((list-links) (links-list-event rng w now tag key wait upper? degree))
+          ((link-chore) (link-chore-event rng now tag key (rng-pick! rng link-chores) wait degree))
           ((create)
            (let* ((own (nodes-of w tag))
                   (theirs (nodes-of w (other-tag tag)))
@@ -1781,6 +2310,105 @@
           (else (let ((c (any-at mine 4)))
                   (and c (create-of rng w now who key "note" (list 'id (mnode-id c) #f) aims))))))))
 
+  ;;; A linked sequence: a hub of links first (slice 5b)
+
+  ;; linked-seed? : Natural -> Boolean
+  ;; One in five: a seed ending in 1 or 9 (never deep, never a family).
+  (define (linked-seed? seed) (and (memv (mod seed 10) '(1 9)) #t))
+
+  ;; linked-steps : Natural
+  (define linked-steps 47)
+
+  ;; linked-event : Rng World Natural Tag Natural -> (U Event #f)
+  ;; Step K of the links a linked seed's TAG makes first, TAG's nodes in
+  ;; the order made: H, a Project, then A, B, C, D and E, a Note, a Task, a
+  ;; Contact, a Journal and a Note, all at the top; the other account makes
+  ;; F. H links out to A (related, then blocks), B (related), C (mentions),
+  ;; D (blocks) and E (mentions); A (related), B (mentions) and C (related)
+  ;; link in to H; D blocks E; E is related to A. H's links are listed out
+  ;; a page of one at a time, in two at a time, and its mentions one at a
+  ;; time. D is trashed: H's PUT of its link to D again is 200, kept, and
+  ;; of another type 409; H's links out, a page of 100, show D trashed. B
+  ;; is archived. The other account asks for H's links, removes H's link to
+  ;; A and links F to H: each a 404. B, archived, blocks C: 201. H's links
+  ;; in are listed one at a time from after (mentions, B). D, linked both
+  ;; ways, is purged, and its list is a 404; H's link to A is removed. Then
+  ;; the ends of B's link to C go archived and trashed, each pair of states
+  ;; met with a link there and one not: C archived, B's link to it is 200,
+  ;; C's new one to B 201; B trashed, each is 200 and a new one either way
+  ;; 409; C trashed, B's is 200 and a new one 409; C's link to B is removed
+  ;; from a trashed source, 204, and again, 404. So a hub's lists page both
+  ;; ways and by type, trashed and archived ends meet every route and every
+  ;; cell of link-command, and a purge takes links both ways. #f when a
+  ;; node it names is not there.
+  (define (linked-event rng w now0 tag k)
+    (let*-values (((who) (if (memv k '(7 27 28 29)) (other-tag tag) tag))
+                  ((key) (rng-pick! rng (key-ids-of who)))
+                  ((now wait) (next-time rng now0 (world-key-last-used w key))))
+      (let* ((pick (lambda (t) (list->vector (filter (lambda (n) (eq? (mnode-tag n) t)) (world-nodes w)))))
+             (mine (pick tag))
+             (theirs (pick (other-tag tag)))
+             (any-at (lambda (v i) (and (< i (vector-length v)) (vector-ref v i))))
+             (at (lambda (v i) (let ((n (any-at v i))) (and n (live? n) n))))
+             (aims (list (sym "linked-step-" (number->string k)) wait))
+             (make (lambda (kind) (create-of rng w now who key kind 'absent aims)))
+             (link (lambda (ev s type t)
+                     (and s t (make-link-event ev now who key (mnode-id s) '() #f #f aims
+                                               (make-link-spec type (mnode-id t) #f #f #f)))))
+             (put (lambda (ev i type j) (link ev (at mine i) type (at mine j))))
+             (list-of (lambda (n dir type limit after)
+                        (and n (make-link-event 'list-links now who key (mnode-id n) '() limit #f aims
+                                                (make-link-spec type #f #f dir after)))))
+             (change (lambda (ev i) (let ((n (at mine i))) (and n (at-revision ev now who key n aims 'absent))))))
+        (case k
+          ((1) (make "project"))
+          ((2) (make "note"))
+          ((3) (make "task"))
+          ((4) (make "contact"))
+          ((5) (make "journal"))
+          ((6) (make "note"))
+          ((7) (make "project"))
+          ((8) (put 'link 0 "related" 1))
+          ((9) (put 'link 0 "blocks" 1))
+          ((10) (put 'link 0 "related" 2))
+          ((11) (put 'link 0 "mentions" 3))
+          ((12) (put 'link 0 "blocks" 4))
+          ((13) (put 'link 0 "mentions" 5))
+          ((14) (put 'link 1 "related" 0))
+          ((15) (put 'link 2 "mentions" 0))
+          ((16) (put 'link 3 "related" 0))
+          ((17) (put 'link 4 "blocks" 5))
+          ((18) (put 'link 5 "related" 1))
+          ((19) (list-of (at mine 0) "out" #f 1 #f))
+          ((20) (list-of (at mine 0) "in" #f 2 #f))
+          ((21) (list-of (at mine 0) #f "mentions" 1 #f))
+          ((22) (change 'trash 4))
+          ((23) (put 'link 0 "blocks" 4))
+          ((24) (put 'link 0 "related" 4))
+          ((25) (list-of (at mine 0) #f #f 100 #f))
+          ((26) (change 'archive 2))
+          ((27) (list-of (at mine 0) "in" #f 1 #f))
+          ((28) (put 'unlink 0 "related" 1))
+          ((29) (link 'link (at theirs 0) "related" (at mine 0)))
+          ((30) (put 'link 2 "blocks" 3))
+          ((31) (let ((b (at mine 2))) (and b (list-of (at mine 0) "in" #f 1 (cons "mentions" (mnode-id b))))))
+          ((32) (change 'purge 4))
+          ((33) (list-of (any-at mine 4) "in" #f #f #f))
+          ((34) (put 'unlink 0 "related" 1))
+          ((35) (change 'archive 3))
+          ((36) (put 'link 2 "blocks" 3))
+          ((37) (put 'link 3 "related" 2))
+          ((38) (change 'trash 2))
+          ((39) (put 'link 2 "blocks" 3))
+          ((40) (put 'link 3 "related" 2))
+          ((41) (put 'link 3 "mentions" 2))
+          ((42) (put 'link 2 "mentions" 3))
+          ((43) (change 'trash 3))
+          ((44) (put 'link 2 "blocks" 3))
+          ((45) (put 'link 2 "related" 3))
+          ((46) (put 'unlink 3 "related" 2))
+          (else (put 'unlink 3 "related" 2))))))
+
   ;;; The shell: one request through the stack
 
   ;; Obs: what the client read. status code etag location json items
@@ -1832,13 +2460,19 @@
   ;; with the query fields EXTRA on every page. LAST-OF is what a full
   ;; page's `next` must be, of its last item.
   (define (walk h auth base extra limit last-of)
+    (walk* h (list auth) base extra limit last-of #f))
+
+  ;; walk* : Handler (Listof Header) String (Listof String) (U Natural #f) (Alist -> Any) (U String #f) -> Obs
+  ;; walk's, with HEADERS on every page and the first page after FIRST
+  ;; (#f: from the start).
+  (define (walk* h headers base extra limit last-of first)
     (let ((cap (or limit 50)))
-      (let loop ((after #f) (n 1) (items '()) (problems '()))
+      (let loop ((after first) (n 1) (items '()) (problems '()))
         (let* ((q (append extra
                           (if limit (list (string-append "limit=" (number->string limit))) '())
                           (if after (list (string-append "after=" (cursor-text after))) '())))
                (target (if (null? q) base (string-append base "?" (join q "&"))))
-               (a (exchange h 'GET target (list auth))))
+               (a (exchange h 'GET target headers)))
           (if (not (= (answer-status a) 200))
               (make-obs (answer-status a) (problem-code a) (answer-header a "etag") #f (answer-json a) items
                         (if (> n 1) (cons (format "page ~a answered ~a after a 200" n (answer-status a)) problems)
@@ -1888,8 +2522,34 @@
                            (list auth))))
         ((list-nodes) (walk h auth "/v1/nodes" (append (state-query (event-query e)) (parent-query (event-parent e)))
                             (event-limit e) (lambda (item) (field item "id"))))
+        ((link unlink)
+         (single (exchange h (if (eq? (event-kind e) 'link) 'PUT 'DELETE) (link-path e) (cons auth (event-headers e)))))
+        ((list-links)
+         (let* ((spec (event-link e)) (a (link-spec-after spec)))
+           (walk* h (cons auth (event-headers e)) (string-append (node-path e) "/links")
+                  (append (field-query "direction" (link-spec-direction spec) "in")
+                          (field-query "type" (link-spec-type spec) "related"))
+                  (event-limit e)
+                  (lambda (item) (string-append (field item "type") ":" (field (field item "node") "id")))
+                  (and a (string-append (car a) ":" (id-text (cdr a)))))))
         (else (walk h auth (string-append (node-path e) "/revisions") '() (event-limit e)
                     (lambda (item) (field item "revision")))))))
+
+  ;; link-path : Event -> String     /v1/nodes/{id}/links/{type}/{target}, as the request names them
+  (define (link-path e)
+    (let* ((spec (event-link e)) (t (link-spec-target spec)))
+      (string-append (node-path e) "/links/" (link-spec-type spec) "/"
+                     (if (bytevector? t)
+                         (let ((text (id-text t))) (if (link-spec-upper? spec) (string-upcase text) text))
+                         t))))
+
+  ;; field-query : String (U String 'twice #f) String -> (Listof String)
+  ;; A list's NAME= fields: none, the one given, or TWICE, a good value,
+  ;; given twice.
+  (define (field-query name q twice)
+    (cond ((not q) '())
+          ((eq? q 'twice) (let ((f (string-append name "=" twice))) (list f f)))
+          (else (list (string-append name "=" q)))))
 
   ;;; Comparing an answer
 
@@ -1977,15 +2637,69 @@
                      (parents (map (lambda (item) (guard (c (#t 'none)) (field item "parent"))) (obs-items o))))
                 (if (or (eq? want 'any) (for-all (lambda (x) (equal? x want)) parents)) '()
                     (list (format "H18': the list for the parent ~s shows the parents ~s" want parents))))))
+           '())
+       (if (or (link-kind? kind) (eq? kind 'list-links)) (link-law-breaks w e o) '()))))
+
+  ;; link-law-breaks : World Event Obs -> (Listof String)
+  ;; A link's answer held to laws that need no model: none has an ETag
+  ;; (H14') or a Location; a PUT's 201 or 200 is the link the path names,
+  ;; {"source", "type", "target", "created"} alone; a DELETE's 204 has no
+  ;; body; a list's items are each {"type", "created", "node"}, of the
+  ;; type asked, each node a live node of the account's (H6, Q1), each
+  ;; link once, by type then id (Q10).
+  (define (link-law-breaks w e o)
+    (let* ((status (obs-status o)) (kind (event-kind e)) (j (obs-json o)) (spec (event-link e)))
+      (append
+       (if (obs-etag o) (list (format "H14': a link's ~a answer has the ETag ~s" status (obs-etag o))) '())
+       (if (obs-location o) (list (format "a link's ~a answer has the Location ~s" status (obs-location o))) '())
+       (if (and (eq? kind 'link) (memv status '(200 201)))
+           (let ((t (link-spec-target spec)))
+             (if (and (list? j) (= (length j) 4)
+                      (equal? (assoc "source" j) (cons "source" (id-text (event-id e))))
+                      (equal? (assoc "type" j) (cons "type" (link-spec-type spec)))
+                      (bytevector? t) (equal? (assoc "target" j) (cons "target" (id-text t)))
+                      (let ((c (assoc "created" j))) (and c (natural? (cdr c)))))
+                 '()
+                 (list (format "the plan: a link's ~a is {\"source\", \"type\", \"target\", \"created\"} of the path's link, not ~s"
+                               status j))))
+           '())
+       (if (and (eq? kind 'unlink) (eqv? status 204) (not (eq? j 'empty)))
+           (list (format "the plan: an unlink's 204 has a body: ~s" j))
+           '())
+       (if (and (eq? kind 'list-links) (eqv? status 200))
+           (let* ((items (obs-items o))
+                  (shape? (lambda (i) (and (list? i) (= (length i) 3) (assoc "type" i) (assoc "created" i) (assoc "node" i)
+                                           (list? (cdr (assoc "node" i))) (assoc "id" (cdr (assoc "node" i))))))
+                  (keys (map (lambda (i) (and (shape? i) (cons (cdr (assoc "type" i)) (cdr (assoc "id" (cdr (assoc "node" i)))))))
+                             items))
+                  (asked (link-type-filter (link-spec-type spec)))
+                  (mine (map (lambda (n) (id-text (mnode-id n))) (nodes-of w (event-tag e)))))
+             (cond
+              ((not (for-all (lambda (k) k) keys))
+               (list (format "the plan: a link list's item is {\"type\", \"created\", \"node\"} alone: ~s" items)))
+              (else
+               (append
+                (if (for-all (lambda (k) (member (cdr k) mine)) keys) '()
+                    (list "H6, Q1: a link list shows a node that is no live node of the account's"))
+                (if (or (not (string? asked)) (for-all (lambda (k) (equal? (car k) asked)) keys)) '()
+                    (list (format "Q10: a link list of type ~a shows the types ~s" asked (map car keys))))
+                (if (let rising ((ks keys))
+                      (or (null? ks) (null? (cdr ks))
+                          (and (or (string<? (caar ks) (caadr ks))
+                                   (and (string=? (caar ks) (caadr ks)) (string<? (cdar ks) (cdadr ks))))
+                               (rising (cdr ks)))))
+                    '()
+                    (list "Q10: a link list does not show each link once, by type then the other node's id"))))))
            '()))))
 
   ;;; The database
 
-  ;; Db = (List Nodes Snaps Changes Keys), each a list of rows, each row a list:
+  ;; Db = (List Nodes Snaps Changes Keys Links), each a list of rows, each row a list:
   ;;   node     (id owner author kind title content_type props revision created updated state parent)
   ;;   snapshot (node revision author title content_type props created body)
   ;;   change   (owner seq node revision op created)
   ;;   key      (id account last_used)
+  ;;   link     (owner source type target created), by owner, source, type, target
   (define (n-id r) (list-ref r 0))
   (define (n-owner r) (list-ref r 1))
   (define (n-author r) (list-ref r 2))
@@ -2012,10 +2726,15 @@
   (define (c-op r) (list-ref r 4))
   (define (c-created r) (list-ref r 5))
   (define (k-account r) (list-ref r 1))
+  (define (l-owner r) (list-ref r 0))
+  (define (l-source r) (list-ref r 1))
+  (define (l-type r) (list-ref r 2))
+  (define (l-target r) (list-ref r 3))
+  (define (db-links db) (list-ref db 4))
 
   (define (row->list v) (map (lambda (c) (if (sql-null? c) #f c)) (vector->list v)))
 
-  ;; db-now : Store -> Db     the three tables and every key's last_used, whole
+  ;; db-now : Store -> Db     the four tables and every key's last_used, whole
   (define (db-now store)
     (run-read store
               (lambda (tx)
@@ -2027,8 +2746,11 @@
                                                           " ORDER BY node, revision")))
                        (changes (tx-query tx (string-append "SELECT owner, seq, node, revision, op, created"
                                                             " FROM changes ORDER BY owner, seq")))
-                       (keys (tx-query tx "SELECT id, account, last_used FROM api_keys ORDER BY id")))
-                  (list (map row->list nodes) (map row->list snaps) (map row->list changes) (map row->list keys))))))
+                       (keys (tx-query tx "SELECT id, account, last_used FROM api_keys ORDER BY id"))
+                       (links (tx-query tx (string-append "SELECT owner, source, type, target, created FROM links"
+                                                          " ORDER BY owner, source, type, target"))))
+                  (list (map row->list nodes) (map row->list snaps) (map row->list changes) (map row->list keys)
+                        (map row->list links))))))
 
   ;;; The laws, with no model: the tables after a request, and before it
 
@@ -2038,15 +2760,20 @@
   ;; The ops that write content, and so a snapshot.
   (define content-ops '("create" "update" "restore"))
 
+  ;; link-ops : the change rows a link writes on its source (K5)
+  (define link-ops '("link" "unlink"))
+  (define (link-op? op) (and (member op link-ops) #t))
+
   ;; feed-state : (Listof String) -> (U String #f)
   ;; The state a node's change rows leave it in, oldest first: a create
-  ;; makes it active, an update, a restore or a move keeps it, a change of
-  ;; state lands where lifecycle-moves says. #f for an op none of these is.
+  ;; makes it active, an update, a restore, a move, a link or an unlink
+  ;; keeps it (G3'), a change of state lands where lifecycle-moves says. #f
+  ;; for an op none of these is.
   (define (feed-state ops)
     (fold-left (lambda (state op)
                  (cond ((not state) #f)
                        ((string=? op "create") "active")
-                       ((member op '("update" "restore" "move")) state)
+                       ((member op '("update" "restore" "move" "link" "unlink")) state)
                        ((find (lambda (m) (string=? (symbol->string (car m)) op)) lifecycle-moves)
                         => (lambda (m) (symbol->string (caddr m))))
                        (else #f)))
@@ -2054,21 +2781,35 @@
 
   ;; node-law-breaks : Row (Listof Row) (Listof Row) -> (Listof String)
   ;; One node's row, its snapshots (by revision) and its change rows (in
-  ;; the feed's order): G3, G6, G16, H2', H3', H15', H16.
+  ;; the feed's order): G3', G6, G16, H2', H3', H15'', H16. G3': its rows
+  ;; but link and unlink run 1 to its revision; a link or unlink row
+  ;; carries the revision of the newest other row before it, and keeps
+  ;; the state. H15'': updated is the time of the newest row that is
+  ;; neither.
   (define (node-law-breaks r ss cs)
     (let* ((n (n-rev r))
            (revs (map s-rev ss))
-           (crevs (map c-rev cs))
+           (own-cs (filter (lambda (c) (not (link-op? (c-op c)))) cs))
+           (crevs (map c-rev own-cs))
            (ops (map c-op cs))
            (state (n-state r))
            (purged? (equal? state "purged"))
            (top (and (pair? ss) (car (reverse ss))))
-           (newest (and (pair? cs) (car (reverse cs))))
+           (newest (and (pair? own-cs) (car (reverse own-cs))))
            (name (id-text (n-id r))))
       (append
        (if (equal? crevs (from-to 1 n)) '()
-           (list (format "G3: node ~a is at revision ~a; its change rows' revisions, in the feed's order, are ~a"
+           (list (format "G3': node ~a is at revision ~a; its change rows' revisions but link and unlink, in the feed's order, are ~a"
                          name n crevs)))
+       (let loop ((cs cs) (last #f) (acc '()))
+         (cond ((null? cs) (reverse acc))
+               ((link-op? (c-op (car cs)))
+                (loop (cdr cs) last
+                      (if (eqv? (c-rev (car cs)) last) acc
+                          (cons (format "G3': node ~a's ~a row, seq ~a, is at revision ~a; the newest other row before it at ~a"
+                                        name (c-op (car cs)) (c-seq (car cs)) (c-rev (car cs)) last)
+                                acc))))
+               (else (loop (cdr cs) (c-rev (car cs)) acc))))
        (if (and (pair? ops) (string=? (car ops) "create")) '()
            (list (format "H4: node ~a's first change row is ~s, not its create" name (if (pair? ops) (car ops) "none"))))
        (let ((after (member "purge" ops)))
@@ -2076,7 +2817,7 @@
              (list (format "G16: node ~a has change rows after its purge: ~a" name (cdr after)))))
        (let ((want (feed-state ops)))
          (if (equal? want state) '()
-             (list (format "G3: node ~a is ~a, but its change rows ~a leave it ~a" name state ops want))))
+             (list (format "G3': node ~a is ~a, but its change rows ~a leave it ~a" name state ops want))))
        (let ((want (if purged? '() (map c-rev (filter (lambda (c) (member (c-op c) content-ops)) cs)))))
          (if (equal? revs want) '()
              (list (format "H3': node ~a (~a, at ~a) has snapshots ~a; its content changes are at ~a"
@@ -2092,8 +2833,8 @@
          (list (format "H2': node ~a's title, content type and props are ~s; its newest snapshot's ~s" name
                        (list (n-title r) (n-type r) (n-props r)) (list (s-title top) (s-type top) (s-props top))))))
        (if (and newest (equal? (n-updated r) (c-created newest))) '()
-           (list (format "H15': node ~a's updated is ~a; its newest change row's time ~a" name (n-updated r)
-                         (and newest (c-created newest)))))
+           (list (format "H15'': node ~a's updated is ~a; its newest change row's but link and unlink, time ~a" name
+                         (n-updated r) (and newest (c-created newest)))))
        (if (and (pair? cs) (equal? (n-created r) (c-created (car cs)))) '()
            (list (format "H15': node ~a's created is ~a; its create's time ~a" name (n-created r)
                          (and (pair? cs) (c-created (car cs))))))
@@ -2153,6 +2894,35 @@
       (for-each (lambda (r) (hashtable-update! t (node-of r) (lambda (l) (cons r l)) '())) (reverse rows))
       (lambda (id) (hashtable-ref t id '()))))
 
+  ;; link-table-breaks : (Listof Row) (Listof Row) -> (Listof String)
+  ;; Every row of links, by the rows of nodes: Q1, both ends are rows of
+  ;; the link's owner; Q8, neither is purged, so a purged row has no link
+  ;; either way; Q2, no row has one node at both ends, and every type is
+  ;; one of the three.
+  (define (link-table-breaks nodes links)
+    (let ((by (make-id-table)))
+      (for-each (lambda (r) (hashtable-set! by (n-id r) r)) nodes)
+      (fold-right
+       (lambda (l acc)
+         (let* ((end (lambda (id what)
+                       (let ((r (hashtable-ref by id #f)))
+                         (cond ((not r) (list (format "Q1: a link's ~a ~a is no row" what (id-text id))))
+                               ((not (bytevector=? (n-owner r) (l-owner l)))
+                                (list (format "Q1: a link of ~a has the ~a ~a, ~a's node" (account-label (l-owner l)) what
+                                              (id-text id) (account-label (n-owner r)))))
+                               ((equal? (n-state r) "purged")
+                                (list (format "Q1, Q8: a link's ~a ~a is purged" what (id-text id))))
+                               (else '()))))))
+           (append (end (l-source l) "source")
+                   (end (l-target l) "target")
+                   (if (bytevector=? (l-source l) (l-target l))
+                       (list (format "Q2: node ~a links to itself" (id-text (l-source l))))
+                       '())
+                   (if (member (l-type l) link-type-names) '()
+                       (list (format "Q2: a link has the type ~s" (l-type l))))
+                   acc)))
+       '() links)))
+
   ;; always-breaks : Db -> (Listof String)
   (define (always-breaks db)
     (let* ((nodes (car db)) (snaps (cadr db)) (changes (caddr db))
@@ -2160,6 +2930,7 @@
            (changes-of (grouped changes c-node)))
       (append
        (forest-breaks nodes)
+       (link-table-breaks nodes (db-links db))
        (fold-right (lambda (r acc)
                      (append (node-law-breaks r (snaps-of (n-id r)) (changes-of (n-id r))) acc))
                    '() nodes)
@@ -2239,6 +3010,8 @@
         '() changed)
        (if (equal? (cadr db0) (cadr db1)) '()
            (list (format "P4: a bulk move of ~a's children touched a snapshot" name)))
+       (if (equal? (db-links db0) (db-links db1)) '()
+           (list (format "Q9: a bulk move of ~a's children changed links" name)))
        (let ((want (map (lambda (r1 i) (list asker (+ m0 i) (n-id r1) (n-rev r1) "move" now))
                         (list-sort (lambda (x y) (bytevector<? (n-id x) (n-id y))) changed)
                         (from-to 1 (length changed)))))
@@ -2314,7 +3087,17 @@
                      (else (list (format "P15: an accepted ~a of ~a moved it from ~a to ~a" op name (show-id p0)
                                          (show-id p1))))))
              (if (equal? (but-node (car db1) id) (but-node (car db0) id)) '()
-                 (list (format "H1: an accepted ~a of ~a changed another node's row" op name)))
+                 (list (format "H1, G6': an accepted ~a of ~a changed another node's row" op name)))
+             (let ((l0 (db-links db0)) (l1 (db-links db1)))
+               (if (string=? op "purge")
+                   (let ((want (filter (lambda (l) (not (or (bytevector=? (l-source l) id) (bytevector=? (l-target l) id))))
+                                       l0)))
+                     (if (equal? l1 want) '()
+                         (list (format "G6', Q8: a purge of ~a left ~a links of the ~a before; it takes every link of the node, both ways, and no other: ~a"
+                                       name (length l1) (length l0) (length want)))))
+                   (if (equal? l1 l0) '()
+                       (list (format "Q9: an accepted ~a of ~a changed links: ~a before, ~a after" op name
+                                     (length l0) (length l1))))))
              (if (equal? (filter (lambda (s) (not (mine? s))) (cadr db1)) (filter (lambda (s) (not (mine? s))) (cadr db0)))
                  '()
                  (list (format "H3': an accepted ~a of ~a changed another node's snapshots" op name)))
@@ -2363,23 +3146,84 @@
                       (member want-change changes1)
                       (for-all (lambda (c) (member c changes1)) (caddr db0)))
                  '()
-                 (list (format "H4: an accepted ~a adds one change row, (~a ~a ~a ~a ~s ~a); the rows before were ~a, after ~a"
+                 (list (format "H4, G6': an accepted ~a adds one change row, (~a ~a ~a ~a ~s ~a); the rows before were ~a, after ~a"
                                op (event-tag e) (+ m0 1) name rev op now
                                (length (caddr db0)) (length changes1))))
              (key-breaks e op db0 db1))))))
 
+  ;; link-breaks : Event Db Db -> (Listof String)
+  ;; H1': an accepted link (201) or unlink (204), between the tables
+  ;; before and after: no node row changed, no snapshot; exactly the one
+  ;; link row made, created now, or removed; one change row, the asker's
+  ;; next number, on the source at the source's revision, link or unlink,
+  ;; now, and no other; and H5.
+  (define (link-breaks e db0 db1)
+    (let* ((spec (event-link e)) (source (event-id e)) (type (link-spec-type spec)) (target (link-spec-target spec))
+           (now (event-now e)) (asker (account-id-of (event-tag e)))
+           (op (if (eq? (event-kind e) 'link) "link" "unlink"))
+           (r0 (find-node (car db0) source))
+           (l0 (db-links db0)) (l1 (db-links db1))
+           (key? (lambda (l) (and (bytevector=? (l-owner l) asker) (bytevector=? (l-source l) source)
+                                  (equal? (l-type l) type) (bytevector? target) (bytevector=? (l-target l) target))))
+           (m0 (length (filter (lambda (c) (bytevector=? (c-owner c) asker)) (caddr db0))))
+           (added (filter (lambda (c) (not (member c (caddr db0)))) (caddr db1))))
+      (append
+       (if (equal? (car db0) (car db1)) '()
+           (list (format "H1', Q4: an accepted ~a changed a node's row" op)))
+       (if (equal? (cadr db0) (cadr db1)) '()
+           (list (format "H1', Q4: an accepted ~a changed a snapshot" op)))
+       (if (string=? op "link")
+           (let ((made (filter (lambda (l) (not (member l l0))) l1)))
+             (if (and (equal? made (list (list asker source type target now)))
+                      (= (length l1) (+ 1 (length l0))) (for-all (lambda (l) (member l l1)) l0))
+                 '()
+                 (list (format "H1': an accepted link makes the one row (~a ~a ~s ~a ~a) and no other; it made ~a, of ~a before, ~a after"
+                               (event-tag e) (id-text source) type (if (bytevector? target) (id-text target) target) now
+                               (length made) (length l0) (length l1)))))
+           (let ((gone (filter key? l0)))
+             (if (and (= (length gone) 1) (equal? l1 (filter (lambda (l) (not (key? l))) l0))) '()
+                 (list (format "H1': an accepted unlink removes the one row it names and no other: ~a such before; ~a rows before, ~a after"
+                               (length gone) (length l0) (length l1))))))
+       (cond
+        ((not r0) (list (format "H1': an accepted ~a's source ~a has no row" op (id-text source))))
+        ((and (equal? added (list (list asker (+ m0 1) source (n-rev r0) op now)))
+              (= (length (caddr db1)) (+ 1 (length (caddr db0)))))
+         '())
+        (else
+         (list (format "H1', Q5: an accepted ~a adds one change row, (~a ~a ~a ~a ~s ~a): the source's at its revision; it added ~s"
+                       op (event-tag e) (+ m0 1) (id-text source) (n-rev r0) op now
+                       (map (lambda (c) (list (account-label (c-owner c)) (c-seq c) (id-text (c-node c)) (c-rev c) (c-op c)
+                                              (c-created c)))
+                            added)))))
+       (key-breaks e op db0 db1))))
+
+  ;; kept-breaks : Event Db Db -> (Listof String)
+  ;; H4'', Q3, Q16: a PUT of a link that is there (200) changes nothing but
+  ;; the asking key's last_used, which may move to now (H5).
+  (define (kept-breaks e db0 db1)
+    (append
+     (fold-right (lambda (name t0 t1 acc)
+                   (if (equal? t0 t1) acc (cons (format "H4'', Q3: a 200 PUT of a link that is there changed ~a" name) acc)))
+                 '() '("nodes" "revisions" "changes") (list (car db0) (cadr db0) (caddr db0))
+                 (list (car db1) (cadr db1) (caddr db1)))
+     (if (equal? (db-links db0) (db-links db1)) '()
+         (list "H4'', Q3, Q15: a 200 PUT of a link that is there changed links"))
+     (key-breaks e "kept link" db0 db1)))
+
   ;; unchanged-breaks : Event Natural Db Db -> (Listof String)
-  ;; H5, G4, G13: a refused write, and any read, change nothing at all.
+  ;; H5, G4, G13, H4'': a refused write, a refused link and any read change
+  ;; nothing at all, links among it.
   (define (unchanged-breaks e status db0 db1)
-    (let ((what (if (write-kind? (event-kind e))
+    (let ((what (if (or (write-kind? (event-kind e)) (link-kind? (event-kind e)))
                     (format "a refused ~a (~a)" (event-kind e) status)
                     (format "a read (~a)" status))))
       (fold-right (lambda (name t0 t1 acc)
-                    (if (equal? t0 t1) acc (cons (format "H5, G13: ~a changed ~a" what name) acc)))
-                  '() '("nodes" "revisions" "changes" "api_keys' last_used") db0 db1)))
+                    (if (equal? t0 t1) acc (cons (format "H5, G13, H4'': ~a changed ~a" what name) acc)))
+                  '() '("nodes" "revisions" "changes" "api_keys' last_used" "links") db0 db1)))
 
   ;; other-breaks : Event Db Db -> (Listof String)
-  ;; H6, G7: no request changes a row of the other account's.
+  ;; H6, G7, G7': no request changes a row of the other account's, its
+  ;; links among them.
   (define (other-breaks e db0 db1)
     (let* ((other (account-id-of (other-tag (event-tag e))))
            (theirs (lambda (db)
@@ -2389,16 +3233,24 @@
                        (list nodes
                              (filter (lambda (s) (hashtable-ref ids (s-node s) #f)) (cadr db))
                              (filter (lambda (c) (bytevector=? (c-owner c) other)) (caddr db))
-                             (filter (lambda (k) (bytevector=? (k-account k) other)) (cadddr db)))))))
+                             (filter (lambda (k) (bytevector=? (k-account k) other)) (cadddr db))
+                             (filter (lambda (l) (bytevector=? (l-owner l) other)) (db-links db)))))))
       (if (equal? (theirs db0) (theirs db1)) '()
-          (list (format "H6, G7: a request by ~a changed the rows of ~a" (event-tag e) (other-tag (event-tag e)))))))
+          (list (format "H6, G7, G7': a request by ~a changed the rows of ~a" (event-tag e) (other-tag (event-tag e)))))))
 
   ;; db-law-breaks : Event Obs Db Db -> (Listof String)
+  ;; By the answer the handlers gave: an accepted write's laws; an
+  ;; accepted link's or unlink's (H1'); a kept link's (H4''); else nothing
+  ;; changed.
   (define (db-law-breaks e o db0 db1)
     (let* ((status (obs-status o))
-           (accepted? (and (write-kind? (event-kind e)) (memv status '(200 201 204)) #t)))
+           (kind (event-kind e))
+           (accepted? (and (write-kind? kind) (memv status '(200 201 204)) #t)))
       (append (always-breaks db1)
-              (if accepted? (accepted-breaks e o db0 db1) (unchanged-breaks e status db0 db1))
+              (cond (accepted? (accepted-breaks e o db0 db1))
+                    ((and (link-kind? kind) (memv status '(201 204))) (link-breaks e db0 db1))
+                    ((and (eq? kind 'link) (eqv? status 200)) (kept-breaks e db0 db1))
+                    (else (unchanged-breaks e status db0 db1)))
               (other-breaks e db0 db1))))
 
   ;;; The tables held to the model's world
@@ -2436,17 +3288,30 @@
   (define (model-key-rows w)
     (map (lambda (k) (list (mkey-id k) (account-id-of (mkey-tag k)) (mkey-last-used k))) (world-keys w)))
 
+  ;; model-link-rows : World -> (Listof Row)     by owner, source, type, target, as the query orders them
+  (define (model-link-rows w)
+    (list-sort (lambda (x y)
+                 (cond ((not (bytevector=? (l-owner x) (l-owner y))) (bytevector<? (l-owner x) (l-owner y)))
+                       ((not (bytevector=? (l-source x) (l-source y))) (bytevector<? (l-source x) (l-source y)))
+                       ((not (string=? (l-type x) (l-type y))) (string<? (l-type x) (l-type y)))
+                       (else (bytevector<? (l-target x) (l-target y)))))
+               (map (lambda (l) (list (account-id-of (mlink-tag l)) (mlink-source l) (mlink-type l) (mlink-target l)
+                                      (mlink-created l)))
+                    (world-links w))))
+
   ;; Column labels: which H or G a difference in that column breaks.
   (define node-columns
     '(("id" . "H1") ("owner" . "H6") ("author" . "H16") ("kind" . "H11") ("title" . "H2'")
-      ("content_type" . "H2'") ("props" . "H2'") ("revision" . "H1, G3") ("created" . "H15', G9")
-      ("updated" . "H15'") ("state" . "G3, G12") ("parent" . "P1 to P4, P8, P11, P15, P16")))
+      ("content_type" . "H2'") ("props" . "H2'") ("revision" . "H1, G3', Q4") ("created" . "H15', G9")
+      ("updated" . "H15'', Q4") ("state" . "G3', G12") ("parent" . "P1 to P4, P8, P11, P15, P16")))
   (define snap-columns
     '(("node" . "H3'") ("revision" . "H3'") ("author" . "H16") ("title" . "H3'") ("content_type" . "H3'")
       ("props" . "H3'") ("created" . "H15'") ("body" . "H3'")))
   (define change-columns
     '(("owner" . "H4") ("seq" . "H4") ("node" . "H4") ("revision" . "H4") ("op" . "H4, L10") ("created" . "H4")))
   (define key-columns '(("id" . "H5") ("account" . "H5") ("last_used" . "H5")))
+  (define link-columns
+    '(("owner" . "Q1, G7'") ("source" . "H1', Q5") ("type" . "H1', Q2") ("target" . "H1', Q1") ("created" . "Q15")))
 
   ;; rows-breaks : World String (Listof Row) (Listof Row) (Row -> Any) Columns String -> (Listof String)
   ;; Every model row has its row in the database, column for column; the
@@ -2482,7 +3347,9 @@
                   snap-columns "H3'/H5")
      (rows-breaks w "changes" (model-change-rows w) (caddr db) (lambda (r) (list (c-owner r) (c-seq r)))
                   change-columns "H4")
-     (rows-breaks w "api_keys" (model-key-rows w) (cadddr db) (lambda (r) (list (car r))) key-columns "H5")))
+     (rows-breaks w "api_keys" (model-key-rows w) (cadddr db) (lambda (r) (list (car r))) key-columns "H5")
+     (rows-breaks w "links" (model-link-rows w) (db-links db)
+                  (lambda (r) (list (l-owner r) (l-source r) (l-type r) (l-target r))) link-columns "H1'/Q8/Q9")))
 
   ;;; One sequence
 
@@ -2497,7 +3364,8 @@
   ;;                account's), and reached its job.
   ;;   report       #f when every request agreed; else the first difference
   ;;   style        deep (it began with the chain and the script), family
-  ;;                (with the family), or plain
+  ;;                (with the family), linked (with the hub of links), or
+  ;;                plain
   ;; verdict-seed, verdict-steps, verdict-requests : Verdict -> Natural
   ;; verdict-cells : Verdict -> (Listof (Pair Cell Natural))
   ;; verdict-aims : Verdict -> (Listof (Pair Symbol Natural))
@@ -2588,9 +3456,111 @@
        (if (and (eq? kind 'put) (eqv? status 201) p (eq? (mnode-state p) 'archived)) '(create-in-archived) '())
        (if (and (equal? (expectation-cells x) '((match trashed move))) (eq? v 'ok)) '(move-trashed-would-pass) '()))))
 
+  ;; end-why : World Tag Bytevector -> Symbol
+  ;; What ID is to TAG: own (a live node of its), missing (no node's),
+  ;; purged (either account's), or other (the other account's live node).
+  (define (end-why w tag id)
+    (let ((n (world-node w id)))
+      (cond ((not n) 'missing) ((not (live? n)) 'purged) ((eq? (mnode-tag n) tag) 'own) (else 'other))))
+
+  ;; link-aims : World Event Expectation Obs -> (Listof Symbol)
+  ;; What the links' rules looked at for E, by the model's own reading:
+  ;;   lc-<event>-<source>-<target>-<there|absent>
+  ;;                          link-command's cell, each end's state (none
+  ;;                          for no live node of the account's; any for an
+  ;;                          unlink's target, which is not read)
+  ;;   link-made, link-kept(-source-trashed, -target-trashed),
+  ;;   unlink-removed(-source-trashed, -source-archived, -target-trashed)
+  ;;   <event>-404-source-<missing|purged|other>, link-404-target-<why>
+  ;;                          (-source-trashed: the 404 before the 409),
+  ;;                          unlink-404-absent(-target-<why>)
+  ;;   link-409-<source|target|both>-trashed
+  ;;   <event>-400-<type|target|self|precondition>
+  ;;   link-refused-while-due, link-last-used-set
+  ;;   list-links-<out|in>-<typed|untyped>, -<out|in>-pages-followed,
+  ;;   list-links-404-<why>, list-links-400-<direction|type|after-other-type>,
+  ;;   list-links-after-place, -precondition-ignored, -of-<trashed|archived>,
+  ;;   -item-<trashed|archived>, -empty, -limit-1-followed, -limit-100
+  ;;   purge-links-<out|in|both>    a purge that took links that way
+  ;;   linked-<route>         an accepted write of a node with links
+  (define (link-aims w e x o)
+    (let* ((kind (event-kind e)) (status (expectation-status x)) (tag (event-tag e))
+           (st (lambda (s) (if s (symbol->string s) "none"))))
+      (case kind
+        ((link unlink)
+         (let ((bad (link-bad e)))
+           (if bad
+               (list (sym kind "-400-" bad))
+               (let* ((cell (link-cell w e))
+                      (s (car cell)) (t (cadr cell)) (there? (cadddr cell))
+                      (target (link-spec-target (event-link e)))
+                      (t-why (end-why w tag target))
+                      (tn (own-node w tag target)))
+                 (append
+                  (list (sym "lc-" kind "-" (st s) "-" (if (eq? kind 'link) (st t) "any") "-" (if there? "there" "absent")))
+                  (case status
+                    ((201) '(link-made))
+                    ((200) (cons 'link-kept (append (if (eq? s 'trashed) '(link-kept-source-trashed) '())
+                                                    (if (eq? t 'trashed) '(link-kept-target-trashed) '()))))
+                    ((204) (cons 'unlink-removed
+                                 (append (if (eq? s 'trashed) '(unlink-removed-source-trashed) '())
+                                         (if (eq? s 'archived) '(unlink-removed-source-archived) '())
+                                         (if (and tn (eq? (mnode-state tn) 'trashed)) '(unlink-removed-target-trashed) '()))))
+                    ((404) (list (cond ((not s) (sym kind "-404-source-" (end-why w tag (event-id e))))
+                                       ((eq? kind 'link) (sym "link-404-target-" t-why (if (eq? s 'trashed) "-source-trashed" "")))
+                                       ((eq? t-why 'own) 'unlink-404-absent)
+                                       (else (sym "unlink-404-absent-target-" t-why)))))
+                    ((409) (list (sym "link-409-" (cond ((and (eq? s 'trashed) (eq? t 'trashed)) "both")
+                                                        ((eq? s 'trashed) "source")
+                                                        (else "target"))
+                                      "-trashed")))
+                    (else '()))
+                  (if (and (memv status '(404 409)) (touch-due? (world-key-last-used w (event-key e)) (event-now e)))
+                      '(link-refused-while-due)
+                      '())
+                  (if (expectation-touched x) '(link-last-used-set) '()))))))
+        ((list-links)
+         (let* ((spec (event-link e))
+                (dir (link-direction (link-spec-direction spec)))
+                (type (link-type-filter (link-spec-type spec)))
+                (own (own-node w tag (event-id e))))
+           (case status
+             ((400) (list (cond ((eq? dir 'invalid) 'list-links-400-direction)
+                                ((eq? type 'invalid) 'list-links-400-type)
+                                (else 'list-links-400-after-other-type))))
+             ((404) (list (sym "list-links-404-" (end-why w tag (event-id e)))))
+             ((200)
+              (let* ((items (or (expectation-items x) '()))
+                     (pages (obs-requests o))
+                     (state-of (lambda (i) (cdr (assoc "state" (cdr (assoc "node" i)))))))
+                (append (list (sym "list-links-" dir (if type "-typed" "-untyped")))
+                        (if (> pages 1) (list (sym "list-links-" dir "-pages-followed")) '())
+                        (if (and (> pages 2) (eqv? (event-limit e) 1)) '(list-links-limit-1-followed) '())
+                        (if (eqv? (event-limit e) 100) '(list-links-limit-100) '())
+                        (if (null? items) '(list-links-empty) '())
+                        (if (link-spec-after spec) '(list-links-after-place) '())
+                        (if (pair? (event-headers e)) '(list-links-precondition-ignored) '())
+                        (if (and own (memq (mnode-state own) '(trashed archived)))
+                            (list (sym "list-links-of-" (mnode-state own)))
+                            '())
+                        (if (exists (lambda (i) (equal? (state-of i) "trashed")) items) '(list-links-item-trashed) '())
+                        (if (exists (lambda (i) (equal? (state-of i) "archived")) items) '(list-links-item-archived) '()))))
+             (else '()))))
+        (else
+         (let ((linked? (and (event-id e) (pair? (links-at w (event-id e))))))
+           (cond
+            ((not (and linked? (write-kind? kind) (memv status '(200 201 204)))) '())
+            ((eq? kind 'purge)
+             (let* ((id (event-id e))
+                    (outs (exists (lambda (l) (bytevector=? (mlink-source l) id)) (world-links w)))
+                    (ins (exists (lambda (l) (bytevector=? (mlink-target l) id)) (world-links w))))
+               (list (cond ((and outs ins) 'purge-links-both) (outs 'purge-links-out) (else 'purge-links-in)))))
+            (else (list (sym "linked-" (route-name e))))))))))
+
   (define (reset! store)
     (run-write store
                (lambda (tx)
+                 (tx-execute! tx "DELETE FROM links")
                  (tx-execute! tx "DELETE FROM changes")
                  (tx-execute! tx "DELETE FROM revisions")
                  (tx-execute! tx "DELETE FROM nodes")
@@ -2630,25 +3600,29 @@
   ;; purged-<route>-own or -other, when the request names a purged node's
   ;; id, its owner's or the other account's, and reaches its job: a
   ;; precondition of the right shape, or a read.
+  ;; A link's request is counted by link-aims instead.
   (define (purged-aim w e)
-    (let ((n (and (event-id e) (world-node w (event-id e)))))
+    (let ((n (and (event-id e) (not (event-link e)) (world-node w (event-id e)))))
       (and n (not (live? n))
            (not (memq (event-pre e) '(missing invalid)))
            (sym "purged-" (route-name e) "-" (if (eq? (mnode-tag n) (event-tag e)) "own" "other")))))
 
   ;; run-sequence : Store Twist Natural Boolean -> Verdict
   ;; The sequence SEED makes, on STORE, emptied first: a fresh app on it
-  ;; (wrap-server around make-app, its wall clock set by the sequence), 60
-  ;; to 87 generated requests, after the family on a family seed; or, on a
-  ;; deep seed, the chain, the script and 10 to 20. TWIST is as-planned, or
+  ;; (wrap-server around make-app, its wall clock set by the sequence), 82
+  ;; to 119 generated requests, after the family on a family seed; or, on a
+  ;; deep seed, the chain, the script and 14 to 27. TWIST is as-planned, or
   ;; a changed rule. TRACE? prints each request and its answer as it goes.
   (define (run-sequence store twist seed trace?)
     (let* ((rng (make-rng seed))
-           (style (cond ((deep-seed? seed) 'deep) ((family-seed? seed) 'family) (else 'plain)))
-           (n (if (eq? style 'deep) (+ 10 (rng-below! rng 11)) (+ 60 (rng-below! rng 28))))
+           (style (cond ((deep-seed? seed) 'deep) ((family-seed? seed) 'family) ((linked-seed? seed) 'linked)
+                        (else 'plain)))
+           (n (if (eq? style 'deep) (+ 14 (rng-below! rng 14)) (+ 82 (rng-below! rng 38))))
            (t0 (+ 1795515226123 (rng-below! rng 100000)))
            (deep-tag (rng-pick! rng '(a b)))
-           (total (+ n (case style ((deep) (+ chain-steps script-steps)) ((family) family-steps) (else 0))))
+           (total (+ n (case style
+                         ((deep) (+ chain-steps script-steps)) ((family) family-steps) ((linked) linked-steps)
+                         (else 0))))
            (bodies (make-hashtable string-hash string=?))
            (now-cell (vector t0))
            (clock (step-clock 0 1))
@@ -2673,6 +3647,8 @@
                (or (script-event rng w now deep-tag (- i chain-steps)) (next-event rng w now)))
               ((and (eq? style 'family) (<= i family-steps))
                (or (family-event rng w now deep-tag i) (next-event rng w now)))
+              ((and (eq? style 'linked) (<= i linked-steps))
+               (or (linked-event rng w now deep-tag i) (next-event rng w now)))
               (else (next-event rng w now))))
 
       ;; body-breaks : Obs -> (Listof String)
@@ -2687,7 +3663,7 @@
                       (else (list (format "P12: a refusal ~a has the body ~s; an earlier one ~s" code j seen)))))
               '())))
 
-      (define (report i desc x o breaks)
+      (define (report w e i desc x o breaks)
         (string-append
          (format "seed ~a, step ~a: the sequence so far:\n" seed i)
          (apply string-append (map (lambda (l) (string-append "    " l "\n")) (reverse log)))
@@ -2695,7 +3671,9 @@
          (if x
              (format "  the model expects: ~a ~s, ETag ~s, stepping ~a~a~a\n"
                      (expectation-status x) (expectation-code x) (expectation-etag x)
-                     (cells-text (expectation-cells x))
+                     (if (and (link-kind? (event-kind e)) (not (link-bad e)))
+                         (string-append "link-command's " (link-cell-text (link-cell w e)))
+                         (cells-text (expectation-cells x)))
                      (if (expectation-clause x) (string-append " (" (expectation-clause x) ")") "")
                      (if (expectation-problem x) (string-append "; " (expectation-problem x)) ""))
              "")
@@ -2711,12 +3689,12 @@
         (let* ((desc (describe-event w e t0))
                (x (expect twist w e)))
           (if (expectation-problem x)
-              (report i desc x #f (list "the model cannot take this step"))
+              (report w e i desc x #f (list "the model cannot take this step"))
               (begin
                 (vector-set! now-cell 0 (event-now e))
                 (let ((seen (attempt (lambda () (observe h e)))))
                   (if (eq? (car seen) 'raised)
-                      (report i desc x #f (list (string-append "the request raised: " (cadr seen))))
+                      (report w e i desc x #f (list (string-append "the request raised: " (cadr seen))))
                       (let* ((o (cadr seen))
                              (w1 (expectation-world x))
                              (db (attempt (lambda () (db-now store))))
@@ -2733,6 +3711,7 @@
                         (for-each (lambda (c) (count! cells c)) (expectation-cells x))
                         (for-each (lambda (a) (count! aims a)) (event-aims e))
                         (for-each (lambda (a) (count! aims a)) (tree-aims w e x))
+                        (for-each (lambda (a) (count! aims a)) (link-aims w e x o))
                         (let ((p (purged-aim w e))) (when p (count! aims p)))
                         (when (expectation-touched x) (count! aims 'last-used-set))
                         (when (and (write-kind? (event-kind e))
@@ -2745,10 +3724,12 @@
                           (set! log (cons line log))
                           (when trace?
                             (display (format "~a (the model: ~a, ~a)\n" line (expectation-status x)
-                                             (cells-text (expectation-cells x))))))
+                                             (if (and (link-kind? (event-kind e)) (not (link-bad e)))
+                                                 (link-cell-text (link-cell w e))
+                                                 (cells-text (expectation-cells x)))))))
                         (if (null? breaks)
                             (cons w1 (cadr db))
-                            (report i desc x o breaks)))))))))
+                            (report w e i desc x o breaks)))))))))
 
       (reset! store)
       (let ((db (attempt (lambda () (db-now store)))))

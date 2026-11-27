@@ -79,6 +79,14 @@ Each release's changes. Dates are UTC.
 - Three codes: `invalid_parent`, `would_loop` and `has_children`.
 - The fifth migration: a node's `parent`. Run `techo migrate` with the server
   stopped.
+- Links: `PUT` and `DELETE /v1/nodes/{id}/links/{type}/{target}` make and
+  remove a link from one node to another. The types are `related`, `mentions`
+  and `blocks`. `GET /v1/nodes/{id}/links` lists a node's links, or with
+  `direction=in` what links to it.
+- A link changes neither node's revision and needs no `If-Match`.
+- Deleting a node deletes its links, both ways.
+- The sixth migration: the `links` table. Run `techo migrate` with the server
+  stopped.
 
 ### Changed
 

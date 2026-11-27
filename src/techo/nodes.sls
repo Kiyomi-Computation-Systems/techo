@@ -21,6 +21,12 @@
 ;;; gains move and move-children, and node-command takes the verdict and
 ;;; whether the node has children.
 ;;;
+;;; Slice 5b's links: the lifecycle's table gains link and unlink, listed in
+;;; link-events and not in lifecycle-events. node-command answers neither:
+;;; for it they are cells that cannot happen. link-command, in (techo
+;;; links), answers them and asks this table of each end. event-op names
+;;; their ops.
+;;;
 ;;; Nothing here raises with a title or a body: parse-content,
 ;;; parse-move-body and parse-parent-param never raise, and every other
 ;;; raise carries a symbol, a number, a boolean or an id at most.
@@ -34,7 +40,7 @@
           found found-for-create write-event
           write-rows write-cant-happen write-step write-document
           node-states node-state->string string->node-state parse-state-param
-          lifecycle-events event-op
+          lifecycle-events link-events event-op
           lifecycle-rows lifecycle-cant-happen lifecycle-step lifecycle-document
           may-hold? parent-verdict child-moves? child-kind-filter
           node-command)
@@ -528,28 +534,40 @@
   ;; under a new parent; move-children moves its children, and leaves it.
   (define move-events '(move move-children))
 
-  ;; The lifecycle table's eight events: the five, write (a replace or a
-  ;; revision's restore) and the two moves. The document's columns.
-  (define table-events (append lifecycle-events '(write) move-events))
+  ;; link-events : (Listof Symbol)
+  ;; The two a link's request sends (slice 5b, K6): link makes a link,
+  ;; unlink removes one. They are not lifecycle-events: node-command takes
+  ;; every one of those as a state change, and answers neither of these.
+  ;; link-command, in (techo links), answers them, asking this table of
+  ;; each end.
+  (define link-events '(link unlink))
+
+  ;; The lifecycle table's ten events: the five, write (a replace or a
+  ;; revision's restore), the two moves and the two links. The document's
+  ;; columns.
+  (define table-events (append lifecycle-events '(write) move-events link-events))
 
   ;; event-op : Symbol -> String
-  ;; An event's op in the change feed: a lifecycle event's own name, and
-  ;; "move" for move. A bulk move's children each get "move"; the node whose
+  ;; An event's op in the change feed: a lifecycle event's own name, "move"
+  ;; for move, and "link" and "unlink" for link-events' two (the row is the
+  ;; source's, K5). A bulk move's children each get "move"; the node whose
   ;; children move gets no change row, so move-children has no op. An
   ;; assertion violation, with no irritant, for anything else.
   (define (event-op event)
-    (unless (and (symbol? event) (or (memq event lifecycle-events) (eq? event 'move)))
+    (unless (and (symbol? event)
+                 (or (memq event lifecycle-events) (eq? event 'move) (memq event link-events)))
       (assertion-violation 'event-op "not an event with an op of its own"))
     (symbol->string event))
 
   ;; lifecycle-rows : (Listof Row)
-  ;; The twenty-four rows, three states by eight events, by state and then
-  ;; by event, as the plans' tables read. Row is (state event next command
+  ;; The thirty rows, three states by ten events, by state and then by
+  ;; event, as the plans' tables read. Row is (state event next command
   ;; update), as (techo machine) takes it. write is a replace or a
   ;; revision's restore. A refusal and allow leave the state; untrash always
   ;; lands on active (L2); a purge is only from trashed (L8); a trashed node
-  ;; is not moved, but its children may be (T8, slice 5a's review). A state
-  ;; here has no data.
+  ;; is not moved, but its children may be (T8, slice 5a's review); a
+  ;; trashed node takes no new link, and a link is removed in any state
+  ;; (K6). A state here has no data.
   (define lifecycle-rows
     (list
      (list 'active 'archive 'archived 'set-state same)
@@ -560,6 +578,8 @@
      (list 'active 'write 'active 'allow same)
      (list 'active 'move 'active 'allow same)
      (list 'active 'move-children 'active 'allow same)
+     (list 'active 'link 'active 'allow same)
+     (list 'active 'unlink 'active 'allow same)
      (list 'archived 'archive 'archived 'refuse-wrong-state same)
      (list 'archived 'unarchive 'active 'set-state same)
      (list 'archived 'trash 'trashed 'set-state same)
@@ -568,6 +588,8 @@
      (list 'archived 'write 'archived 'allow same)
      (list 'archived 'move 'archived 'allow same)
      (list 'archived 'move-children 'archived 'allow same)
+     (list 'archived 'link 'archived 'allow same)
+     (list 'archived 'unlink 'archived 'allow same)
      (list 'trashed 'archive 'trashed 'refuse-wrong-state same)
      (list 'trashed 'unarchive 'trashed 'refuse-wrong-state same)
      (list 'trashed 'trash 'trashed 'refuse-wrong-state same)
@@ -575,10 +597,12 @@
      (list 'trashed 'purge 'purged 'purge same)
      (list 'trashed 'write 'trashed 'refuse-wrong-state same)
      (list 'trashed 'move 'trashed 'refuse-wrong-state same)
-     (list 'trashed 'move-children 'trashed 'allow same)))
+     (list 'trashed 'move-children 'trashed 'allow same)
+     (list 'trashed 'link 'trashed 'refuse-wrong-state same)
+     (list 'trashed 'unlink 'trashed 'allow same)))
 
   ;; lifecycle-cant-happen : (Listof (List StateKind EventKind String))
-  ;; purged's eight cells, each with its reason. purged is the end: it has no row.
+  ;; purged's ten cells, each with its reason. purged is the end: it has no row.
   (define lifecycle-cant-happen
     '((purged archive "a purged node is found as none, so its state is never stepped")
       (purged unarchive "a purged node is found as none, so its state is never stepped")
@@ -587,7 +611,9 @@
       (purged purge "a purged node is found as none, so its state is never stepped")
       (purged write "a purged node is found as none, so its state is never stepped")
       (purged move "a purged node is found as none, so its state is never stepped")
-      (purged move-children "a purged node is found as none, so its state is never stepped")))
+      (purged move-children "a purged node is found as none, so its state is never stepped")
+      (purged link "a purged node is found as none, so its state is never stepped")
+      (purged unlink "a purged node is found as none, so its state is never stepped")))
 
   (define lifecycle-machine (make-machine lifecycle-rows))
 
@@ -595,7 +621,7 @@
   ;; The state and the event to the next state and the command. Commands:
   ;; set-state purge allow refuse-wrong-state. An assertion violation, who
   ;; 'machine-step, its irritants the state and the event, for a pair with
-  ;; no row: purged's eight, and what is no state or event of the table.
+  ;; no row: purged's ten, and what is no state or event of the table.
   (define (lifecycle-step state event)
     (let-values (((next command)
                   (machine-step lifecycle-machine (cons state #f) (cons event #f))))
@@ -758,9 +784,11 @@
   ;; state (#f when none was found), the request's event, the verdict on the
   ;; new parent (parent-verdict's), and whether the node has children. The
   ;; event is one of D5's five, one of lifecycle-events, move or
-  ;; move-children. Answers the command to perform and, for set-state only,
-  ;; the state to store; else #f. In this order (ADR-0007, amended
-  ;; 2026-11-26: stale, the state, the parent, the children):
+  ;; move-children; never one of link-events, which link-command answers
+  ;; (slice 5b's review, blocker 5). Answers the command to perform and,
+  ;; for set-state only, the state to store; else #f. In this order
+  ;; (ADR-0007, amended 2026-11-26: stale, the state, the parent, the
+  ;; children):
   ;;   none    create answers the verdict's answer, insert for ok; D5's
   ;;           other events write-step's command (refuse-404). A lifecycle
   ;;           event, move and move-children answer refuse-404. The state is
@@ -784,7 +812,8 @@
   ;; refuse-invalid-parent refuse-would-loop refuse-has-children.
   ;; An assertion violation, who 'node-command:
   ;;   - its irritants the five arguments, for a cell that cannot happen: an
-  ;;     event no request sends; a Found of none of the three; D5's three
+  ;;     event no request sends it, link and unlink among them, whatever was
+  ;;     found; a Found of none of the three; D5's three
   ;;     (none with replace-other-kind or restore, match with create),
   ;;     whatever the state; match with a state not active, archived or
   ;;     trashed (a purged node is found as none);
@@ -855,11 +884,13 @@
      "a test fails when this file differs.\n\n"
      "A node starts `active`, and `purged` is the one end. `write` is a replace or a\n"
      "revision's restore. `move` puts the node under a new parent; `move-children`\n"
-     "moves its children and leaves the node as it is. A refusal and `allow` leave\n"
-     "the state.\n\n"
-     "One function, `node-command`, answers a request from this table and the write\n"
-     "machine's, with two facts more: the verdict on the new parent, and whether the\n"
-     "node has children. It looks first at what the job found:\n\n"
+     "moves its children and leaves the node as it is. `link` makes a link with the\n"
+     "node at either end, and `unlink` removes one. A refusal and `allow` leave the\n"
+     "state.\n\n"
+     "One function, `node-command`, answers every request but a link's from this\n"
+     "table and the write machine's, with two facts more: the verdict on the new\n"
+     "parent, and whether the node has children. It looks first at what the job\n"
+     "found:\n\n"
      "- `none`: the write machine's answer. A create's is the verdict's: an insert\n"
      "  when it is `ok`. A state change, a move and a bulk move are a 404.\n"
      "- `differ`: a 412, whatever the state. Stale comes before the state, and a\n"
@@ -869,6 +900,13 @@
      "  a write, and the verdict a move or a bulk move. A purge is refused while the\n"
      "  node has children.\n\n"
      "A purged node is found as `none`, so it never reaches this table.\n\n"
+     "`link` and `unlink` are answered by `link-command` in `(techo links)`, which\n"
+     "asks this table of each end: a link is made only when both ends allow `link`.\n"
+     "Before it asks, a missing source, or a `link`'s missing target, is a 404; a\n"
+     "link that is there is kept, whatever the states, or removed when the source\n"
+     "allows `unlink`, which every state does; and an `unlink` of a link that is\n"
+     "not there is a 404. `node-command` answers neither: for it they are cells\n"
+     "that cannot happen.\n\n"
      "```mermaid\n"
      (machine->mermaid lifecycle-machine)
      "```\n\n"

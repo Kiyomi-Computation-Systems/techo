@@ -15,6 +15,12 @@
 ;;; a node that is not there. A snapshot has no owner column; it is reached
 ;;; through its node's owner, by a join.
 ;;;
+;;; A link (slice 5b) is a row of `links`: owner, source, type, target, created.
+;;; It bumps no node's revision and writes no snapshot; it writes a change row
+;;; on the source, `link` or `unlink`, at the source's revision as the job read
+;;; it. Every statement that reads or deletes by target names the index
+;;; `links_target`, and every out statement leaves it alone (traps.md).
+;;;
 ;;; The body lives only in `revisions` (D11): a node's body is its newest
 ;;; snapshot's, which is not the one at the node's revision once a change of
 ;;; state (no snapshot) has bumped it. `nodes` has an integer key, `num`, that no record holds and
@@ -40,6 +46,7 @@
   (export node-in-use? node-head node-of-owner nodes-page snapshot-exists? snapshot-of
           snapshots-page insert-node! write-node! set-node-state! purge-node!
           move-node! ancestors has-children? count-children children-heads
+          link-of insert-link! delete-link! links-page
           node-store-statements
           node? node-id node-owner node-author node-kind node-title node-body
           node-content-type node-props node-revision node-created node-updated
@@ -249,6 +256,46 @@
                           " content_type = 'application/octet-stream', state = 'purged',"
                           " parent = NULL, revision = ?, updated = ?"
                           " WHERE owner = ? AND id = ? AND revision = ? AND state = 'trashed'"))
+     (cons 'link-of
+           "SELECT created FROM links WHERE owner = ? AND source = ? AND type = ? AND target = ?")
+     ;; A plain INSERT and a plain DELETE (never OR IGNORE): each must change
+     ;; exactly one row, and the procedure checks it (traps.md).
+     (cons 'insert-link
+           "INSERT INTO links(owner, source, type, target, created) VALUES (?, ?, ?, ?, ?)")
+     (cons 'delete-link
+           "DELETE FROM links WHERE owner = ? AND source = ? AND type = ? AND target = ?")
+     ;; The four pages. Each is links l CROSS JOIN nodes n, so SQLite drives
+     ;; from links; the node is the other end, small columns only, then the
+     ;; link's type and created. An "in" statement names links_target; an
+     ;; "out" statement never does. A typed statement compares the id alone.
+     (cons 'links-out
+           (string-append "SELECT " node-small ", l.type, l.created"
+                          " FROM links l CROSS JOIN nodes n"
+                          " WHERE l.owner = ? AND l.source = ? AND (l.type, l.target) > (?, ?)"
+                          " AND n.id = l.target AND n.owner = l.owner AND n.state <> 'purged'"
+                          " ORDER BY l.type, l.target LIMIT ?"))
+     (cons 'links-out-typed
+           (string-append "SELECT " node-small ", l.type, l.created"
+                          " FROM links l CROSS JOIN nodes n"
+                          " WHERE l.owner = ? AND l.source = ? AND l.type = ? AND l.target > ?"
+                          " AND n.id = l.target AND n.owner = l.owner AND n.state <> 'purged'"
+                          " ORDER BY l.target LIMIT ?"))
+     (cons 'links-in
+           (string-append "SELECT " node-small ", l.type, l.created"
+                          " FROM links l INDEXED BY links_target CROSS JOIN nodes n"
+                          " WHERE l.owner = ? AND l.target = ? AND (l.type, l.source) > (?, ?)"
+                          " AND n.id = l.source AND n.owner = l.owner AND n.state <> 'purged'"
+                          " ORDER BY l.type, l.source LIMIT ?"))
+     (cons 'links-in-typed
+           (string-append "SELECT " node-small ", l.type, l.created"
+                          " FROM links l INDEXED BY links_target CROSS JOIN nodes n"
+                          " WHERE l.owner = ? AND l.target = ? AND l.type = ? AND l.source > ?"
+                          " AND n.id = l.source AND n.owner = l.owner AND n.state <> 'purged'"
+                          " ORDER BY l.source LIMIT ?"))
+     (cons 'purge-links-source
+           "DELETE FROM links WHERE owner = ? AND source = ?")
+     (cons 'purge-links-target
+           "DELETE FROM links INDEXED BY links_target WHERE owner = ? AND target = ?")
      (cons 'written-node
            (string-append "SELECT " node-small " FROM nodes n WHERE n.owner = ? AND n.id = ?"))))
 
@@ -366,6 +413,44 @@
              (tx-query tx (statement 'snapshots-page-before) owner id before n)
              (tx-query tx (statement 'snapshots-page) owner id n))))
 
+  ;; link-of : Tx Bytevector Bytevector String Bytevector -> (U Natural #f)
+  ;; owner source type target -> the link's `created`, or #f when there is no
+  ;; such link of that owner. By the primary key.
+  (define (link-of tx owner source type target)
+    (let ((r (tx-query-row tx (statement 'link-of) owner source type target)))
+      (and r (vector-ref r 0))))
+
+  ;; zero-id : Bytevector     sixteen zero bytes: below every id
+  (define zero-id (make-bytevector 16 0))
+
+  ;; links-page : Tx Bytevector Bytevector (U 'out 'in) (U String #f)
+  ;;              (U (Pair String Bytevector) #f) Natural
+  ;;              -> (Listof (List String Natural Node))
+  ;; owner node direction type cursor n -> up to n links of NODE, 'out (NODE
+  ;; is the source) or 'in (NODE is the target), each as (type created Node),
+  ;; the Node the OTHER end as it now is, body #f, never a purged one. Ordered
+  ;; by type, then the other end's id; with TYPE, the one type, by id. CURSOR
+  ;; is (type . id) of the last item seen: the page starts after it. With none
+  ;; the page starts from "" and sixteen zero bytes, or from the zero bytes
+  ;; alone when typed. A typed page compares the id alone: the cursor's type
+  ;; is the caller's to hold equal to TYPE.
+  (define (links-page tx owner node direction type cursor n)
+    (let* ((cur-type (if cursor (car cursor) ""))
+           (cur-id (if cursor (cdr cursor) zero-id))
+           (rows
+            (case direction
+              ((out)
+               (if type
+                   (tx-query tx (statement 'links-out-typed) owner node type cur-id n)
+                   (tx-query tx (statement 'links-out) owner node cur-type cur-id n)))
+              ((in)
+               (if type
+                   (tx-query tx (statement 'links-in-typed) owner node type cur-id n)
+                   (tx-query tx (statement 'links-in) owner node cur-type cur-id n)))
+              (else (assertion-violation 'links-page "direction is out or in" direction)))))
+      (map (lambda (r) (list (vector-ref r 12) (vector-ref r 13) (row->node r #f)))
+           rows)))
+
   ;;; Writes
 
   ;; insert-snapshot! : Tx Bytevector Natural Bytevector String String String
@@ -456,17 +541,50 @@
     (insert-change! tx owner id (+ expected 1) "move" now)
     (stored-node tx owner id #f))
 
+  ;; refuse-link : Symbol Bytevector Bytevector -> (does not return)
+  ;; An assertion violation (the convention of refuse-write for a case that
+  ;; cannot happen) whose irritants are the two ids, nothing else.
+  (define (refuse-link who source target)
+    (assertion-violation who "the link did not change exactly one row" source target))
+
+  ;; insert-link! : Tx Bytevector Bytevector String Bytevector Natural Natural
+  ;;                -> Void
+  ;; owner source type target revision now. A plain INSERT of the link, which
+  ;; must make exactly one row (a second of the same key raises: SQLite's
+  ;; constraint, and else this check); then a change row, op "link", on the
+  ;; SOURCE at REVISION, the revision the job read. No node row is touched.
+  (define (insert-link! tx owner source type target revision now)
+    (tx-execute! tx (statement 'insert-link) owner source type target now)
+    (unless (= (changes tx) 1) (refuse-link 'insert-link! source target))
+    (insert-change! tx owner source revision "link" now))
+
+  ;; delete-link! : Tx Bytevector Bytevector String Bytevector Natural Natural
+  ;;                -> Void
+  ;; As insert-link!, a plain DELETE by the whole key which must remove
+  ;; exactly one row (an absent link raises and writes no change row), then a
+  ;; change row, op "unlink".
+  (define (delete-link! tx owner source type target revision now)
+    (tx-execute! tx (statement 'delete-link) owner source type target)
+    (unless (= (changes tx) 1) (refuse-link 'delete-link! source target))
+    (insert-change! tx owner source revision "unlink" now))
+
   ;; purge-node! : Tx Bytevector Bytevector Natural Natural -> Void
   ;; id owner expected now. Deletes the node's snapshots, empties the row
   ;; (title '', props '{}', content type application/octet-stream, parent
   ;; NULL, state purged, revision + 1, updated = now) only WHERE owner, id and revision
   ;; match and the state is trashed, and raises as write-node! does when no
   ;; row changed: the job then rolls back, and the snapshots return. Then a
-  ;; change row, op "purge", at the new revision.
+  ;; change row, op "purge", at the new revision. Between the check and that
+  ;; row it deletes every link of the node, both ways (by source, then by
+  ;; target through links_target), after the check: before it, `changes()`
+  ;; would count the deletes and not the UPDATE. No change rows for them: the
+  ;; purge's own row is the tombstone.
   (define (purge-node! tx id owner expected now)
     (tx-execute! tx (statement 'purge-snapshots) id owner)
     (tx-execute! tx (statement 'purge-node)
                  (+ expected 1) now owner id expected)
     (unless (= (changes tx) 1) (refuse-write 'purge-node! id expected))
+    (tx-execute! tx (statement 'purge-links-source) owner id)
+    (tx-execute! tx (statement 'purge-links-target) owner id)
     (insert-change! tx owner id (+ expected 1) "purge" now))
 )

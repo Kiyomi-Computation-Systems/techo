@@ -1,7 +1,7 @@
 #!r6rs
 ;;; (techo node-routes): the node routes, slice 4's (D3), slice 4b's
-;;; lifecycle (L3, L6) and slice 5a's tree (T3, T4, T7, T9). The imperative
-;;; shell.
+;;; lifecycle (L3, L6), slice 5a's tree (T3, T4, T7, T9) and slice 5b's
+;;; links (K3). The imperative shell.
 ;;;
 ;;;   PUT    /v1/nodes/:id                       create, with If-None-Match: * (201), under
 ;;;                                              the JSON's parent when it names one;
@@ -24,9 +24,19 @@
 ;;;   POST   /v1/nodes/:id/move-children         {"parent": id or null}, with the node's
 ;;;                                              If-Match: "N": 200, {"moved": N, "left": M},
 ;;;                                              no ETag
+;;;   PUT    /v1/nodes/:id/links/:type/:target   make the link from :id to :target: 201 and
+;;;                                              the link when made, 200 and the link, its
+;;;                                              stored created, when it was there
+;;;   DELETE /v1/nodes/:id/links/:type/:target   remove it: 204, no body
+;;;   GET    /v1/nodes/:id/links?direction=&type= the node's links, out (unless named) or
+;;;                                              in, of one type or all; paged, each item
+;;;                                              {"type", "created", "node"}: the other
+;;;                                              node without its body
 ;;;
 ;;; Every node in an answer has its parent after its state: the id, or
-;;; null at the top level. A snapshot has none.
+;;; null at the top level. A snapshot has none. A link in an answer is
+;;; {"source": id, "type": name, "target": id, "created": ms}. No link
+;;; answer carries an ETag or a Location.
 ;;;
 ;;; Each handler is exactly one call of (techo auth): the PUT's and the two
 ;;; moves' are db-write-with-body-as, so no body is read before its key is
@@ -36,10 +46,14 @@
 ;;; order of checks is:
 ;;;
 ;;;   1. the key's shape (401), by (techo auth) itself, with no job;
-;;;   2. the path's id, the path's revision, `limit`, `after`, `state`,
-;;;      `parent` (400);
+;;;   2. the path's id, the path's revision, a link's type and target,
+;;;      `limit`, `after`, `state`, `parent`, `direction`, `type` (400); a
+;;;      link whose source is its own target, and a list's `after` of
+;;;      another type than its `type` (400);
 ;;;   3. the preconditions: 428 for none, 400 for a bad shape (and for
-;;;      If-None-Match on any write but a create);
+;;;      If-None-Match on any write but a create); a link takes none, and
+;;;      If-Match or If-None-Match on its PUT or DELETE is the 400 (on the
+;;;      GET, as on every GET, they are ignored);
 ;;;   4. the key of a write with a body (401), by a read job of its own;
 ;;;   5. its Content-Type (415), then its body through wrap-json-body, under
 ;;;      request-cap for a PUT and move-body-cap for a move (413; 400
@@ -49,8 +63,9 @@
 ;;;      have been revoked while the body came), then the work.
 ;;;
 ;;; A write with a body reads its time once the body has come, so a slow
-;;; upload is stamped with when it arrived; a restore and a state change,
-;;; with no body, read it first. Neither reads a body or a Content-Type.
+;;; upload is stamped with when it arrived; a restore, a state change and a
+;;; link's PUT or DELETE, with no body, read it first. None of them reads a
+;;; body or a Content-Type.
 ;;;
 ;;; A write's work finds the node (its revision, kind, state and parent, or
 ;;; none), and for a create or a move with a parent, the parent's head and
@@ -69,15 +84,27 @@
 ;;; children that may move under the new parent, each at its own revision,
 ;;; a revision and a change row each; the node itself is not written.
 ;;;
+;;; A link's work finds the source's head, for a PUT the target's too (a
+;;; DELETE reads no target: a link's ends are live nodes of its owner, so
+;;; "no such link" covers a bad one), and whether the link is there. It
+;;; asks (techo links)' link-command, by which the lifecycle's table judges
+;;; each end, and performs the command it names: link (the row and a change
+;;; row on the source at its revision; no node row, no snapshot), keep
+;;; (nothing written; the stored created answered), unlink, or a refusal
+;;; raised as a &refusal. A link's list reads the node's head first, as the
+;;; revisions list does: no node of the account is the 404, not an empty
+;;; page; a trashed or an archived node's links are listed.
+;;;
 ;;; A node's answer shows its stored state. A purged node is never found:
 ;;; the store leaves it out of every read, so it is a 404, and a create on
 ;;; its id a 412; as a parent, it is invalid_parent, as a missing one is.
 ;;;
 ;;; A job's work closes over plain data only: the id, the precondition, the
 ;;; five content values, a parent's id, the path's revision, the event, the
-;;; time. Never the request, never the parsed JSON. Nothing waits in a job:
-;;; a body is read in its Reader, between its two jobs. Nothing raised here
-;;; carries a title or a body. The database is reached only through
+;;; time, a link's type, target, direction and cursor. Never the request,
+;;; never the parsed JSON. Nothing waits in a job: a body is read in its
+;;; Reader, between its two jobs. Nothing raised here carries a title or a
+;;; body. The database is reached only through
 ;;; db-read-as, db-write-as, db-write-with-body-as and (techo node-store).
 (library (techo node-routes)
   (export node-routes)
@@ -96,10 +123,12 @@
                 write-event node-command node-state->string string->node-state parse-state-param
                 event-op depth-cap move-children-cap move-body-cap parse-move-body
                 parse-parent-param parent-verdict child-kind-filter)
+          (only (techo links) parse-link-type parse-type-param parse-direction parse-link-cursor
+                link-cursor link-command)
           (only (techo node-store) node-in-use? node-head node-of-owner nodes-page
                 snapshot-exists? snapshot-of snapshots-page insert-node! write-node!
                 set-node-state! purge-node! move-node! ancestors has-children? count-children
-                children-heads
+                children-heads link-of insert-link! delete-link! links-page
                 node-id node-kind node-title node-body node-content-type node-props
                 node-revision node-created node-updated node-state node-parent
                 snapshot-revision snapshot-title snapshot-body snapshot-content-type
@@ -182,6 +211,38 @@
         ((purge) (make-res 204 '() #f))
         ((move-children) (make-json-res 200 (list (cons "moved" (car n)) (cons "left" (cdr n)))))
         (else (assertion-violation 'node-routes "a write's answer has no such command" command)))))
+
+  ;; link->json : Bytevector String Bytevector Natural -> Alist
+  ;; source, type, target (each id in lower case), created.
+  (define (link->json source type target created)
+    (list (cons "source" (node-id->string source)) (cons "type" type)
+          (cons "target" (node-id->string target)) (cons "created" created)))
+
+  ;; linked : Bytevector String Bytevector -> ((Pair Symbol (U Natural #f)) -> Res)
+  ;; A link's answer, by the command its job performed, of the link from
+  ;; SOURCE to TARGET of TYPE: link is 201 and keep 200, each with the link
+  ;; and the created its job answered (now for link, the stored one for
+  ;; keep); unlink is 204, no body. No ETag and no Location: a link is no
+  ;; node's revision, and has no route of its own to read. Any other
+  ;; command is an assertion violation.
+  (define (linked source type target)
+    (lambda (outcome)
+      (let ((command (car outcome)) (created (cdr outcome)))
+        (case command
+          ((link) (make-json-res 201 (link->json source type target created)))
+          ((keep) (make-json-res 200 (link->json source type target created)))
+          ((unlink) (make-res 204 '() #f))
+          (else (assertion-violation 'node-routes "a link's answer has no such command" command))))))
+
+  ;; link-item->json : (List String Natural Node) -> Alist
+  ;; A link list's item, of links-page's row: type, created, and the node
+  ;; at the other end as the nodes list gives it, without its body.
+  (define (link-item->json row)
+    (list (cons "type" (car row)) (cons "created" (cadr row)) (cons "node" (node->json (caddr row) #f))))
+
+  ;; link-item-next : (List String Natural Node) -> String
+  ;; The next of a page ending on ROW: its type and the other node's id.
+  (define (link-item-next row) (link-cursor (car row) (node-id (caddr row))))
 
   ;;; The work of a write, in its job
 
@@ -361,6 +422,34 @@
             (else (assertion-violation 'node-routes "a bulk move has no action for this command"
                                        command)))))))
 
+  ;; link-work : Bytevector String Bytevector Symbol Natural -> Work
+  ;; A link's work, EVENT link for the PUT or unlink for the DELETE, of the
+  ;; link from SOURCE to TARGET of TYPE: the source's head (owner's alone:
+  ;; missing, another account's and purged all read as none); for link the
+  ;; target's head the same way, for unlink none (#f, not read); whether
+  ;; the link is there, link-of's created or #f; link-command of the two
+  ;; stored states, EVENT and that, as a boolean; and the command performed.
+  ;; link writes the row and its change row at the source's revision as its
+  ;; head read it, at NOW, and answers NOW; keep writes nothing and answers
+  ;; the stored created; unlink deletes the row, with its change row, and
+  ;; answers #f. A refusal is raised. A command a link has no action for is
+  ;; an assertion violation.
+  (define (link-work source type target event now)
+    (lambda (tx account key)
+      (let* ((owner (account-id account))
+             (head (node-head tx owner source))
+             (target-head (and (eq? event 'link) (node-head tx owner target)))
+             (created (link-of tx owner source type target))
+             (command (link-command (head-state head) (head-state target-head) event
+                                    (and created #t))))
+        (case command
+          ((link) (insert-link! tx owner source type target (car head) now) (cons command now))
+          ((keep) (cons command created))
+          ((unlink) (delete-link! tx owner source type target (car head) now) (cons command #f))
+          ((refuse-404 refuse-wrong-state) (refuse command owner))
+          (else (assertion-violation 'node-routes "a link has no action for this command"
+                                     command))))))
+
   ;;; The work of a read, in its job
 
   ;; missing : Bytevector -> !     the 404, raised as a &refusal for OWNER
@@ -390,6 +479,18 @@
       (let ((owner (account-id account)))
         (if (node-head tx owner id)
             (snapshots-page tx owner id before (+ limit 1))
+            (missing owner)))))
+
+  ;; links-work : Bytevector (U 'out 'in) (U String #f) (U (Pair String Bytevector) #f) Natural
+  ;;              -> Work
+  ;; The node first: one that is no node of the account, or is purged, is
+  ;; the 404, not an empty page. Then its links in DIRECTION, of TYPE (#f
+  ;; for all), after AFTER, LIMIT + 1 of them.
+  (define (links-work id direction type after limit)
+    (lambda (tx account key)
+      (let ((owner (account-id account)))
+        (if (node-head tx owner id)
+            (links-page tx owner id direction type after (+ limit 1))
             (missing owner)))))
 
   ;; snapshot-work : Bytevector Natural -> Work
@@ -625,6 +726,53 @@
                           (make-plan (snapshot-work id n)
                                      (lambda (s) (make-json-res 200 (snapshot->json s #t)))))))))
 
+    ;; preconditioned? : Req -> Boolean
+    ;; Whether REQ carries an If-Match or an If-None-Match field, of any
+    ;; shape, even empty.
+    (define (preconditioned? req)
+      (or (pair? (req-header-values req "if-match"))
+          (pair? (req-header-values req "if-none-match"))))
+
+    ;; link-change : Symbol -> Handler
+    ;; PUT /v1/nodes/:id/links/:type/:target, EVENT link, and its DELETE,
+    ;; unlink. Before the job: the path's id, type and target, then a
+    ;; source that is its own target (the same sixteen bytes), then any
+    ;; precondition, each the 400. No body is read, and no Content-Type
+    ;; looked at; the time is read first.
+    (define (link-change event)
+      (lambda (req)
+        (let ((now (wall-clock)))
+          (db-write-as write clock now req
+                       (lambda ()
+                         (let ((source (path-id req))
+                               (type (parse-link-type (req-path-param req "type")))
+                               (target (parse-node-id (req-path-param req "target"))))
+                           (cond ((or (eq? source 'invalid) (eq? type 'invalid) (eq? target 'invalid))
+                                  (bad-request))
+                                 ((bytevector=? source target) (bad-request))
+                                 ((preconditioned? req) (bad-request))
+                                 (else (make-plan (link-work source type target event now)
+                                                  (linked source type target))))))))))
+
+    ;; GET /v1/nodes/:id/links?direction=&type=&limit=&after=
+    ;; direction is out (the node is each link's source) unless it is in;
+    ;; type is one of link-types, every type when not given; after is a
+    ;; page's next, and with a type, of that type, or the 400.
+    (define (list-links req)
+      (db-read-as read clock req
+                  (lambda ()
+                    (let ((id (path-id req))
+                          (direction (parse-direction (query-one req "direction")))
+                          (type (parse-type-param (query-one req "type")))
+                          (limit (parse-limit (query-one req "limit")))
+                          (after (query-after req parse-link-cursor)))
+                      (cond ((or (eq? id 'invalid) (eq? direction 'invalid) (eq? type 'invalid)
+                                 (eq? limit 'invalid) (eq? after 'invalid))
+                             (bad-request))
+                            ((and type after (not (string=? type (car after)))) (bad-request))
+                            (else (make-plan (links-work id direction type after limit)
+                                             (page-answer limit link-item->json link-item-next))))))))
+
     (list (route "/v1/nodes" (GET list-nodes))
           (route "/v1/nodes/:id" (GET get-node) (PUT put-node) (DELETE (lifecycle 'purge)))
           (route "/v1/nodes/:id/archive" (POST (lifecycle 'archive)))
@@ -635,5 +783,8 @@
           (route "/v1/nodes/:id/move-children" (POST (mover move-children-work)))
           (route "/v1/nodes/:id/revisions" (GET list-revisions))
           (route "/v1/nodes/:id/revisions/:n" (GET get-revision))
-          (route "/v1/nodes/:id/revisions/:n/restore" (POST restore-node))))
+          (route "/v1/nodes/:id/revisions/:n/restore" (POST restore-node))
+          (route "/v1/nodes/:id/links" (GET list-links))
+          (route "/v1/nodes/:id/links/:type/:target" (PUT (link-change 'link))
+                 (DELETE (link-change 'unlink)))))
 )

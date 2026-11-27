@@ -70,8 +70,18 @@ close-out under **Close-outs**, newest first.
 
 ## Next
 
-**Slice 5b: links.** [Planned](2026-11-26-slice-5b-links.md): the owner
-decided K1 to K8 on 2026-11-26. Not built.
+**Slice 6: kinds and props; task transitions.** Not planned yet.
+
+**Slice 5b is built,** on `slice-5b-links`, not merged: migration 6, three
+link routes ([the plan](2026-11-26-slice-5b-links.md); ADR-0002, ADR-0003,
+ADR-0004 and ADR-0007, amended 2026-11-26). A person can now link one note to
+another and read a note's backlinks.
+
+**Kept ready, from slice 5b (2026-11-27):**
+
+- **A cap on a node's links,** or a purge in steps. Nothing caps them (K7): a
+  purge of 3 million holds every account's writes 6 s, and past 10 s answers
+  504 though it lands.
 
 **Kept ready, from slice 5a (owner, 2026-11-26):**
 
@@ -136,7 +146,7 @@ by a Journal (409 `invalid_parent`), a Project refused under its own child (409
 | 4 | Node create, read, update; revisions; `If-Match` | merged, #15 | |
 | 4b | The node lifecycle: archive, trash, purge | merged, #18 | |
 | 5a | The tree and move | merged, #19 | |
-| 5b | Links | planned, on `slice-5b-links` | |
+| 5b | Links | built, on `slice-5b-links` | |
 | 6 | Kinds and props; task transitions | not planned | |
 | 7 | Tags and search | not planned | |
 | 8 | The change feed | not planned | |
@@ -161,7 +171,7 @@ From [outline.md](outline.md) §14, each for the slice named:
 
 | Question | Slice |
 |---|---|
-| The link types; whether links block a purge | 5b |
+| What the feed says of a link: a `link` row names no target, two rows of a node can carry one revision, and a purge's row means every link of the node is gone | 8 |
 | Whether a move into a Journal checks a Note's timestamp, and what of Notes moved in before | 6 |
 | A kind that holds some kinds but not all, in the bulk move's filter | 6 |
 | Whether a search shows what is inside a trashed folder | 7 |
@@ -175,6 +185,30 @@ From [outline.md](outline.md) §14, each for the slice named:
 | The container's stop grace (30 s) and a check that asks more than `/health` | 9 |
 
 ## Close-outs
+
+### Slice 5b: links (built 2026-11-27)
+
+- **Built:** migration 6 (`links`, `links_target`); a new pure `(techo links)`
+  with `link-command`; two events more in the lifecycle's table; nine
+  statements and four procedures in the store, and the purge's two deletes;
+  three routes. One new suite: 36. The model runs about 34,800 requests in
+  33 s (it was 24,400 in 22 s).
+- **Answered:** three fixed types; directed, one per source, type and target;
+  no bump, no `If-Match`, a change row on the source; no new link at a trashed
+  end, a kept one still 200; a purge takes the node's links and is not blocked
+  by them (K1 to K8).
+- **Moved on:** what the feed says of a link, to slice 8. A cap on a node's
+  links, kept ready.
+- **What the reviews caught that the builders could not:**
+  - the plan's: my store split was an import cycle; a change row with no bump
+    broke seven of the model's laws; `INSERT OR IGNORE` read a null as "already
+    there"; a typed page with the cursor's row value left its index (39 ms a
+    page); the two events would have made `node-command` raise; a page figure
+    of mine was of 6 rows, not 51;
+  - the build's: no bug, in 100 rounds of races and 42 mutants. Two test gaps
+    (a 204's headers, the time read once), three false or thin sentences in
+    the guide, and K7's price at size: seconds for every account, and a 504
+    that lands.
 
 ### Slice 5a: the tree and move (merged 2026-11-26, #19)
 

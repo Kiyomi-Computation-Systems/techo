@@ -862,10 +862,10 @@
 (test-equal "shipped list: the list equals its recorded copy"
   (read-datum "tests/shipped-migrations.scm")
   migrations)
-(test-equal "shipped list: the copy is one datum, a list of five migrations, versions 1, 2, 3, 4 and 5"
-  '(1 2 3 4 5)
+(test-equal "shipped list: the copy is one datum, a list of six migrations, versions 1, 2, 3, 4, 5 and 6"
+  '(1 2 3 4 5 6)
   (let ((r (read-datum "tests/shipped-migrations.scm")))
-    (if (and (list? r) (= (length r) 5)) (map car r) r)))
+    (if (and (list? r) (= (length r) 6)) (map car r) r)))
 (test-equal "shipped list: migration 1 is the one that sets the id"
   '(1 "techo's database" ("PRAGMA application_id = 1952801640"))
   (car migrations))
@@ -894,6 +894,18 @@
         (list "ALTER TABLE nodes ADD COLUMN parent BLOB REFERENCES nodes(id) CHECK (parent IS NULL OR length(parent) = 16)"
               "CREATE INDEX nodes_parent ON nodes(owner, parent, id)"))
   (let ((m (list-ref migrations 4))) (list (cadr m) (caddr m))))
+(test-equal "shipped list: migration 6 is two statements, named for links, creating the table and its target index"
+  (list "links"
+        (list "CREATE TABLE links (
+  owner   BLOB    NOT NULL REFERENCES accounts(id),
+  source  BLOB    NOT NULL REFERENCES nodes(id),
+  target  BLOB    NOT NULL REFERENCES nodes(id),
+  type    TEXT    NOT NULL,
+  created INTEGER NOT NULL,
+  PRIMARY KEY (owner, source, type, target)
+) STRICT, WITHOUT ROWID"
+              "CREATE INDEX links_target ON links(owner, target, type, source)"))
+  (let ((m (list-ref migrations 5))) (list (cadr m) (caddr m))))
 (test-equal "shipped list: the id is `tech`"
   #x74656368
   techo-application-id)

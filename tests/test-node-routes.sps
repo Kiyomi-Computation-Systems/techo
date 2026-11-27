@@ -18,10 +18,18 @@
 ;;;                                              a state change (If-Match), the node without its body
 ;;;   POST   /v1/nodes/:id/move                  a move (If-Match), the node without its body
 ;;;   POST   /v1/nodes/:id/move-children         a bulk move of its children (If-Match), counts
+;;;   PUT    /v1/nodes/:id/links/:type/:target   make a link (no precondition, no body): 201, or
+;;;                                              200 when it was there
+;;;   DELETE /v1/nodes/:id/links/:type/:target   remove it: 204
+;;;   GET    /v1/nodes/:id/links?direction=&type=
+;;;                                              a page of the node's links, each with the
+;;;                                              other node without its body
 ;;;
 ;;; Every node in an answer has its parent after its state: an id, or null.
 ;;; The tree's tests end by checking the whole table is a forest
 ;;; (forest-faults), by rules written out here, not read from the code.
+;;; The links' tests judge each answer by the plan's table, as its review
+;;; orders it, written out here (link-cell), not read from (techo links).
 ;;;
 ;;; Each test gets a file of its own (a rig), seeded through the store's own
 ;;; procedures in a write job: account A (alice) with key 1, account B (bob)
@@ -48,7 +56,7 @@
         (only (techo auth) key-hash)
         (only (techo doorway) tx-query tx-query-row)
         (only (techo nodes) parse-node-id body-cap request-cap node-states)
-        (only (techo node-store) insert-node! write-node! set-node-state! purge-node!)
+        (only (techo node-store) insert-node! write-node! set-node-state! purge-node! insert-link!)
         (only (techo migrations) migrations)
         (only (techo app) wrap-server)
         (techo node-routes))
@@ -96,6 +104,13 @@
 (define (revision-path n r) (string-append (revisions-path n) "/" (number->string r)))
 (define (restore-path n r) (string-append (revision-path n r) "/restore"))
 
+;; Slice 5b's: a node's links, and one link, from the id S-TEXT to the id
+;; T-TEXT, of TYPE.
+(define (links-path-of text) (string-append (node-path-of text) "/links"))
+(define (links-path n) (links-path-of (nid-text n)))
+(define (link-path-of s-text type t-text) (string-append (links-path-of s-text) "/" type "/" t-text))
+(define (link-path s type t) (link-path-of (nid-text s) type (nid-text t)))
+
 ;;; The rig
 
 ;; A rig: CALL sends a request and answers what the client read; JOBS
@@ -110,7 +125,12 @@
 ;; with-rig : String (Rig -> A) -> A
 ;; A fresh seeded file NAME, and a router of node-routes on it inside
 ;; wrap-server, its runners counted.
-(define (with-rig name body)
+(define (with-rig name body) (with-rig-wall name #f body))
+
+;; with-rig-wall : String (U (-> (-> Natural)) #f) (Rig -> A) -> A
+;; with-rig, the wall clock the thunk WALL makes when given (SET-NOW! then
+;; moves nothing), else the fixed one.
+(define (with-rig-wall name wall body)
   (let ((s (open-test-store dir name)))
     (dynamic-wind
       (lambda () #f)
@@ -127,7 +147,7 @@
           (let* ((lines '())
                  (now now0)
                  (clock (step-clock 0 1))
-                 (h (wrap-server (make-router (node-routes read write (lambda () now) clock)
+                 (h (wrap-server (make-router (node-routes read write (if wall (wall) (lambda () now)) clock)
                                               not-found)
                                  (lambda (l) (set! lines (cons l lines)))
                                  10000 clock)))
@@ -153,13 +173,15 @@
              (lambda (tx) (insert-node! tx (nid n) owner kind "seed" "seed body" "text/plain" "{}" #f 5000))))
 
 ;; tables : Rig -> (List ...)
-;; The three tables whole, and every key's id and last_used.
+;; The four tables whole (nodes, revisions, changes, links), and every
+;; key's id and last_used, last: (list-ref t 4).
 (define (tables g)
   (run-read (rig-store g)
             (lambda (tx)
               (list (tx-query tx "SELECT * FROM nodes ORDER BY num")
                     (tx-query tx "SELECT * FROM revisions ORDER BY node, revision")
                     (tx-query tx "SELECT * FROM changes ORDER BY owner, seq")
+                    (tx-query tx "SELECT * FROM links ORDER BY owner, source, type, target")
                     (tx-query tx "SELECT id, last_used FROM api_keys ORDER BY id")))))
 
 ;; last-used : Rig Natural -> (U Natural #f)     key N's last_used
@@ -354,10 +376,16 @@
     ((archive unarchive trash untrash purge) (event-request which 1 (list (match-h 1))))
     ((move) (list 'POST (move-path 1) (list json-type (match-h 1)) (move-body #f)))
     ((move-children) (list 'POST (move-children-path 1) (list json-type (match-h 1)) (move-body #f)))
+    ((link) (list 'PUT (link-path 1 "related" 2) '() #f))
+    ((unlink) (list 'DELETE (link-path 1 "related" 2) '() #f))
+    ((list-links) (list 'GET (links-path 1) '() #f))
     (else (assertion-violation 'route-request "no such route" which))))
 
+;; The links' three routes (slice 5b).
+(define link-routes '(link unlink list-links))
+
 (define route-names (append '(list-nodes get-node create replace list-revisions get-revision restore)
-                            events '(move move-children)))
+                            events '(move move-children) link-routes))
 
 ;; send : Rig Symbol (Listof Header) -> Answer     the route, with KEY-HEADERS first
 (define (send g which key-headers)
@@ -410,10 +438,13 @@
       ((move) (list 'POST (move-path-of p) (list (key-h 1) json-type (match-h 1)) (move-body #f)))
       ((move-children)
        (list 'POST (move-children-path-of p) (list (key-h 1) json-type (match-h 1)) (move-body #f)))
+      ((link) (list 'PUT (link-path-of text "related" (nid-text 2)) (list (key-h 1)) #f))
+      ((unlink) (list 'DELETE (link-path-of text "related" (nid-text 2)) (list (key-h 1)) #f))
+      ((list-links) (list 'GET (links-path-of text) (list (key-h 1)) #f))
       (else (assertion-violation 'id-request "no such route" which)))))
 
 (define id-routes (append '(get-node create replace list-revisions get-revision restore) events
-                          '(move move-children)))
+                          '(move move-children) link-routes))
 
 (define (send-id g which text)
   (let ((r (id-request which text)))
@@ -512,8 +543,8 @@
                     (equal? (answer-body other) (answer-body missing))
                     (equal? (answer-headers other) (answer-headers missing))
                     ((rig-jobs g))
-                    (equal? (map (lambda (t) (list-ref before t)) '(0 1 2))
-                            (let ((after (tables g))) (map (lambda (t) (list-ref after t)) '(0 1 2))))))))))))
+                    (equal? (map (lambda (t) (list-ref before t)) '(0 1 2 3))
+                            (let ((after (tables g))) (map (lambda (t) (list-ref after t)) '(0 1 2 3))))))))))))
  (append '(get-node replace list-revisions get-revision restore) events '(move move-children)))
 
 (test-equal "owner: A's list holds A's nodes and never B's"
@@ -1674,8 +1705,8 @@
                                                bytes))))
              (let ((after (tables g)))
                (list (map status+code answers) ((rig-order g))
-                     (equal? (map (lambda (t) (list-ref before t)) '(0 1 2))
-                             (map (lambda (t) (list-ref after t)) '(0 1 2)))
+                     (equal? (map (lambda (t) (list-ref before t)) '(0 1 2 3))
+                             (map (lambda (t) (list-ref after t)) '(0 1 2 3)))
                      (last-used g 1))))))))))
 
 ;;; Slice 4b: the lifecycle
@@ -3699,6 +3730,897 @@
                       lines (list (move-path 2) (move-children-path 1) (move-path 2)))
                  (contains? text "secret-title-5") (contains? text "secret-body-5"))))))))
 
+;;; Slice 5b: links
+
+;; link-request : Rig Symbol Natural String (List [(Listof Header) [(U String #f)]]) -> Answer
+;; WHO's METHOD on PATH: the key, then MORE's headers when given, then
+;; MORE's body when given; no precondition and no body otherwise.
+(define (link-request g method who path more)
+  ((rig-call g) method path
+                (cons (key-h who) (if (null? more) '() (car more)))
+                (if (or (null? more) (null? (cdr more))) #f (cadr more))))
+
+;; link! : Rig Natural Natural String Natural [(Listof Header) [(U String #f)]] -> Answer
+;; WHO's PUT of the link from node S to node T of TYPE.
+(define (link! g who s type t . more) (link-request g 'PUT who (link-path s type t) more))
+
+;; unlink! : as link!, the DELETE
+(define (unlink! g who s type t . more) (link-request g 'DELETE who (link-path s type t) more))
+
+;; links-get : Rig Natural Natural String -> Answer
+;; WHO's GET of node N's links, QUERY after the ? ("" for none).
+(define (links-get g who n query)
+  (get! g who (if (string=? query "") (links-path n) (string-append (links-path n) "?" query))))
+
+;; link-json : Natural String Natural Natural -> Alist     a link's answer, in its order
+(define (link-json s type t created)
+  (list (cons "source" (nid-text s)) (cons "type" type) (cons "target" (nid-text t))
+        (cons "created" created)))
+
+;; link-rows : Rig -> (Listof (List Bytevector Bytevector String Bytevector Natural))
+;; Every row of links: owner, source, type, target, created, in key order.
+(define (link-rows g)
+  (run-read (rig-store g)
+            (lambda (tx)
+              (map vector->list
+                   (tx-query tx (string-append "SELECT owner, source, type, target, created FROM links"
+                                               " ORDER BY owner, source, type, target"))))))
+
+;; link-row : Bytevector Natural String Natural Natural -> (List ...)     a row as link-rows reads it
+(define (link-row owner s type t created) (list owner (nid s) type (nid t) created))
+
+;; seed-link! : Rig Bytevector Natural String Natural Natural Natural -> Void
+;; OWNER's link from node S to node T of TYPE, made at CREATED, through the
+;; store, which judges nothing: its change row at S's revision REV.
+(define (seed-link! g owner s type t rev created)
+  (run-write (rig-store g) (lambda (tx) (insert-link! tx owner (nid s) type (nid t) rev created))))
+
+;; item-of : Alist -> (Pair String String)     a page item's type and its node's id
+(define (item-of i) (cons (member-of i "type") (member-of (member-of i "node") "id")))
+
+;; item-state-of : Alist -> (List String String String)     the type, the node's id and its state
+(define (item-state-of i)
+  (list (member-of i "type") (member-of (member-of i "node") "id") (member-of (member-of i "node") "state")))
+
+;;; The job's table, cell by cell, through real requests
+
+;; The ends of a cell: no node (missing), B's node (other), A's purged node,
+;; and A's node in each live state.
+(define link-ends '(missing other purged active archived trashed))
+
+(define (live-end? end) (and (memq end live-states) #t))
+
+;; seed-end! : Rig Natural Symbol -> Void
+;; Node N as END: nothing for missing; B's note at revision 1 for other;
+;; else A's note by seed-state! (revision 2 active, 3 archived or trashed),
+;; and for purged, trashed and then purged through the store.
+(define (seed-end! g n end)
+  (case end
+    ((missing) #f)
+    ((other) (seed-node! g acct-b n "note"))
+    ((purged) (let ((r (seed-state! g acct-a n "note" 'trashed)))
+                (run-write (rig-store g) (lambda (tx) (purge-node! tx (nid n) acct-a r 6100)))))
+    (else (seed-state! g acct-a n "note" end))))
+
+;; end-revision : Symbol -> Natural     a live END's revision, as seed-end! leaves it
+(define (end-revision end) (if (eq? end 'active) 2 3))
+
+;; link-cell : Symbol Symbol Symbol Boolean -> Symbol
+;; The plan's table of checks, as its review orders it, written out here:
+;; for VERB (put or delete), the source's END, the target's and whether
+;; the link is there, the outcome: made (201), kept (200), removed (204),
+;; not-found (404) or wrong-state (409). Both 404s come before any 409; a
+;; link that is there is kept, or removed, whatever the states; a DELETE
+;; never asks after the target.
+(define (link-cell verb source target there?)
+  (cond ((not (live-end? source)) 'not-found)
+        ((eq? verb 'delete) (if there? 'removed 'not-found))
+        ((not (live-end? target)) 'not-found)
+        (there? 'kept)
+        ((or (eq? source 'trashed) (eq? target 'trashed)) 'wrong-state)
+        (else 'made)))
+
+;; seed-background! : Rig -> Void
+;; What every cell's file holds besides its two ends: A's active nodes 3
+;; and 4 with a link 3 to 4, and B's nodes 5 and 6 with a link 5 to 6, all
+;; made at 3000.
+(define (seed-background! g)
+  (seed-state! g acct-a 3 "note" 'active)
+  (seed-state! g acct-a 4 "note" 'active)
+  (seed-node! g acct-b 5 "note")
+  (seed-node! g acct-b 6 "note")
+  (seed-link! g acct-a 3 "related" 4 2 3000)
+  (seed-link! g acct-b 5 "related" 6 1 3000))
+
+(define background-links
+  (list (link-row acct-a 3 "related" 4 3000) (link-row acct-b 5 "related" 6 3000)))
+
+;; The cell's own link, when it is there before the request: made at 7000.
+(define cell-link-at 7000)
+
+;; expected-link-cell : Symbol Symbol -> (List ...)
+;; What a cell's request answers and leaves, for OUTCOME with the source's
+;; END: the status; the code ('absent for none); the body (the link's JSON,
+;; 'empty, or 'problem for a refusal's); ETag and Location (none on any);
+;; the jobs (one write); whether nodes and revisions are as they were; the
+;; links; A's change rows added (seq counted from the last before); whether
+;; B's are as they were; the key's last_used (null after a refusal, which
+;; rolls back).
+(define (expected-link-cell outcome end)
+  (case outcome
+    ((made) (list 201 'absent (link-json 1 "related" 2 now0) #f #f '(write) #t
+                  (cons (link-row acct-a 1 "related" 2 now0) background-links)
+                  (list (list 1 (nid 1) (end-revision end) "link" now0)) #t now0))
+    ((kept) (list 200 'absent (link-json 1 "related" 2 cell-link-at) #f #f '(write) #t
+                  (cons (link-row acct-a 1 "related" 2 cell-link-at) background-links)
+                  '() #t now0))
+    ((removed) (list 204 'absent 'empty #f #f '(write) #t background-links
+                     (list (list 1 (nid 1) (end-revision end) "unlink" now0)) #t now0))
+    ((not-found) (list 404 "not_found" 'problem #f #f '(write) #t background-links '() #t #f))
+    ((wrong-state) (list 409 "wrong_state" 'problem #f #f '(write) #t background-links '() #t #f))
+    (else (assertion-violation 'expected-link-cell "no such outcome" outcome))))
+
+;; observe-link-cell : Rig Symbol -> (List ...)
+;; A's VERB of the link from node 1 to node 2, related, and what
+;; expected-link-cell describes of it.
+(define (observe-link-cell g verb)
+  (let* ((before (tables g))
+         (a-before (change-rows g acct-a))
+         (b-before (change-rows g acct-b))
+         (a (if (eq? verb 'put) (link! g 1 1 "related" 2) (unlink! g 1 1 "related" 2)))
+         (after (tables g)))
+    (list (answer-status a) (member-of (answer-json a) "code")
+          (if (>= (answer-status a) 400) 'problem (answer-json a))
+          (answer-header a "etag") (answer-header a "location") ((rig-order g))
+          (equal? (list (list-ref before 0) (list-ref before 1))
+                  (list (list-ref after 0) (list-ref after 1)))
+          (link-rows g)
+          (new-changes a-before (change-rows g acct-a))
+          (equal? b-before (change-rows g acct-b))
+          (last-used g 1))))
+
+(for-each
+ (lambda (verb)
+   (for-each
+    (lambda (source)
+      (for-each
+       (lambda (target)
+         (for-each
+          (lambda (there?)
+            ;; A link is there only between two live nodes of its owner.
+            (when (or (not there?) (and (live-end? source) (live-end? target)))
+              (let ((outcome (link-cell verb source target there?)))
+                (test-equal (string-append "link cell: " (if (eq? verb 'put) "PUT" "DELETE")
+                                           ", source " (sym->str source) ", target " (sym->str target)
+                                           (if there? ", the link there" ", no link")
+                                           ": " (sym->str outcome)
+                                           "; no ETag, no Location, one write job, no node row or snapshot changed")
+                  (expected-link-cell outcome source)
+                  (attempt
+                   (lambda ()
+                     (with-rig "link-cell.db"
+                       (lambda (g)
+                         (seed-end! g 1 source)
+                         (seed-end! g 2 target)
+                         (seed-background! g)
+                         (when there?
+                           (seed-link! g acct-a 1 "related" 2 (end-revision source) cell-link-at))
+                         (observe-link-cell g verb)))))))))
+          '(#f #t)))
+       link-ends))
+    link-ends))
+ '(put delete))
+
+;;; Q11 and G7': another account's node, a purged one and a missing id
+
+(test-equal "Q11: B's node, A's purged node and an id no one holds, at either end of a PUT and a DELETE and as a GET's node: one 404, byte for byte and header for header, each in its one job; nothing changed, last_used null"
+  (list (repeat 15 '(404 "not_found")) #t #t (append (repeat 12 'write) (repeat 3 'read)) #t #f)
+  (attempt
+   (lambda ()
+     (with-rig "link-q11.db"
+       (lambda (g)
+         (seed-state! g acct-a 1 "note" 'active)
+         (seed-end! g 2 'other)
+         (seed-end! g 3 'purged)
+         (let* ((before (tables g))
+                (ends (list (cons 2 1) (cons 3 1) (cons 4 1) (cons 1 2) (cons 1 3) (cons 1 4)))
+                (puts (in-order (lambda (e) (link! g 1 (car e) "related" (cdr e))) ends))
+                (deletes (in-order (lambda (e) (unlink! g 1 (car e) "related" (cdr e))) ends))
+                (gets (in-order (lambda (n) (links-get g 1 n "")) '(2 3 4)))
+                (as (append puts deletes gets)))
+           (list (map status+code as)
+                 (for-all (lambda (a) (equal? (answer-body a) (answer-body (car as)))) as)
+                 (for-all (lambda (a) (equal? (answer-headers a) (answer-headers (car as)))) as)
+                 ((rig-order g))
+                 (equal? before (tables g))
+                 (last-used g 1))))))))
+
+(test-equal "G7': B never sees or changes A's links: B's PUT and DELETE of A's link, a PUT from or to A's node from B's, B's GET of A's two nodes, each a 404; B's list is B's link alone, A's is A's alone, and A's GET of B's node a 404; every link, change and node row as it was"
+  (list (repeat 7 '(404 "not_found"))
+        (list (cons "mentions" (nid-text 6)))
+        (list (cons "related" (nid-text 2)))
+        '(404 "not_found")
+        #t)
+  (attempt
+   (lambda ()
+     (with-rig "link-g7.db"
+       (lambda (g)
+         (seed-state! g acct-a 1 "note" 'active)
+         (seed-state! g acct-a 2 "note" 'active)
+         (seed-node! g acct-b 5 "note")
+         (seed-node! g acct-b 6 "note")
+         (seed-link! g acct-a 1 "related" 2 2 7000)
+         (seed-link! g acct-b 5 "mentions" 6 1 3000)
+         (let* ((before (tables g))
+                (bs (list (link! g 3 1 "related" 2)
+                          (unlink! g 3 1 "related" 2)
+                          (link! g 3 5 "related" 1)
+                          (link! g 3 1 "related" 5)
+                          (unlink! g 3 5 "related" 1)
+                          (links-get g 3 1 "")
+                          (links-get g 3 2 "direction=in")))
+                (b-own (links-get g 3 5 ""))
+                (a-own (links-get g 1 1 ""))
+                (a-other (links-get g 1 6 "direction=in"))
+                (after (tables g)))
+           (list (map status+code bs)
+                 (map item-of (items b-own))
+                 (map item-of (items a-own))
+                 (status+code a-other)
+                 (equal? before after))))))))
+
+;;; Q3, Q5, Q15: one link per source, type and target; created is the first PUT's
+
+(test-equal "Q15: a second PUT a day later is 200 with the first's created, as are the row and the list; it writes no change row and no link row (Q3); the first wrote one change row, link, on the source at its revision (Q5)"
+  (list 201 (link-json 1 "related" 2 now0) 200 (link-json 1 "related" 2 now0)
+        (list (link-row acct-a 1 "related" 2 now0)) (list now0)
+        (list (list 1 (nid 1) 2 "link" now0)))
+  (attempt
+   (lambda ()
+     (with-rig "link-q15.db"
+       (lambda (g)
+         (seed-state! g acct-a 1 "note" 'active)
+         (seed-state! g acct-a 2 "note" 'active)
+         (let* ((changes0 (change-rows g acct-a))
+                (a (link! g 1 1 "related" 2)))
+           ((rig-set-now! g) (+ now0 day 1))
+           (let* ((b (link! g 1 1 "related" 2))
+                  (l (links-get g 1 1 "")))
+             (list (answer-status a) (answer-json a) (answer-status b) (answer-json b)
+                   (link-rows g)
+                   (map (lambda (i) (member-of i "created")) (items l))
+                   (new-changes changes0 (change-rows g acct-a))))))))))
+
+(test-equal "Q2/K2: one link per source, type and target; another type between the same two, and the same type the other way, are links of their own, each 201"
+  (list '(201 201 201 200)
+        (list (link-row acct-a 1 "blocks" 2 now0) (link-row acct-a 1 "related" 2 now0)
+              (link-row acct-a 2 "related" 1 now0)))
+  (attempt
+   (lambda ()
+     (with-rig "link-twins.db"
+       (lambda (g)
+         (seed-state! g acct-a 1 "note" 'active)
+         (seed-state! g acct-a 2 "note" 'active)
+         (let ((as (in-order (lambda (l) (apply link! g 1 l))
+                             '((1 "related" 2) (1 "blocks" 2) (2 "related" 1) (1 "blocks" 2)))))
+           (list (map answer-status as) (link-rows g))))))))
+
+(test-equal "unlink: removes that link alone: the same ends' other type and the other way stay; a second DELETE is 404 and writes nothing"
+  (list 204 '(404 "not_found")
+        (list (link-row acct-a 1 "blocks" 2 7000) (link-row acct-a 2 "related" 1 7000))
+        (list (list 1 (nid 1) 2 "unlink" now0)))
+  (attempt
+   (lambda ()
+     (with-rig "unlink-one.db"
+       (lambda (g)
+         (seed-state! g acct-a 1 "note" 'active)
+         (seed-state! g acct-a 2 "note" 'active)
+         (seed-link! g acct-a 1 "related" 2 2 7000)
+         (seed-link! g acct-a 1 "blocks" 2 2 7000)
+         (seed-link! g acct-a 2 "related" 1 2 7000)
+         (let* ((changes0 (change-rows g acct-a))
+                (a (unlink! g 1 1 "related" 2))
+                (b (unlink! g 1 1 "related" 2)))
+           (list (answer-status a) (status+code b) (link-rows g)
+                 (new-changes changes0 (change-rows g acct-a)))))))))
+
+;;; Q9: the other writes leave links as they were
+
+(test-equal "Q9: an archive, an unarchive, a replace, a restore, a move, a trash and an untrash of a linked node, and a trash of the other end, each 200 and each leaving every link as it was; the list shows the other node as it now is"
+  (list (repeat 8 '(200 #t))
+        (list (list "mentions" (nid-text 1) "active" 8 (nid-text 3)))
+        (list (list "related" (nid-text 2) "trashed" 2 'null)))
+  (attempt
+   (lambda ()
+     (with-rig "link-q9.db"
+       (lambda (g)
+         (seed-in! g acct-a 1 "note" #f)
+         (seed-in! g acct-a 2 "note" #f)
+         (seed-in! g acct-a 3 "project" #f)
+         (seed-link! g acct-a 1 "related" 2 1 7000)
+         (seed-link! g acct-a 2 "mentions" 1 1 7000)
+         (seed-link! g acct-a 3 "blocks" 1 1 7000)
+         (let* ((links0 (link-rows g))
+                (steps (list (lambda () (lifecycle! g 1 1 'archive 1))
+                             (lambda () (lifecycle! g 1 1 'unarchive 2))
+                             (lambda () (replace! g 1 1 3 #f "t2" "b2" "text/plain"))
+                             (lambda () (restore! g 1 1 1 4))
+                             (lambda () (move! g 1 1 5 3))
+                             (lambda () (lifecycle! g 1 1 'trash 6))
+                             (lambda () (lifecycle! g 1 2 'trash 1))
+                             (lambda () (lifecycle! g 1 1 'untrash 7))))
+                (seen (in-order (lambda (step)
+                                  (let ((a (step)))
+                                    (list (answer-status a) (equal? links0 (link-rows g)))))
+                                steps))
+                (node-of (lambda (i) (member-of i "node")))
+                (shown (lambda (a)
+                         (map (lambda (i) (list (member-of i "type") (member-of (node-of i) "id")
+                                                (member-of (node-of i) "state")
+                                                (member-of (node-of i) "revision")
+                                                (member-of (node-of i) "parent")))
+                              (items a)))))
+           (list seen (shown (links-get g 1 2 "")) (shown (links-get g 1 1 "")))))))))
+
+;;; Q8, Q17: a purge through DELETE /v1/nodes/:id
+
+(test-equal "Q8/Q17: the purge of a node linked both ways, three out and two in, is 204; no link of it is left, the others are as they were; one change row, the purge's; no other node's row changed; the lists of the other ends no longer show it"
+  (list 200 204
+        (list (link-row acct-a 2 "related" 3 7000) (link-row acct-a 3 "mentions" 4 7000)
+              (link-row acct-b 5 "related" 6 3000))
+        (list (list 1 (nid 1) 3 "purge" now0))
+        #t #t
+        (list (cons "related" (nid-text 3))) '() (list (cons "related" (nid-text 2))))
+  (attempt
+   (lambda ()
+     (with-rig "link-purge.db"
+       (lambda (g)
+         (for-each (lambda (n) (seed-in! g acct-a n "note" #f)) '(1 2 3 4))
+         (seed-node! g acct-b 5 "note")
+         (seed-node! g acct-b 6 "note")
+         (for-each (lambda (l) (seed-link! g acct-a (car l) (cadr l) (caddr l) 1 7000))
+                   '((1 "related" 2) (1 "blocks" 2) (1 "mentions" 3) (2 "related" 1) (3 "blocks" 1)
+                     (2 "related" 3) (3 "mentions" 4)))
+         (seed-link! g acct-b 5 "related" 6 1 3000)
+         (let* ((t (lifecycle! g 1 1 'trash 1))
+                (others (lambda ()
+                          (run-read (rig-store g)
+                                    (lambda (tx) (tx-query tx "SELECT * FROM nodes WHERE id <> ? ORDER BY num"
+                                                           (nid 1))))))
+                (others0 (others))
+                (changes0 (change-rows g acct-a))
+                (b0 (change-rows g acct-b))
+                (p (lifecycle! g 1 1 'purge 2)))
+           (list (answer-status t) (answer-status p) (link-rows g)
+                 (new-changes changes0 (change-rows g acct-a))
+                 (equal? others0 (others))
+                 (equal? b0 (change-rows g acct-b))
+                 (map item-of (items (links-get g 1 2 "")))
+                 (map item-of (items (links-get g 1 2 "direction=in")))
+                 (map item-of (items (links-get g 1 3 "direction=in"))))))))))
+
+;;; The list: pages (Q10, Q21)
+
+(define type-names '("related" "mentions" "blocks"))
+
+;; out-type, in-type : Natural -> String     the type of node 1's link to K, and of K's to 1
+(define (out-type k) (list-ref type-names (mod k 3)))
+(define (in-type k) (list-ref type-names (mod (+ k 1) 3)))
+
+(define web-nodes (let loop ((k 106) (acc '())) (if (< k 2) acc (loop (- k 1) (cons k acc)))))
+
+;; seed-web! : Rig -> Void
+;; In one write job, through the store: A's node 1 and nodes 2 to 106, each
+;; a note at revision 1 made at 5000; every seventh archived and every
+;; eleventh trashed (77 is trashed); node 1 linked to each, by out-type,
+;; and each to node 1, by in-type; links between 2 and 3 both ways, which
+;; are no link of node 1; B's nodes 200 and 201, linked.
+(define (seed-web! g)
+  (run-write (rig-store g)
+             (lambda (tx)
+               (let ((note! (lambda (owner n)
+                              (insert-node! tx (nid n) owner "note" "seed" "seed body" "text/plain" "{}"
+                                            #f 5000))))
+                 (note! acct-a 1)
+                 (for-each (lambda (k)
+                             (note! acct-a k)
+                             (cond ((= (mod k 11) 0) (set-node-state! tx (nid k) acct-a 1 "trashed" "trash" 6000))
+                                   ((= (mod k 7) 0) (set-node-state! tx (nid k) acct-a 1 "archived" "archive" 6000))))
+                           web-nodes)
+                 (for-each (lambda (k)
+                             (insert-link! tx acct-a (nid 1) (out-type k) (nid k) 1 7000)
+                             (insert-link! tx acct-a (nid k) (in-type k) (nid 1) 1 7000))
+                           web-nodes)
+                 (insert-link! tx acct-a (nid 2) "related" (nid 3) 1 7000)
+                 (insert-link! tx acct-a (nid 3) "blocks" (nid 2) 1 7000)
+                 (note! acct-b 200)
+                 (note! acct-b 201)
+                 (insert-link! tx acct-b (nid 200) "related" (nid 201) 1 7000)))))
+
+;; web-expected : Symbol (U String #f) -> (Listof (Pair String String))
+;; Node 1's links in DIRECTION, of TYPE or all, as the plan orders them,
+;; written out here: by the type's name, then the other node's id.
+(define (web-expected direction type)
+  (let ((type-of (if (eq? direction 'out) out-type in-type)))
+    (apply append
+           (map (lambda (t)
+                  (map (lambda (k) (cons t (nid-text k)))
+                       (filter (lambda (k) (string=? (type-of k) t)) web-nodes)))
+                (if type (list type) '("blocks" "mentions" "related"))))))
+
+;; walk-links : Rig Natural String Natural -> (List (Listof (Pair String String)) (U Boolean Symbol))
+;; Node N's links for QUERY (its parameters but limit and after), in pages
+;; of LIMIT, each page's next handed back as after, to the end: every
+;; item's type and node id, and whether every answer was a 200 and every
+;; page but the last full; 'too-many-pages past 400 pages.
+(define (walk-links g n query limit)
+  (let loop ((after #f) (acc '()) (ok #t) (pages 1))
+    (let* ((q (string-append query (if (string=? query "") "" "&") "limit=" (number->string limit)
+                             (if after (string-append "&after=" after) "")))
+           (a (links-get g 1 n q))
+           (its (items a))
+           (next (member-of (answer-json a) "next"))
+           (acc (append acc (map item-of its)))
+           (ok (and ok (= (answer-status a) 200))))
+      (cond ((> pages 400) (list acc 'too-many-pages))
+            ((string? next) (loop next acc (and ok (= (length its) limit)) (+ pages 1)))
+            (else (list acc ok))))))
+
+(for-each
+ (lambda (direction)
+   (for-each
+    (lambda (type)
+      (for-each
+       (lambda (limit)
+         (test-equal (string-append "Q10/Q21: node 1's links, " (sym->str direction)
+                                    (if type (string-append ", type " type) ", every type")
+                                    ", in pages of " (number->string limit)
+                                    ": each link once, by type then the other node's id, to the end; no other node's link, no other account's")
+           (list (web-expected direction type) #t)
+           (attempt
+            (lambda ()
+              (with-rig "link-pages.db"
+                (lambda (g)
+                  (seed-web! g)
+                  (walk-links g 1 (string-append (if (eq? direction 'in) "direction=in" "direction=out")
+                                                 (if type (string-append "&type=" type) ""))
+                              limit)))))))
+       '(1 100)))
+    '(#f "blocks" "mentions" "related")))
+ '(out in))
+
+;; cursor-of : (Pair String String) -> String     an item's next: its type, a colon, its node's id
+(define (cursor-of p) (string-append (car p) ":" (cdr p)))
+
+(test-equal "list: no direction is out; the default limit is 50, and 100 and over are 100; next is the last item's type, a colon and its node's id, in lower case; null at the end"
+  (let ((out (web-expected 'out #f)))
+    (list #t
+          (list 50 (cursor-of (list-ref out 49)))
+          (list 100 (cursor-of (list-ref out 99)))
+          (list 100 (cursor-of (list-ref out 99)))
+          (list 5 'null)))
+  (attempt
+   (lambda ()
+     (with-rig "link-limits.db"
+       (lambda (g)
+         (seed-web! g)
+         (let ((page (lambda (q) (let ((a (links-get g 1 1 q)))
+                                   (list (length (items a)) (member-of (answer-json a) "next"))))))
+           (list (equal? (answer-body (links-get g 1 1 "")) (answer-body (links-get g 1 1 "direction=out")))
+                 (page "")
+                 (page "limit=100")
+                 (page "limit=1000")
+                 (page (string-append "after=" (cursor-of (list-ref (web-expected 'out #f) 99)))))))))))
+
+(test-equal "list: an after that names no link starts past its place: between two ids, before a type's first, past a type's last; typed too; in capitals it is the same place"
+  (list (list (cons "related" (nid-text 4)) (cons "related" (nid-text 6)))
+        (list (cons "related" (nid-text 2)) (cons "related" (nid-text 4)) (cons "related" (nid-text 6)))
+        '()
+        (list (cons "related" (nid-text 4)) (cons "related" (nid-text 6)))
+        (list (cons "related" (nid-text 4)) (cons "related" (nid-text 6))))
+  (attempt
+   (lambda ()
+     (with-rig "link-after.db"
+       (lambda (g)
+         (for-each (lambda (n) (seed-state! g acct-a n "note" 'active)) '(1 2 4 6))
+         (for-each (lambda (n) (seed-link! g acct-a 1 "related" n 2 7000)) '(2 4 6))
+         (map (lambda (q) (map item-of (items (links-get g 1 1 q))))
+              (list (string-append "after=related:" (nid-text 3))
+                    (string-append "after=mentions:" (nid-text 9))
+                    (string-append "after=related:" (nid-text 7))
+                    (string-append "type=related&after=related:" (nid-text 3))
+                    (string-append "after=related:" (string-upcase (nid-text 3))))))))))
+
+(test-equal "list: a trashed node's links and an archived one's are listed, 200; the other end is listed in whatever state it is, with that state"
+  (list (list (list "blocks" (nid-text 3) "trashed"))
+        (list (list "related" (nid-text 1) "active") (list "related" (nid-text 3) "trashed"))
+        (list (list "related" (nid-text 1) "active") (list "related" (nid-text 2) "archived"))
+        (list (list "blocks" (nid-text 2) "archived") (list "mentions" (nid-text 1) "active"))
+        (list (list "mentions" (nid-text 3) "trashed") (list "related" (nid-text 2) "archived")))
+  (attempt
+   (lambda ()
+     (with-rig "link-states.db"
+       (lambda (g)
+         (seed-state! g acct-a 1 "note" 'active)
+         (seed-state! g acct-a 2 "note" 'archived)
+         (seed-state! g acct-a 3 "note" 'trashed)
+         (for-each (lambda (l) (seed-link! g acct-a (car l) (cadr l) (caddr l) 2 7000))
+                   '((1 "related" 2) (1 "mentions" 3) (2 "blocks" 3) (3 "related" 1) (3 "related" 2)))
+         (map (lambda (q) (let ((a (links-get g 1 (car q) (cdr q))))
+                            (if (= (answer-status a) 200) (map item-state-of (items a)) (status+code a))))
+              (list (cons 2 "") (cons 2 "direction=in") (cons 3 "") (cons 3 "direction=in") (cons 1 ""))))))))
+
+;; between : String String String -> String
+;; What lies in TEXT after the first OPEN and before the last CLOSE.
+(define (between text open close)
+  (let* ((n (string-length text))
+         (start (let loop ((i 0)) (if (string=? (substring text i (+ i 1)) open) (+ i 1) (loop (+ i 1)))))
+         (end (let loop ((i (- n 1))) (if (string=? (substring text i (+ i 1)) close) i (loop (- i 1))))))
+    (substring text start end)))
+
+(test-equal "Q14: a page item's node is, byte for byte, the nodes list's item for that node: active, archived under none, trashed under a Project"
+  '(#t #t #t)
+  (attempt
+   (lambda ()
+     (with-rig "link-q14.db"
+       (lambda (g)
+         (seed-state! g acct-a 1 "note" 'active)
+         (seed-state! g acct-a 2 "note" 'active)
+         (seed-in! g acct-a 3 "project" #f)
+         (archived-at! g acct-a 3 1)
+         (seed-in! g acct-a 4 "note" 3)
+         (trashed-at! g acct-a 4 1)
+         (for-each (lambda (n) (seed-link! g acct-a 1 "related" n 2 7000)) '(2 3 4))
+         (let ((links-body (answer-body (links-get g 1 1 ""))))
+           (map (lambda (nk)
+                  (let ((listed (answer-body
+                                 (get! g 1 (string-append "/v1/nodes?state=" (cdr nk) "&limit=1&after="
+                                                          (nid-text (- (car nk) 1)))))))
+                    (contains? links-body (string-append "\"node\":" (between listed "[" "]")))))
+                '((2 . "active") (3 . "archived") (4 . "trashed")))))))))
+
+;;; The checks before the job
+
+;; links-query-bad : (Listof String)     the list's queries refused, each a 400 with no job
+(define links-query-bad
+  (let ((id (nid-text 2)))
+    (list "direction=out&direction=out" "direction=" "direction=OUT" "direction=In" "direction=both"
+          "type=related&type=related" "type=" "type=Related" "type=link" "type=related%20"
+          "limit=" "limit=0" "limit=-1" "limit=x" "limit=1&limit=1"
+          (string-append "after=related:" id "&after=related:" id)
+          "after=" (string-append "after=" id) (string-append "after=links:" id)
+          (string-append "after=Related:" id) (string-append "after=related:" v4-text)
+          (string-append "after=related:" id "0") (string-append "after=:" id) "after=related:"
+          (string-append "type=blocks&after=related:" id)
+          (string-append "direction=in&type=mentions&after=blocks:" id))))
+
+(for-each
+ (lambda (q)
+   (test-equal (string-append "list: ?" q " is a 400 invalid_request, no job")
+     '(400 "invalid_request" 0)
+     (attempt
+      (lambda ()
+        (with-rig "link-query.db"
+          (lambda (g)
+            (seed-state! g acct-a 1 "note" 'active)
+            (append (status+code (links-get g 1 1 q)) (list ((rig-jobs g))))))))))
+ links-query-bad)
+
+(test-equal "list: an after of the ?type= given is a 200; with no ?type= any type's after is"
+  '(200 200)
+  (attempt
+   (lambda ()
+     (with-rig "link-query-ok.db"
+       (lambda (g)
+         (seed-state! g acct-a 1 "note" 'active)
+         (map (lambda (q) (answer-status (links-get g 1 1 q)))
+              (list (string-append "type=blocks&after=blocks:" (nid-text 2))
+                    (string-append "after=related:" (nid-text 2)))))))))
+
+(test-equal "list: a bad query with no key is the 401, with an unknown key the 400, neither with a job: the key's shape, then the query, then the key"
+  '((401 "unauthorized") (400 "invalid_request") 0)
+  (attempt
+   (lambda ()
+     (with-rig "link-query-order.db"
+       (lambda (g)
+         (let* ((a ((rig-call g) 'GET (string-append (links-path 1) "?direction=both") '()))
+                (b (links-get g 9 1 "direction=both")))
+           (list (status+code a) (status+code b) ((rig-jobs g)))))))))
+
+(test-equal "list: If-Match and If-None-Match on the GET are ignored: 200, the page as without"
+  '(200 #t)
+  (attempt
+   (lambda ()
+     (with-rig "link-get-pre.db"
+       (lambda (g)
+         (seed-state! g acct-a 1 "note" 'active)
+         (seed-state! g acct-a 2 "note" 'active)
+         (seed-link! g acct-a 1 "related" 2 2 7000)
+         (let ((a ((rig-call g) 'GET (links-path 1)
+                               (list (key-h 1) (match-h 7) none-match (cons "If-Match" "*"))))
+               (b (links-get g 1 1 "")))
+           (list (answer-status a) (equal? (answer-body a) (answer-body b)))))))))
+
+;; link-verbs : (Listof (Pair String (Rig Natural Natural String Natural . Any -> Answer)))
+(define link-verbs (list (cons "PUT" link!) (cons "DELETE" unlink!)))
+
+;; link-path-bad : (Listof (List String String String String))
+;; A path refused before any job: what is wrong, the source's text, the
+;; type, the target's text.
+(define link-path-bad
+  (list (list "a type in another case" (nid-text 1) "Related" (nid-text 2))
+        (list "a type in capitals" (nid-text 1) "MENTIONS" (nid-text 2))
+        (list "a type not of the three" (nid-text 1) "relates" (nid-text 2))
+        (list "a type that is a word of no list" (nid-text 1) "link" (nid-text 2))
+        (list "a v4 target" (nid-text 1) "related" v4-text)
+        (list "a target that is no id" (nid-text 1) "related" "x")
+        (list "a target of 32 hex digits, no hyphens" (nid-text 1) "related" "0190b3a45c6d7e8f9a0b000000000002")
+        (list "a v4 source" v4-text "related" (nid-text 2))
+        (list "the source its own target" (nid-text 1) "related" (nid-text 1))
+        (list "the source its own target, the target in capitals" (nid-text 1) "related"
+              (string-upcase (nid-text 1)))))
+
+(for-each
+ (lambda (verb)
+   (for-each
+    (lambda (bad)
+      (test-equal (string-append "link: " (car verb) " with " (car bad) ": 400 invalid_request, no job, nothing written")
+        '(400 "invalid_request" 0 #t)
+        (attempt
+         (lambda ()
+           (with-rig "link-path.db"
+             (lambda (g)
+               (seed-state! g acct-a 1 "note" 'active)
+               (seed-state! g acct-a 2 "note" 'active)
+               (seed-link! g acct-a 1 "related" 2 2 7000)
+               (let* ((before (tables g))
+                      (a ((rig-call g) (string->symbol (car verb))
+                                       (link-path-of (cadr bad) (caddr bad) (cadddr bad))
+                                       (list (key-h 1)))))
+                 (append (status+code a) (list ((rig-jobs g)) (equal? before (tables g)))))))))))
+    link-path-bad)
+   (for-each
+    (lambda (bad)
+      (test-equal (string-append "link: " (car verb) " with " (car bad)
+                                 ": 400 invalid_request, no job, nothing written: a link takes no precondition")
+        '(400 "invalid_request" 0 #t)
+        (attempt
+         (lambda ()
+           (with-rig "link-pre.db"
+             (lambda (g)
+               (seed-state! g acct-a 1 "note" 'active)
+               (seed-state! g acct-a 2 "note" 'active)
+               (seed-link! g acct-a 1 "related" 2 2 7000)
+               (let* ((before (tables g))
+                      (a ((cdr verb) g 1 1 "related" 2 (cdr bad))))
+                 (append (status+code a) (list ((rig-jobs g)) (equal? before (tables g)))))))))))
+    (list (list "If-Match: \"2\", the source's revision" (match-h 2))
+          (list "If-Match: *" (cons "If-Match" "*"))
+          (list "If-None-Match: *" none-match)
+          (list "If-None-Match: \"2\"" (cons "If-None-Match" "\"2\""))
+          (list "both" (match-h 2) none-match)
+          (list "an empty If-Match" (cons "If-Match" ""))
+          (list "If-Match twice" (match-h 2) (match-h 2)))))
+ link-verbs)
+
+(test-equal "link: order: a bad type, a self link and an If-Match with no key are the 401; with an unknown key the 400; no job"
+  '((401 "unauthorized") (401 "unauthorized") (401 "unauthorized")
+    (400 "invalid_request") (400 "invalid_request") (400 "invalid_request") 0)
+  (attempt
+   (lambda ()
+     (with-rig "link-order.db"
+       (lambda (g)
+         (let* ((call (lambda (key path . headers)
+                        ((rig-call g) 'PUT path (append (if key (list (key-h key)) '()) headers))))
+                (bad-type (link-path-of (nid-text 1) "Related" (nid-text 2)))
+                (self (link-path 1 "related" 1))
+                (good (link-path 1 "related" 2))
+                (as (list (call #f bad-type) (call #f self) (call #f good (match-h 1))
+                          (call 9 bad-type) (call 9 self) (call 9 good (match-h 1)))))
+           (append (map status+code as) (list ((rig-jobs g))))))))))
+
+(test-equal "link: ids in capitals are the same ids: a PUT is 201 and answers them in lower case, the row is the link's; a DELETE in capitals is 204; a GET in capitals lists it"
+  (list 201 (link-json 1 "related" 2 now0) (list (link-row acct-a 1 "related" 2 now0))
+        (list (cons "related" (nid-text 2))) 204 '())
+  (attempt
+   (lambda ()
+     (with-rig "link-upper.db"
+       (lambda (g)
+         (seed-state! g acct-a 1 "note" 'active)
+         (seed-state! g acct-a 2 "note" 'active)
+         (let* ((up (lambda (n) (string-upcase (nid-text n))))
+                (path (link-path-of (up 1) "related" (up 2)))
+                (a ((rig-call g) 'PUT path (list (key-h 1))))
+                (rows (link-rows g))
+                (l (get! g 1 (links-path-of (up 1))))
+                (d ((rig-call g) 'DELETE path (list (key-h 1)))))
+           (list (answer-status a) (answer-json a) rows (map item-of (items l)) (answer-status d)
+                 (link-rows g))))))))
+
+(test-equal "link: POST, GET and HEAD on one link are 405, allow PUT, DELETE; PUT, POST and DELETE on a node's links 405, allow GET, HEAD; no job"
+  '((405 "method_not_allowed" "PUT, DELETE") (405 "method_not_allowed" "PUT, DELETE")
+    (405 #f "PUT, DELETE")
+    (405 "method_not_allowed" "GET, HEAD") (405 "method_not_allowed" "GET, HEAD")
+    (405 "method_not_allowed" "GET, HEAD")
+    0)
+  (attempt
+   (lambda ()
+     (with-rig "link-405.db"
+       (lambda (g)
+         (seed-state! g acct-a 1 "note" 'active)
+         (seed-state! g acct-a 2 "note" 'active)
+         (let ((shape (lambda (a) (list (answer-status a)
+                                        (let ((c (member-of (answer-json a) "code"))) (if (eq? c 'absent) #f c))
+                                        (answer-header a "allow")))))
+           (let* ((one (in-order (lambda (m) (shape ((rig-call g) m (link-path 1 "related" 2)
+                                                           (list (key-h 1)))))
+                                 '(POST GET HEAD)))
+                  (all (in-order (lambda (m) (shape ((rig-call g) m (links-path 1) (list (key-h 1)))))
+                                 '(PUT POST DELETE))))
+             (append one all (list ((rig-jobs g)))))))))))
+
+;;; No body is read
+
+(test-equal "body: a PUT's body is not read: text/plain, or JSON that does not parse, and the answer is the bytes a PUT with none gets, 201; a DELETE with a body is 204"
+  '(201 #t 204)
+  (attempt
+   (lambda ()
+     (let ((made (lambda (name more)
+                   (with-rig name
+                     (lambda (g)
+                       (seed-state! g acct-a 1 "note" 'active)
+                       (seed-state! g acct-a 2 "note" 'active)
+                       (let ((a (apply link! g 1 1 "related" 2 more)))
+                         (list (answer-status a) (answer-body a))))))))
+       (let ((none (made "link-body-none.db" '()))
+             (plain (made "link-body-plain.db" (list (list (cons "Content-Type" "text/plain")) "not json at all")))
+             (broken (made "link-body-json.db" (list (list json-type) "{nope"))))
+         (list (car plain)
+               (and (equal? none plain) (equal? none broken))
+               (with-rig "unlink-body.db"
+                 (lambda (g)
+                   (seed-state! g acct-a 1 "note" 'active)
+                   (seed-state! g acct-a 2 "note" 'active)
+                   (seed-link! g acct-a 1 "related" 2 2 7000)
+                   (answer-status (unlink! g 1 1 "related" 2 (list json-type) "{nope"))))))))))
+
+(test-equal "body: a PUT's head alone, a Content-Length of 2 MB and no byte of the body sent, is answered at once, 201, in its one write job, and the connection is ended: no body is waited for"
+  (list '(201) #f #t '(write))
+  (attempt
+   (lambda ()
+     (with-rig "link-head.db"
+       (lambda (g)
+         (seed-state! g acct-a 1 "note" 'active)
+         (seed-state! g acct-a 2 "note" 'active)
+         (let-values (((answers waiting? closed?)
+                       (exchange-steps (rig-handler g)
+                                       (list (request-bytes 'PUT (link-path 1 "related" 2)
+                                                            (list (key-h 1) json-type
+                                                                  (cons "Content-Length" "2000000")))))))
+           (list (map answer-status answers) waiting? closed? ((rig-order g)))))))))
+
+(test-equal "body: a DELETE's head alone and a GET's, each a Content-Length of 2 MB and no byte of the body sent, are answered at once, 204 and 200, each in its one job, and the connection ended; a GET with a body that does not parse is the page as without one"
+  (list (list '(204) #f #t '(write)) (list '(200) #f #t '(read)) '(200 #t))
+  (attempt
+   (lambda ()
+     (let ((head-alone (lambda (name method path)
+                         (with-rig name
+                           (lambda (g)
+                             (seed-state! g acct-a 1 "note" 'active)
+                             (seed-state! g acct-a 2 "note" 'active)
+                             (seed-link! g acct-a 1 "related" 2 2 7000)
+                             (let-values (((answers waiting? closed?)
+                                           (exchange-steps (rig-handler g)
+                                                           (list (request-bytes method path
+                                                                                (list (key-h 1) json-type
+                                                                                      (cons "Content-Length" "2000000")))))))
+                               (list (map answer-status answers) waiting? closed? ((rig-order g)))))))))
+       (list (head-alone "unlink-head.db" 'DELETE (link-path 1 "related" 2))
+             (head-alone "links-head.db" 'GET (links-path 1))
+             (with-rig "links-body.db"
+               (lambda (g)
+                 (seed-state! g acct-a 1 "note" 'active)
+                 (seed-state! g acct-a 2 "note" 'active)
+                 (seed-link! g acct-a 1 "related" 2 2 7000)
+                 (let* ((a ((rig-call g) 'GET (links-path 1) (list (key-h 1) json-type) "{nope"))
+                        (b (links-get g 1 1 "")))
+                   (list (answer-status a) (equal? (answer-body a) (answer-body b)))))))))))
+
+;;; Jobs and the log
+
+(test-equal "job: a link's job and an unlink's hold plain data: no request, no parsed JSON"
+  '(201 #f 204 #f)
+  (attempt
+   (lambda ()
+     (with-rig "job-link.db"
+       (lambda (g)
+         (seed-state! g acct-a 1 "note" 'active)
+         (seed-state! g acct-a 2 "note" 'active)
+         (let* ((a (link! g 1 1 "related" 2))
+                (ja ((rig-job g)))
+                (b (unlink! g 1 1 "related" 2))
+                (jb ((rig-job g))))
+           (list (answer-status a) (reaches? ja req-like?)
+                 (answer-status b) (reaches? jb req-like?))))))))
+
+(test-equal "log: each link request's line names its route, its path with no query string, and the account, a refusal's too; none holds a title or a body"
+  (list '(201 200 409 404 204 404 200 404) 8 #t (repeat 8 #t) #f #f #f)
+  (attempt
+   (lambda ()
+     (with-rig "log-link.db"
+       (lambda (g)
+         (for-each (lambda (n)
+                     (run-write (rig-store g)
+                                (lambda (tx) (insert-node! tx (nid n) acct-a "note" "secret-title-6"
+                                                           "secret-body-6" "text/plain" "{}" #f 5000))))
+                   '(1 2 3))
+         (set-state-at! g acct-a 3 1 "trashed" "trash")
+         (let* ((as (in-order (lambda (send) (send))
+                              (list (lambda () (link! g 1 1 "related" 2))
+                                    (lambda () (link! g 1 1 "related" 2))
+                                    (lambda () (link! g 1 1 "related" 3))
+                                    (lambda () (link! g 1 1 "related" 4))
+                                    (lambda () (unlink! g 1 1 "related" 2))
+                                    (lambda () (unlink! g 1 1 "related" 2))
+                                    (lambda () (links-get g 1 1 "direction=in&type=related"))
+                                    (lambda () (links-get g 1 4 "")))))
+                (lines ((rig-lines g)))
+                (text (apply string-append lines))
+                (paths (list (link-path 1 "related" 2) (link-path 1 "related" 2) (link-path 1 "related" 3)
+                             (link-path 1 "related" 4) (link-path 1 "related" 2) (link-path 1 "related" 2)
+                             (links-path 1) (links-path 4))))
+           (list (map answer-status as) (length lines)
+                 (for-all (lambda (l) (contains? l (string-append "account=" (id->string acct-a)))) lines)
+                 (map (lambda (l p) (contains? l (string-append "path=" p " "))) lines paths)
+                 (contains? text "?")
+                 (contains? text "secret-title-6") (contains? text "secret-body-6"))))))))
+
+
+(test-equal "link: a DELETE's 204 has no body, and its headers whole are the date alone: no content-type, etag or location"
+  (list 204 "" (list (cons "date" "Thu, 01 Jan 1970 00:00:00 GMT")))
+  (attempt
+   (lambda ()
+     (with-rig "link-204.db"
+       (lambda (g)
+         (seed-state! g acct-a 1 "note" 'active)
+         (seed-state! g acct-a 2 "note" 'active)
+         (let* ((p (link! g 1 1 "related" 2))
+                (d (unlink! g 1 1 "related" 2)))
+           (list (answer-status d) (answer-body d) (answer-headers d))))))))
+
+;; stepping-wall : -> (-> Natural)     a wall clock that steps by 1000 on each read
+(define (stepping-wall)
+  (let ((t (- now0 1000)))
+    (lambda () (set! t (+ t 1000)) t)))
+
+;; The key's last_used is written by (techo auth) from the now db-write-as
+;; is handed, so it is held with the others: all of them one read. A key's
+;; first write sets it, so each request is the first of its own file.
+(test-equal "time: a link's PUT reads the wall clock once: the link's created, its change row's time and the key's last_used are one time"
+  (list #t #t #t)
+  (attempt
+   (lambda ()
+     (with-rig-wall "link-time-put.db" stepping-wall
+       (lambda (g)
+         (seed-state! g acct-a 1 "note" 'active)
+         (seed-state! g acct-a 2 "note" 'active)
+         (let* ((p (link! g 1 1 "related" 2))
+                (c (member-of (answer-json p) "created"))
+                (row (car (reverse (change-rows g acct-a)))))
+           (list (equal? (list-ref row 3) "link") (= c (list-ref row 4)) (= c (last-used g 1)))))))))
+
+(test-equal "time: a link's DELETE reads the wall clock once: the unlink row's time and the key's last_used are one time"
+  (list #t #t)
+  (attempt
+   (lambda ()
+     (with-rig-wall "link-time-del.db" stepping-wall
+       (lambda (g)
+         (seed-state! g acct-a 1 "note" 'active)
+         (seed-state! g acct-a 2 "note" 'active)
+         (seed-link! g acct-a 1 "related" 2 2 3000)
+         (let* ((d (unlink! g 1 1 "related" 2))
+                (row (car (reverse (change-rows g acct-a)))))
+           (list (equal? (list-ref row 3) "unlink") (and (last-used g 1) (= (list-ref row 4) (last-used g 1))))))))))
 (test-end "node-routes")
 
 (exit (suite-exit-status runner))

@@ -970,8 +970,8 @@
 (define first-only (list (car migrations)))
 
 ;; objects in the shipped schema: accounts, api_keys, the index, and the
-;; automatic indexes of the primary and unique keys, then migration 3, and migration 5's index (counted from sqlite_schema: 15).
-(define shipped-objects 15)
+;; automatic indexes of the primary and unique keys, then migration 3, migration 5's index, and migration 6's two (a WITHOUT ROWID table's key has no row of its own; counted from sqlite_schema: 17).
+(define shipped-objects 17)
 
 (let ((p (path "m-missing.db")))
   (clean! p)
@@ -1360,7 +1360,7 @@
 (let ((p (path "m-v3.db")))
   (clean! p)
   (test-equal "migration 4: a file at version 3 holding nodes with snapshots migrates to 4; every node is active and still reads its body"
-    (list '(applied (4 5) #f 5)
+    (list '(applied (4 5 6) #f 6)
           '((1 "active" "first v2") (2 "active" "second v1"))
           '(constraint ok))
     (attempt
@@ -1393,7 +1393,7 @@
 (let ((p (path "m-v4.db")))
   (clean! p)
   (test-equal "migration 5: a file at version 4 holding nodes with snapshots migrates to 5; every parent is NULL and every node still reads its body"
-    (list '(applied (5) #f 5)
+    (list '(applied (5 6) #f 6)
           '((1 1 "first v2") (2 1 "second v1"))
           '(constraint constraint ok))
     (attempt
@@ -1421,6 +1421,44 @@
                              (refused-kind db "UPDATE nodes SET parent = x'0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c' WHERE num = 1")
                              (refused-kind db "UPDATE nodes SET parent = x'0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b' WHERE num = 1"))))))
          (list (list (car r) (cadr r) (caddr r) (cadddr r)) got bad))))))
+
+;;; migration 6
+
+(let ((p (path "m-v5.db")))
+  (clean! p)
+  (test-equal "migration 6: a file at version 5 holding nodes migrates to 6; it has no links, the table and its index are there, and the key, the foreign keys and STRICT hold"
+    (list '(applied (6) #f 6)
+          0
+          '(("links" "table") ("links_target" "index"))
+          '(constraint constraint constraint constraint ok constraint))
+    (attempt
+     (lambda ()
+       (migrate! p (list (car migrations) (cadr migrations) (caddr migrations) (cadddr migrations) (list-ref migrations 4)))
+       (with-db (plain p)
+         (lambda (db)
+           (execute! db "PRAGMA foreign_keys = off")
+           (execute! db "INSERT INTO accounts(id, username, email, password_hash, created) VALUES (x'01010101010101010101010101010101', 'a', 'a@x', 'h', 1)")
+           (execute! db "INSERT INTO nodes(id, owner, author, kind, title, content_type, props, revision, created, updated) VALUES (x'0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a', x'01010101010101010101010101010101', x'01010101010101010101010101010101', 'note', 't1', 'text/plain', '{}', 1, 1, 1)")
+           (execute! db "INSERT INTO nodes(id, owner, author, kind, title, content_type, props, revision, created, updated) VALUES (x'0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b', x'01010101010101010101010101010101', x'01010101010101010101010101010101', 'note', 't2', 'text/plain', '{}', 1, 1, 1)")))
+       (let* ((r (migrate! p migrations))
+              (got (with-db (open-techo-db p 'read-only)
+                     (lambda (db)
+                       (list (vector-ref (car (query db "SELECT count(*) FROM links")) 0)
+                             (rows db "SELECT name, type FROM sqlite_schema WHERE name LIKE 'links%' AND name NOT LIKE 'sqlite_%' ORDER BY name")))))
+              (ins "INSERT INTO links(owner, source, type, target, created) VALUES (?, ?, ?, ?, 1)")
+              (acct (make-bytevector 16 1))
+              (n1 (make-bytevector 16 10))
+              (n2 (make-bytevector 16 11))
+              (nx (make-bytevector 16 12))
+              (bad (with-db (open-techo-db p 'read-write 0)
+                     (lambda (db)
+                       (list (refused-kind db ins acct nx "related" n2)
+                             (refused-kind db ins acct n1 "related" nx)
+                             (refused-kind db ins (make-bytevector 16 9) n1 "related" n2)
+                             (refused-kind db "INSERT INTO links(owner, source, type, target, created) VALUES (?, ?, NULL, ?, 1)" acct n1 n2)
+                             (refused-kind db ins acct n1 "related" n2)
+                             (refused-kind db ins acct n1 "related" n2))))))
+         (list (list (car r) (cadr r) (caddr r) (cadddr r)) (car got) (cadr got) bad))))))
 
 ;;; wal-size-limit
 

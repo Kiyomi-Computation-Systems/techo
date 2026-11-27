@@ -9,12 +9,15 @@
 ;;;   the linear rule   a request at the cap, whatever its members, is quick (H13)
 ;;;   a move's body     and the list's ?parent= (slice 5a)
 ;;;   the table         D5's table, checked exhaustively, every cell stepped (H7)
-;;;   the lifecycle     slice 4b's table with 5a's two events, every cell stepped (G1)
+;;;   the lifecycle     slice 4b's table with 5a's two events and 5b's two,
+;;;                     every cell stepped (G1)
 ;;;   the tree          what may hold what, the verdict on a new parent, which
 ;;;                     children a bulk move takes, every combination (T2, T5, T8, P18)
 ;;;   node-command      the two tables, the verdict and the children answer one
-;;;                     request, every cell (G5, G15, P6, P17)
-;;;   states and events the store's names, ?state= and the feed's ops
+;;;                     request, every cell; link and unlink are not its (G5,
+;;;                     G15, P6, P17, Q19)
+;;;   states and events the store's names, ?state=, the two lists of events
+;;;                     and the feed's ops
 ;;;   the diagrams      .plans/machines/write.md and lifecycle.md are what the tables render
 ;;;
 ;;; Everything that can raise is computed under `attempt`, and a raise comes
@@ -885,13 +888,15 @@
 ;;; The lifecycle's table (slice 4b, G1)
 
 (define life-states '(active archived trashed purged))
-(define life-events '(archive unarchive trash untrash purge write move move-children))
+(define life-events '(archive unarchive trash untrash purge write move move-children link unlink))
 
 ;; The table the owner approved, written out here, not read from
 ;; lifecycle-rows: (state event next command) for a row, (state event) for a
 ;; cell that cannot happen. In the table's order. Slice 5a's two events
 ;; (T8, the review's blocker 3): move is refused for a trashed node, and
-;; move-children allowed in every state.
+;; move-children allowed in every state. Slice 5b's two (K6, the review's
+;; blocker 5): link is refused for a trashed node, and unlink allowed in
+;; every state.
 (define lifecycle-table
   '((active archive archived set-state)
     (active unarchive active refuse-wrong-state)
@@ -901,6 +906,8 @@
     (active write active allow)
     (active move active allow)
     (active move-children active allow)
+    (active link active allow)
+    (active unlink active allow)
     (archived archive archived refuse-wrong-state)
     (archived unarchive active set-state)
     (archived trash trashed set-state)
@@ -909,6 +916,8 @@
     (archived write archived allow)
     (archived move archived allow)
     (archived move-children archived allow)
+    (archived link archived allow)
+    (archived unlink archived allow)
     (trashed archive trashed refuse-wrong-state)
     (trashed unarchive trashed refuse-wrong-state)
     (trashed trash trashed refuse-wrong-state)
@@ -917,6 +926,8 @@
     (trashed write trashed refuse-wrong-state)
     (trashed move trashed refuse-wrong-state)
     (trashed move-children trashed allow)
+    (trashed link trashed refuse-wrong-state)
+    (trashed unlink trashed allow)
     (purged archive)
     (purged unarchive)
     (purged trash)
@@ -924,7 +935,9 @@
     (purged purge)
     (purged write)
     (purged move)
-    (purged move-children)))
+    (purged move-children)
+    (purged link)
+    (purged unlink)))
 
 (define (lifecycle-problems rows)
   (attempt (lambda () (machine-problems (make-machine rows) '(active) '(purged)
@@ -934,8 +947,8 @@
   '()
   (lifecycle-problems lifecycle-rows))
 
-(test-equal "lifecycle: twenty-four rows, three states by eight events"
-  24
+(test-equal "lifecycle: thirty rows, three states by ten events"
+  30
   (attempt (lambda () (length lifecycle-rows))))
 
 (test-equal "lifecycle: the rows are exactly the table's, in its order"
@@ -943,12 +956,12 @@
   (attempt (lambda () (map (lambda (r) (list (car r) (cadr r) (caddr r) (cadddr r)))
                            lifecycle-rows))))
 
-(test-equal "lifecycle: the can't-happen pairs are purged's eight, in the table's order"
+(test-equal "lifecycle: the can't-happen pairs are purged's ten, in the table's order"
   (filter (lambda (c) (= (length c) 2)) lifecycle-table)
   (attempt (lambda () (map (lambda (c) (list (car c) (cadr c))) lifecycle-cant-happen))))
 
 (test-equal "lifecycle: every can't-happen pair has a reason, a non-empty string"
-  '(#t #t #t #t #t #t #t #t)
+  '(#t #t #t #t #t #t #t #t #t #t)
   (attempt (lambda ()
              (map (lambda (c) (and (string? (caddr c)) (> (string-length (caddr c)) 0)))
                   lifecycle-cant-happen))))
@@ -990,7 +1003,7 @@
             (#t (list 'raised (describe x))))
     (call-with-values (lambda () (lifecycle-step s e)) list)))
 
-;; Every one of the 32 cells, by construction: a cell the table above lacks
+;; Every one of the 40 cells, by construction: a cell the table above lacks
 ;; expects what no step answers.
 (for-each
  (lambda (s)
@@ -1202,8 +1215,12 @@
 ;;; node-command: the two tables, the verdict and the children answer one
 ;;; request (slice 4b, G5, G15; slice 5a, P6, P17)
 
+;; link and unlink are the lifecycle table's events but no request's to
+;; node-command: link-command answers them (the review's blocker 5, Q19), so
+;; every cell of theirs here cannot happen.
 (define request-events '(create replace replace-other-kind restore restore-unknown
-                         archive unarchive trash untrash purge move move-children))
+                         archive unarchive trash untrash purge move move-children
+                         link unlink))
 (define request-states '(#f active archived trashed purged))
 (define verdicts '(ok missing trashed loop wrong-kind too-deep))
 
@@ -1224,38 +1241,51 @@
 (define node-command-table
   '((none
      (#f       (parent insert) refuse-404 X X refuse-404
-               refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404)
+               refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404
+               X X)
      (active   (parent insert) refuse-404 X X refuse-404
-               refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404)
+               refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404
+               X X)
      (archived (parent insert) refuse-404 X X refuse-404
-               refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404)
+               refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404
+               X X)
      (trashed  (parent insert) refuse-404 X X refuse-404
-               refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404)
+               refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404
+               X X)
      (purged   (parent insert) refuse-404 X X refuse-404
-               refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404))
+               refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404
+               X X))
     (match
-     (#f       X X X X X X X X X X X X)
+     (#f       X X X X X X X X X X X X X X)
      (active   X write refuse-409 copy refuse-404
                (set-state archived) refuse-wrong-state (set-state trashed)
-               refuse-wrong-state refuse-wrong-state (parent move) (parent move-children))
+               refuse-wrong-state refuse-wrong-state (parent move) (parent move-children)
+               X X)
      (archived X write refuse-409 copy refuse-404
                refuse-wrong-state (set-state active) (set-state trashed)
-               refuse-wrong-state refuse-wrong-state (parent move) (parent move-children))
+               refuse-wrong-state refuse-wrong-state (parent move) (parent move-children)
+               X X)
      (trashed  X refuse-wrong-state refuse-wrong-state refuse-wrong-state refuse-wrong-state
                refuse-wrong-state refuse-wrong-state refuse-wrong-state
-               (set-state active) (children purge) refuse-wrong-state (parent move-children))
-     (purged   X X X X X X X X X X X X))
+               (set-state active) (children purge) refuse-wrong-state (parent move-children)
+               X X)
+     (purged   X X X X X X X X X X X X X X))
     (differ
      (#f       refuse-412 refuse-412 refuse-412 refuse-412 refuse-412 refuse-412
-               refuse-412 refuse-412 refuse-412 refuse-412 refuse-412 refuse-412)
+               refuse-412 refuse-412 refuse-412 refuse-412 refuse-412 refuse-412
+               X X)
      (active   refuse-412 refuse-412 refuse-412 refuse-412 refuse-412 refuse-412
-               refuse-412 refuse-412 refuse-412 refuse-412 refuse-412 refuse-412)
+               refuse-412 refuse-412 refuse-412 refuse-412 refuse-412 refuse-412
+               X X)
      (archived refuse-412 refuse-412 refuse-412 refuse-412 refuse-412 refuse-412
-               refuse-412 refuse-412 refuse-412 refuse-412 refuse-412 refuse-412)
+               refuse-412 refuse-412 refuse-412 refuse-412 refuse-412 refuse-412
+               X X)
      (trashed  refuse-412 refuse-412 refuse-412 refuse-412 refuse-412 refuse-412
-               refuse-412 refuse-412 refuse-412 refuse-412 refuse-412 refuse-412)
+               refuse-412 refuse-412 refuse-412 refuse-412 refuse-412 refuse-412
+               X X)
      (purged   refuse-412 refuse-412 refuse-412 refuse-412 refuse-412 refuse-412
-               refuse-412 refuse-412 refuse-412 refuse-412 refuse-412 refuse-412))))
+               refuse-412 refuse-412 refuse-412 refuse-412 refuse-412 refuse-412
+               X X))))
 
 ;; expected-command : Found (U Symbol #f) Symbol Symbol Boolean -> Any
 ;; The table's entry for the cell, with the verdict V and the children C, as
@@ -1291,7 +1321,7 @@
             (#t (list 'raised (describe x))))
     (call-with-values (lambda () (node-command f s e v c)) list)))
 
-;; Every one of the 2,160 cells, by construction: 3 Founds, 5 states, 12
+;; Every one of the 2,520 cells, by construction: 3 Founds, 5 states, 14
 ;; events, 6 verdicts, and with children or without.
 (for-each
  (lambda (f)
@@ -1448,18 +1478,31 @@
  (list "purged" "" "Active" "ARCHIVED" "Trashed" " active" "active " "trash" "archive"
        "deleted" "active,archived" 7 'active))
 
-(test-equal "events: the five a state change sends, in the table's order"
+(test-equal "events: the five a state change sends, in the table's order; no link among them"
   '(archive unarchive trash untrash purge)
   (attempt (lambda () lifecycle-events)))
 
-(test-equal "event-op: each event's op in the feed is its own name, and a move's is move"
-  '("archive" "unarchive" "trash" "untrash" "purge" "move")
-  (attempt (lambda () (map event-op '(archive unarchive trash untrash purge move)))))
+(test-equal "link-events: the two a link's request sends, in the table's order"
+  '(link unlink)
+  (attempt (lambda () link-events)))
+
+(test-equal "link-events: neither is node-command's: each cannot happen, whatever was found"
+  '((cannot-happen cannot-happen cannot-happen cannot-happen)
+    (cannot-happen cannot-happen cannot-happen cannot-happen))
+  (attempt (lambda ()
+             (map (lambda (e)
+                    (list (commanded 'none #f e 'ok #f) (commanded 'match 'active e 'ok #f)
+                          (commanded 'match 'trashed e 'ok #f) (commanded 'differ 'active e 'ok #f)))
+                  link-events))))
+
+(test-equal "event-op: each event's op in the feed is its own name, a move's is move, a link's link and unlink"
+  '("archive" "unarchive" "trash" "untrash" "purge" "move" "link" "unlink")
+  (attempt (lambda () (map event-op '(archive unarchive trash untrash purge move link unlink)))))
 
 (test-equal "event-op: a write's events, the table's write, a bulk move and what is no event raise"
-  '(assertion assertion assertion assertion assertion assertion)
+  '(assertion assertion assertion assertion assertion assertion assertion assertion)
   (map (lambda (x) (raised-kind (lambda () (event-op x))))
-       (list 'create 'replace 'write 'move-children "archive" #f)))
+       (list 'create 'replace 'write 'move-children "archive" #f "link" 'keep)))
 
 ;;; The diagram, held to its file
 
@@ -1495,20 +1538,21 @@
   (read-file ".plans/machines/lifecycle.md"))
 
 (test-equal "the lifecycle document shows the diagram and every cell's answer"
-  '(#t #t #t #t #t #t #t #t #t #t #t)
+  '(#t #t #t #t #t #t #t #t #t #t #t #t)
   (let ((doc (attempt (lambda () (lifecycle-document)))))
     (map (lambda (needle) (and (string? doc) (string-index-of doc needle) #t))
          (list "stateDiagram-v2"
                "trashed --> purged: purge"
-               "active --> active: unarchive, untrash, purge, write, move, move-children"
-               "archived --> archived: archive, untrash, purge, write, move, move-children"
-               "trashed --> trashed: archive, unarchive, trash, write, move, move-children"
-               "| State | archive | unarchive | trash | untrash | purge | write | move | move-children |"
-               "| active | -> archived, set-state | refuse-wrong-state | -> trashed, set-state | refuse-wrong-state | refuse-wrong-state | allow | allow | allow |"
-               "| archived | refuse-wrong-state | -> active, set-state | -> trashed, set-state | refuse-wrong-state | refuse-wrong-state | allow | allow | allow |"
-               "| trashed | refuse-wrong-state | refuse-wrong-state | refuse-wrong-state | -> active, set-state | -> purged, purge | refuse-wrong-state | refuse-wrong-state | allow |"
-               "| purged | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen |"
-               "`node-command`"))))
+               "active --> active: unarchive, untrash, purge, write, move, move-children, link, unlink\n"
+               "archived --> archived: archive, untrash, purge, write, move, move-children, link, unlink\n"
+               "trashed --> trashed: archive, unarchive, trash, write, move, move-children, link, unlink\n"
+               "| State | archive | unarchive | trash | untrash | purge | write | move | move-children | link | unlink |\n"
+               "| active | -> archived, set-state | refuse-wrong-state | -> trashed, set-state | refuse-wrong-state | refuse-wrong-state | allow | allow | allow | allow | allow |\n"
+               "| archived | refuse-wrong-state | -> active, set-state | -> trashed, set-state | refuse-wrong-state | refuse-wrong-state | allow | allow | allow | allow | allow |\n"
+               "| trashed | refuse-wrong-state | refuse-wrong-state | refuse-wrong-state | -> active, set-state | -> purged, purge | refuse-wrong-state | refuse-wrong-state | allow | refuse-wrong-state | allow |\n"
+               "| purged | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen |\n"
+               "`node-command`"
+               "`link-command` in `(techo links)`"))))
 
 (test-equal "the lifecycle document gives each verdict its answer"
   '(#t #t #t #t #t #t #t)
@@ -1523,7 +1567,7 @@
                "| too-deep | refuse-invalid-parent |"))))
 
 (test-equal "the lifecycle document gives each can't-happen pair its reason"
-  '(#t #t #t #t #t #t #t #t)
+  '(#t #t #t #t #t #t #t #t #t #t)
   (attempt
    (lambda ()
      (let ((doc (lifecycle-document)))

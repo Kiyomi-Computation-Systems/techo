@@ -56,4 +56,14 @@
     ("ALTER TABLE nodes ADD COLUMN state TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active','archived','trashed','purged'))"))
  (5 "a node's parent"
     ("ALTER TABLE nodes ADD COLUMN parent BLOB REFERENCES nodes(id) CHECK (parent IS NULL OR length(parent) = 16)"
-     "CREATE INDEX nodes_parent ON nodes(owner, parent, id)")))
+     "CREATE INDEX nodes_parent ON nodes(owner, parent, id)"))
+ (6 "links"
+    ("CREATE TABLE links (
+  owner   BLOB    NOT NULL REFERENCES accounts(id),
+  source  BLOB    NOT NULL REFERENCES nodes(id),
+  target  BLOB    NOT NULL REFERENCES nodes(id),
+  type    TEXT    NOT NULL,
+  created INTEGER NOT NULL,
+  PRIMARY KEY (owner, source, type, target)
+) STRICT, WITHOUT ROWID"
+     "CREATE INDEX links_target ON links(owner, target, type, source)")))
