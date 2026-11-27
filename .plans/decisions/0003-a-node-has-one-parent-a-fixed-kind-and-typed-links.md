@@ -90,3 +90,27 @@ Plan: [slice 5b](../2026-11-26-slice-5b-links.md)
    with the other node's state.
 5. **A purge removes the node's links, both ways.** Links do not block it, and
    nothing caps how many a node has.
+
+## Amendment, 2026-11-27: each kind's props
+
+Status: accepted (owner, 2026-11-27, as slice 6's P2 to P5, P8, P9 and P13)
+Plan: [slice 6](../2026-11-27-slice-6-kinds-and-props.md)
+
+1. **Each kind has a fixed set of props,** checked before any write, stored in
+   one canonical form of at most 4,096 bytes. This replaces "props must be
+   `{}`" in the first amendment.
+2. **Props only grow.** A member is only ever added, optional, with a default,
+   last in its object. None is removed, renamed or made required, and no
+   value's rule is tightened: an old snapshot must still restore, and an old
+   client must be able to send back what it does not know.
+3. **A Project and a Journal have none.** **A Note** may have `at`, a When.
+   This replaces point 6's "carries a timestamp": a Journal's Note need not.
+4. **A Task** has `status`, `closed`, `deadline` and `scheduled`. One stored
+   before this, as `{}`, reads as `TODO`: no migration.
+5. **A Contact is a subset of JSContact (RFC 9553),** its names and shapes
+   exactly: `kind`, `name`, `organizations`, `titles`, `emails`, `phones`,
+   `addresses`, `anniversaries`, `links`, `onlineServices`, `speakToAs`. This
+   settles point 8. Techo refuses a member it does not know, so it is no
+   JSContact processor. A country code is two capitals, not checked further.
+6. **The cap is raised when real use asks.** Past about 8 KiB the fix is a
+   migration that puts `props` last in `nodes`, or in its own table.

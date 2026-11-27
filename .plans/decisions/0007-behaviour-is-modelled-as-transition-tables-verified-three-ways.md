@@ -82,3 +82,15 @@ Plan: [slice 5b](../2026-11-26-slice-5b-links.md)
   that is there is kept before a state is asked.
 - **The handler performs the command it names,** and reads whether the link is
   there before it writes: the write's own count decides no answer.
+
+## Amendment, 2026-11-27: the task's table
+
+Status: accepted (owner, 2026-11-27, as slice 6's P7)
+Plan: [slice 6](../2026-11-27-slice-6-kinds-and-props.md)
+
+- **A Task's status is a table:** `TODO`, `DONE`, `WONTDO`, by `done`,
+  `wontdo` and `reopen`. Every move between two different statuses is allowed.
+  It has no end. It is [machines/task.md](../machines/task.md).
+- **A third pure function, `task-command`, answers a transition.** It asks
+  `node-command` as for a replace, then the kind, then this table: 404, 412,
+  `wrong_state`, `not_a_task`, `wrong_status`.

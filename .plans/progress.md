@@ -70,9 +70,11 @@ close-out under **Close-outs**, newest first.
 
 ## Next
 
-**Slice 6: kinds and props; task transitions.** Not planned yet.
+**Slice 6: kinds and props; task transitions.**
+[Planned](2026-11-27-slice-6-kinds-and-props.md): the owner decided P1 to P9
+on 2026-11-27. Not built.
 
-**Slice 5b is built,** on `slice-5b-links`, not merged: migration 6, three
+**Slice 5b is merged** (#20, `25ad3b2`): migration 6, three
 link routes ([the plan](2026-11-26-slice-5b-links.md); ADR-0002, ADR-0003,
 ADR-0004 and ADR-0007, amended 2026-11-26). A person can now link one note to
 another and read a note's backlinks.
@@ -154,8 +156,8 @@ by a Journal (409 `invalid_parent`), a Project refused under its own child (409
 | 4 | Node create, read, update; revisions; `If-Match` | merged, #15 | |
 | 4b | The node lifecycle: archive, trash, purge | merged, #18 | |
 | 5a | The tree and move | merged, #19 | |
-| 5b | Links | built, on `slice-5b-links` | |
-| 6 | Kinds and props; task transitions | not planned | |
+| 5b | Links | merged, #20 | |
+| 6 | Kinds and props; task transitions | planned, on `slice-6-kinds-and-props` | |
 | 7 | Tags and search | not planned | |
 | 8 | The change feed | not planned | |
 | 9 | Docker image and backup | not planned | |
@@ -194,7 +196,7 @@ From [outline.md](outline.md) §14, each for the slice named:
 
 ## Close-outs
 
-### Slice 5b: links (built 2026-11-27)
+### Slice 5b: links (merged 2026-11-27, #20)
 
 - **Built:** migration 6 (`links`, `links_target`); a new pure `(techo links)`
   with `link-command`; two events more in the lifecycle's table; nine
