@@ -188,25 +188,28 @@
   ;; t, by the primary key from the cursor (nodes-page binds the rarest tag
   ;; there), then each other tag by the key, then the node by its id; 'top
   ;; adds parent IS NULL. 'of drives from nodes_parent, the node's children
-  ;; from the cursor, and asks each tag of each child by the key. Arguments:
-  ;; owner, state, cursor, [parent for 'of], the K tags, the limit.
+  ;; from the cursor, and asks each tag of each child by the key. Every
+  ;; index but t's key is named (INDEXED BY): left to choose, SQLite 3.45.1
+  ;; sorted nodes-tagged-10 and nodes-tagged-top-9 in a temp b-tree
+  ;; (traps.md). Arguments: owner, state, cursor, [parent for 'of], the K
+  ;; tags, the limit.
   (define (tagged-page-sql k mode)
     (let* ((others (let loop ((j (- k 1)) (acc '()))
                      (if (= j 0) acc (loop (- j 1) (cons (string-append "u" (number->string j)) acc)))))
            (key (if (eq? mode 'of) "n.id" "t.node"))
            (owner (if (eq? mode 'of) "n.owner" "t.owner"))
            (joins (apply string-append
-                         (map (lambda (u) (string-append " CROSS JOIN node_tags " u)) others)))
+                         (map (lambda (u) (string-append " CROSS JOIN node_tags " u " INDEXED BY node_tags_node")) others)))
            (terms (apply string-append
                          (map (lambda (u) (string-append " AND " u ".owner = " owner " AND " u ".tag = ? AND "
                                                          u ".node = " key))
                               others))))
       (if (eq? mode 'of)
-          (string-append "SELECT " node-small " FROM nodes n CROSS JOIN node_tags t" joins
+          (string-append "SELECT " node-small " FROM nodes n INDEXED BY nodes_parent CROSS JOIN node_tags t INDEXED BY node_tags_node" joins
                          " WHERE n.owner = ? AND n.state = ? AND n.state <> 'purged' AND n.id > ?"
                          " AND n.parent = ? AND t.owner = n.owner AND t.tag = ? AND t.node = n.id"
                          terms " ORDER BY n.id LIMIT ?")
-          (string-append "SELECT " node-small " FROM node_tags t" joins " CROSS JOIN nodes n"
+          (string-append "SELECT " node-small " FROM node_tags t" joins " CROSS JOIN nodes n INDEXED BY nodes_owner"
                          " WHERE t.owner = ? AND n.state = ? AND n.state <> 'purged' AND t.node > ?"
                          " AND t.tag = ?" terms
                          " AND n.id = t.node AND n.owner = t.owner"

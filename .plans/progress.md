@@ -72,7 +72,7 @@ close-out under **Close-outs**, newest first.
 
 **Slice 7a: tags.** [Built](2026-11-27-slice-7a-tags.md) on `slice-7a-tags`:
 the owner decided S1 and G1 to G8 on 2026-11-27, and F1 to F6 on 2026-11-28
-after the build's review. Not merged; no Mac run yet.
+after the build's review. PR #23; run on the Mac (below). Not merged.
 
 **Slice 7b: search.** [Decided](2026-11-27-slice-7b-search.md), Q1 to Q7, with
 its measurements. Not planned further.
@@ -118,6 +118,22 @@ bound, 1024 bytes, is under its 64 KiB cap, so nothing changes.
 **Watch for:** the Akku index gaining chez-http-server 0.12.0 and a chez-websocket
 that admits it. That ends the server's submodule (ADR-0011, amended 2026-11-23).
 Nothing fails when it happens.
+
+**Run on the owner's Mac, 2026-11-28, before slice 7a's merge,** at `8db1085`,
+by the Mac helper session (SQLite 3.54.1, libsodium 1.0.22, both Homebrew's):
+`make test` passed 42 of 42 suites, and twenty-four steps against the server
+matched the container's answers line for line: three creates whose tags came
+back folded (`Work Space` and `WORK  space` as one `work-space`, an en dash
+as `a-b`, `日本` and `c++` kept); five refused tags, each 400 (a tab, a heart
+with U+FE0F, a lone accent, a private-use character, an unassigned one); a
+replace with no `tags` that kept them, `[]` that cleared them; the filter by
+one tag and by two; the tags' list, its page of one, and `after=c%2B%2B`; a
+rename of two nodes (`{"renamed":2,"left":0}`, the note at revision 5); a
+removal with `If-Match` refused (400), then 2 removed, then 0; a restore of
+revision 1 that brought `work-space` and `日本` back. **The Mac needs two
+exports before `make test`,** as README.org says: `CHEZ_SQLITE3_LIBRARY` and
+`CHEZ_SODIUM_LIBRARY`, each Homebrew's library. Without them 18 suites fail:
+12 find no libsodium, 6 fail on Apple's SQLite.
 
 **Run on the owner's Mac, by hand, 2026-11-27, before slice 5b's merge:**
 `make test` passed 36 of 36 suites, and twenty steps by hand against the
@@ -223,6 +239,36 @@ From [outline.md](outline.md) §14, each for the slice named:
 | The container's stop grace (30 s) and a check that asks more than `/health` | 9 |
 
 ## Close-outs
+
+### Slice 7a: tags (PR #23, 2026-11-28)
+
+- **Built:** two pure libraries, `(techo chars)` and `(techo tags)`; migration
+  7, `node_tags` and `revisions.tags`; four routes (`?tag=` on the list,
+  `GET /v1/tags`, `POST /v1/tags/rename` and `/remove`); `retag` in the
+  lifecycle table. Two new suites: 42. The model sends tags from a corpus
+  written by hand and runs about 38,800 requests in 50 s.
+- **Answered:** tags are node content, replaced whole, in every snapshot; one
+  stored form, folded by the server; 50 a node; no inheritance; a rename or
+  removal in steps of 500 with no snapshot (S1, G1 to G8, H2 to H6, F1 to F6).
+- **Moved on:** search, to slice 7b. Kept ready: tags as records with ids, if
+  renaming by steps proves too slow; ten statements more for a rare tag under
+  a huge parent.
+- **What the reviews caught that the builders could not:**
+  - the plan's: the fold needed a second NFKC; a sent tag needed a bound
+    before folding (a 2 MiB tag held the loop 2.5 to 7.5 s); the index did
+    not begin with the owner; the filter was 100 times slow in its bad cases;
+    a create with `tags` would have been refused;
+  - the build's: no bug, in 370 raced pairs and 106 mutants. Six kinds of tag
+    accepted that would have been frozen: unassigned code points, 22
+    invisible or blank ones, a leading combining mark, typographic dashes
+    kept apart from `-`, private use. All ruled on by the owner and built.
+    Two mutants no test caught, since only cost changed; five false sentences
+    in the guide.
+- **Run on the owner's Mac before the merge:** see "Run on the owner's Mac"
+  above.
+- **Learned:** a rule that must hold for stored data forever has to be checked
+  against the future of the tables it reads, not only today's. And a test of
+  "it is fast" needs the choice made pure, so the choice can be tested.
 
 ### Slice 6: kinds and props; task transitions (merged 2026-11-27, #22)
 

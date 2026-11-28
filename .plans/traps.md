@@ -480,6 +480,21 @@ it.
 - **Rule:** STRICT is no check of a value's JSON type. Where the type
   matters, check it: `json_type`, or the code.
 
+## An older SQLite sorts a join that needs no sort
+
+- **Seen:** the filter by tags joins `node_tags` once a tag, each join
+  `CROSS JOIN`, ordered by the first tag's key. SQLite 3.53 walks it in
+  order. SQLite 3.45.1 added `USE TEMP B-TREE FOR ORDER BY` to two of the
+  thirty statements, `nodes-tagged-10` and `nodes-tagged-top-9`, and to no
+  other: it would read every match before the first 51 (slice 7a's first CI
+  run; reproduced with a 3.45.1 built in `build/ci-sqlite/`). `CROSS JOIN`
+  fixes the order of the tables, not the index of each: with two indexes to
+  choose from at each of ten tables the planner lost track of the order.
+  `EXISTS` in place of the joins did not cure it.
+- **Rule:** a statement that joins many tables and must come out in order
+  names each table's index with `INDEXED BY`. Its plan is then the same on
+  every SQLite, and its plan test holds one plan, not a choice.
+
 ## One below U+E000 is a surrogate
 
 - **Seen:** a test of a range's edges took the code point one below U+E000,

@@ -2952,14 +2952,21 @@
   (and (= (length lines) (length choices))
        (for-all (lambda (l c) (and (member l c) #t)) lines choices)))
 
-;; A probe of one row of node_tags by its three columns, by the key or by
-;; node_tags_node (which holds the key's tag): SQLite picks either, and the
-;; cost is one search.
+;; A probe of one row of node_tags by its three columns, by node_tags_node
+;; (which holds the key's tag), and a node's row by nodes_owner: the
+;; statement names each index, so the plan is one on every SQLite. Left to
+;; itself, 3.45.1 sorted two of the thirty in a temp b-tree (traps.md).
 (define (probe alias)
+  (list (string-append "SEARCH " alias " USING INDEX node_tags_node (owner=? AND node=? AND tag=?)")))
+(define (by-id alias)
+  (list (string-append "SEARCH " alias " USING INDEX nodes_owner (owner=? AND id=?)")))
+
+;; The step's statements name no index: SQLite picks among these, each one
+;; search.
+(define (probe-any alias)
   (list (string-append "SEARCH " alias " USING PRIMARY KEY (owner=? AND tag=? AND node=?)")
         (string-append "SEARCH " alias " USING INDEX node_tags_node (owner=? AND node=? AND tag=?)")))
-;; A node's row by its id, through any index that leads with it.
-(define (by-id alias)
+(define (by-id-any alias)
   (list (string-append "SEARCH " alias " USING INDEX nodes_owner (owner=? AND id=?)")
         (string-append "SEARCH " alias " USING INDEX sqlite_autoindex_nodes_1 (id=?)")
         (string-append "SEARCH " alias " USING INDEX nodes_parent (owner=? AND parent=? AND id=?)")))
@@ -3018,11 +3025,11 @@
                        ("SEARCH node_tags USING PRIMARY KEY (owner=? AND tag=?)"))
           (list acct-a "" acct-a 51 acct-a 1000) #f)
     (list 'retag-pick '(("SEARCH node_tags USING PRIMARY KEY (owner=? AND tag=?)")) (list acct-a "x" 499) #t)
-    (list 'retag-add (list '("SEARCH t USING PRIMARY KEY (owner=? AND tag=? AND node<?)") (probe "u"))
+    (list 'retag-add (list '("SEARCH t USING PRIMARY KEY (owner=? AND tag=? AND node<?)") (probe-any "u"))
           (list acct-a "y" acct-a "x" z acct-a "y") #t)
-    (list 'retag-bump (list (by-id "nodes") '("SEARCH node_tags USING PRIMARY KEY (owner=? AND tag=? AND node<?)"))
+    (list 'retag-bump (list (by-id-any "nodes") '("SEARCH node_tags USING PRIMARY KEY (owner=? AND tag=? AND node<?)"))
           (list 1 acct-a acct-a "x" z) #t)
-    (list 'retag-changes (list '("SEARCH t USING PRIMARY KEY (owner=? AND tag=? AND node<?)") (by-id "n")
+    (list 'retag-changes (list '("SEARCH t USING PRIMARY KEY (owner=? AND tag=? AND node<?)") (by-id-any "n")
                                '("SEARCH changes USING PRIMARY KEY (owner=?)"))
           (list acct-a acct-a 1 acct-a "x" z acct-a) #t)
     (list 'retag-delete '(("SEARCH node_tags USING PRIMARY KEY (owner=? AND tag=? AND node<?)")) (list acct-a "x" z) #t)

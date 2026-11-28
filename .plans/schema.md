@@ -225,6 +225,9 @@ CREATE INDEX node_tags_node ON node_tags(owner, node);
   for a rare tag under a parent of 20,000 children (it drives from
   `nodes_parent`); 203 to 269 ms, the worst found, for a tag on 185,000 nodes
   asked in a state none of them is in. Each holds a reader, never the writer.
+- **Decided (2026-11-28):** the filter's statements name their indexes,
+  `node_tags_node`, `nodes_owner` and `nodes_parent`, with `INDEXED BY`
+  (traps.md: SQLite 3.45.1 sorted two of them otherwise).
 - **Measured, the same file:** one step of a rename, 500 nodes, holds the
   writer 18 to 48 ms with its commit. During a rename of 185,000 nodes
   another account's write takes a median 19 ms, 35 ms at worst (2.4 ms alone).

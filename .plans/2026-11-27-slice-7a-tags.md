@@ -550,6 +550,13 @@ test. Any edit to `tagged-page` must update that test.
   18 to 48 ms; the filter's worst case is 203 to 269 ms on a reader.
 - `tags->json` and `content-tags` are exported and used by no source.
 
+### Found by the first CI run (2026-11-28)
+
+CI's SQLite, 3.45.1, sorted `nodes-tagged-10` and `nodes-tagged-top-9` in a
+temp b-tree; 3.53 and the Mac's 3.54.1 did not. The filter's statements now
+name each index (`INDEXED BY`), and their plan tests hold one plan. Run on
+both versions (traps.md).
+
 ### Checked
 
 42 suites pass. `test-chars` 51, `test-tags` 449, `test-node-store` 284,
