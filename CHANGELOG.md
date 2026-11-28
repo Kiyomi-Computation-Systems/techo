@@ -101,6 +101,12 @@ Each release's changes. Dates are UTC.
 - No migration: a Task made before reads as `TODO`.
 - Dependencies: jsonparse and chez-uri, from the Akku index, are now the
   server's own. Both were already fetched.
+- Tags: a node takes `tags`, at most 50, each kept in one form (`Work Space`
+  is `work-space`); a replace with none keeps them. `GET /v1/nodes?tag=` lists
+  the nodes that carry every tag named, `GET /v1/tags` the account's tags with
+  their counts, and `POST /v1/tags/rename` and `/remove` change a tag on up to
+  500 nodes a call, with no `If-Match` and no copy kept. The seventh
+  migration adds them: run `techo migrate` with the server stopped.
 
 ### Changed
 

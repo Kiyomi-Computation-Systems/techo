@@ -1,7 +1,7 @@
 #!r6rs
 ;;; The node routes suite: slice 4's routes, slice 4b's lifecycle, slice
-;;; 5a's tree, slice 5b's links and slice 6's props and task commands,
-;;; (techo node-routes), as a router serves them inside the whole
+;;; 5a's tree, slice 5b's links, slice 6's props and task commands and
+;;; slice 7a's tags, (techo node-routes), as a router serves them inside the whole
 ;;; stack (wrap-server), against real SQLite through the test doorway, raw
 ;;; HTTP bytes in through circuit's test host. The rig makes its own router
 ;;; of them; tests/test-app.sps holds them joined to make-app.
@@ -28,9 +28,13 @@
 ;;;   POST   /v1/nodes/:id/done, /wontdo, /reopen
 ;;;                                              a Task's status (If-Match), the node
 ;;;                                              without its body
+;;;   GET    /v1/nodes?tag=                      the nodes that carry every tag named
+;;;   GET    /v1/tags                            the account's tags with their counts, paged
+;;;   POST   /v1/tags/rename, /v1/tags/remove    a step of a tag's rename or removal: counts
 ;;;
 ;;; Every node in an answer has its parent after its state: an id, or null.
 ;;; Its props are as stored, a Task's status TODO filled in when none is.
+;;; Its tags follow its props: an array, sorted, [] for none.
 ;;; The tree's tests end by checking the whole table is a forest
 ;;; (forest-faults), by rules written out here, not read from the code.
 ;;; The links' tests judge each answer by the plan's table, as its review
@@ -53,6 +57,7 @@
         (techo-testing)
         (circuit)
         (only (circuit router) make-router)
+        (only (circuit test) make-test-req)
         (only (jsonparse easy) json->string string->json)
         (only (chez-sqlite3) open-database close-database! execute!)
         (http-support)
@@ -61,8 +66,10 @@
         (except (techo store) key-hash)
         (only (techo auth) key-hash)
         (only (techo doorway) tx-query tx-query-row)
-        (only (techo nodes) parse-node-id body-cap request-cap node-states)
-        (only (techo node-store) insert-node! write-node! set-node-state! purge-node! insert-link!)
+        (only (techo requests) query-all query-one)
+        (only (techo nodes) parse-node-id body-cap request-cap node-states retag-states)
+        (only (techo node-store) insert-node! write-node! set-node-state! purge-node! insert-link!
+              retag-store-states)
         (only (techo migrations) migrations)
         (only (techo app) wrap-server)
         (techo node-routes))
@@ -176,11 +183,11 @@
 ;; Node N for OWNER at revision 1, made at 5000, straight through the store.
 (define (seed-node! g owner n kind)
   (run-write (rig-store g)
-             (lambda (tx) (insert-node! tx (nid n) owner kind "seed" "seed body" "text/plain" "{}" #f 5000))))
+             (lambda (tx) (insert-node! tx (nid n) owner kind "seed" "seed body" "text/plain" "{}" #f '() 5000))))
 
 ;; tables : Rig -> (List ...)
-;; The four tables whole (nodes, revisions, changes, links), and every
-;; key's id and last_used, last: (list-ref t 4).
+;; The four tables whole (nodes, revisions, changes, links), every key's id
+;; and last_used, (list-ref t 4), and node_tags whole, (list-ref t 5).
 (define (tables g)
   (run-read (rig-store g)
             (lambda (tx)
@@ -188,7 +195,8 @@
                     (tx-query tx "SELECT * FROM revisions ORDER BY node, revision")
                     (tx-query tx "SELECT * FROM changes ORDER BY owner, seq")
                     (tx-query tx "SELECT * FROM links ORDER BY owner, source, type, target")
-                    (tx-query tx "SELECT id, last_used FROM api_keys ORDER BY id")))))
+                    (tx-query tx "SELECT id, last_used FROM api_keys ORDER BY id")
+                    (tx-query tx "SELECT * FROM node_tags ORDER BY owner, tag, node")))))
 
 ;; last-used : Rig Natural -> (U Natural #f)     key N's last_used
 (define (last-used g n)
@@ -328,12 +336,14 @@
 
 ;; node-json-in : String Natural String String String String Natural Natural Natural -> Alist
 ;; A node's answer in STATE, at the top level: id, kind, state, parent
-;; (null), title, body, content_type, props (stored {}), revision,
-;; created, updated, in that order. `under` names another parent.
+;; (null), title, body, content_type, props (stored {}), tags (none: an
+;; empty array), revision, created, updated, in that order. `under` names
+;; another parent.
 (define (node-json-in state n kind title body type revision created updated)
   (list (cons "id" (nid-text n)) (cons "kind" kind) (cons "state" state) (cons "parent" 'null)
         (cons "title" title)
         (cons "body" body) (cons "content_type" type) (cons "props" (kind-props kind))
+        (cons "tags" '#())
         (cons "revision" revision) (cons "created" created) (cons "updated" updated)))
 
 ;; node-json : as node-json-in, for an active node
@@ -344,8 +354,8 @@
 (define (item-json-in state n kind title type revision created updated)
   (list (cons "id" (nid-text n)) (cons "kind" kind) (cons "state" state) (cons "parent" 'null)
         (cons "title" title)
-        (cons "content_type" type) (cons "props" (kind-props kind)) (cons "revision" revision)
-        (cons "created" created) (cons "updated" updated)))
+        (cons "content_type" type) (cons "props" (kind-props kind)) (cons "tags" '#())
+        (cons "revision" revision) (cons "created" created) (cons "updated" updated)))
 
 ;; parent-text : (U Natural #f) -> (U String 'null)     node P's id, or JSON null
 (define (parent-text p) (if p (nid-text p) 'null))
@@ -358,10 +368,11 @@
 (define (item-json . args) (apply item-json-in "active" args))
 
 ;; snapshot-json : Natural String String String Natural -> Alist
-;; A Note's snapshot, its props stored {}; snapshot-item, without the body.
+;; A Note's snapshot whole, its props stored {} and no tags; snapshot-item,
+;; a list's, without the body and without tags.
 (define (snapshot-json revision title body type created)
   (list (cons "revision" revision) (cons "title" title) (cons "body" body)
-        (cons "content_type" type) (cons "props" '()) (cons "created" created)))
+        (cons "content_type" type) (cons "props" '()) (cons "tags" '#()) (cons "created" created)))
 
 (define (snapshot-item revision title type created)
   (list (cons "revision" revision) (cons "title" title)
@@ -425,7 +436,7 @@
 ;; store, which judges nothing: as a file made before slice 6 holds it.
 (define (seed-props! g owner n kind props)
   (run-write (rig-store g)
-             (lambda (tx) (insert-node! tx (nid n) owner kind "seed" "seed body" "text/plain" props #f 5000))))
+             (lambda (tx) (insert-node! tx (nid n) owner kind "seed" "seed body" "text/plain" props #f '() 5000))))
 
 ;; jobs-of : Rig -> (List Natural Natural)     the read jobs and the write jobs so far
 (define (jobs-of g) (list ((rig-reads g)) ((rig-writes g))))
@@ -542,6 +553,10 @@
     ((link) (list 'PUT (link-path 1 "related" 2) '() #f))
     ((unlink) (list 'DELETE (link-path 1 "related" 2) '() #f))
     ((list-links) (list 'GET (links-path 1) '() #f))
+    ((list-tagged) (list 'GET "/v1/nodes?tag=a" '() #f))
+    ((list-tags) (list 'GET "/v1/tags" '() #f))
+    ((rename-tag) (list 'POST "/v1/tags/rename" (list json-type) "{\"from\":\"a\",\"to\":\"b\"}"))
+    ((remove-tag) (list 'POST "/v1/tags/remove" (list json-type) "{\"tag\":\"a\"}"))
     (else (assertion-violation 'route-request "no such route" which))))
 
 ;; The links' three routes (slice 5b).
@@ -551,8 +566,11 @@
 ;; as a state change is: event-target and event-request name them too.
 (define task-routes '(done wontdo reopen))
 
+;; The tags' four (slice 7a): the filter, the list and the two commands.
+(define tag-routes '(list-tagged list-tags rename-tag remove-tag))
+
 (define route-names (append '(list-nodes get-node create replace list-revisions get-revision restore)
-                            events '(move move-children) link-routes task-routes))
+                            events '(move move-children) link-routes task-routes tag-routes))
 
 ;; send : Rig Symbol (Listof Header) -> Answer     the route, with KEY-HEADERS first
 (define (send g which key-headers)
@@ -1202,7 +1220,7 @@
        (lambda (g)
          (seed-node! g acct-a 1 "note")
          (run-write (rig-store g)
-                    (lambda (tx) (write-node! tx (nid 1) acct-a 1 "t2" "b2" "text/plain" "{}" "update" 6000)))
+                    (lambda (tx) (write-node! tx (nid 1) acct-a 1 "t2" "b2" "text/plain" "{}" 'keep "update" 6000)))
          (let* ((before (tables g))
                 (a (restore! g 1 1 1 1))
                 (b (restore! g 1 1 2 1))
@@ -1221,7 +1239,7 @@
          (seed-node! g acct-a 1 "note")
          (seed-node! g acct-a 2 "note")
          (run-write (rig-store g)
-                    (lambda (tx) (write-node! tx (nid 2) acct-a 1 "t2" "b2" "text/plain" "{}" "update" 6000)))
+                    (lambda (tx) (write-node! tx (nid 2) acct-a 1 "t2" "b2" "text/plain" "{}" 'keep "update" 6000)))
          (let* ((before (tables g))
                 (a (restore! g 1 1 2 1)))
            (list (status+code a) (equal? before (tables g)) ((rig-jobs g)))))))))
@@ -1414,14 +1432,14 @@
           (lambda (g)
             (run-write (rig-store g)
                        (lambda (tx) (insert-node! tx (nid 1) acct-a "note" "props-title" "props-body"
-                                                  "text/plain" "[\"secret-props-5\"]" #f 5000)))
+                                                  "text/plain" "[\"secret-props-5\"]" #f '() 5000)))
             (reads g)))
         (with-rig "props-text.db"
           (lambda (g)
             (seed-props! g acct-a 1 "note" "{}")
             (run-write (rig-store g)
                        (lambda (tx) (write-node! tx (nid 1) acct-a 1 "props-title" "props-body" "text/plain"
-                                                 "{}" "update" 5500)))
+                                                 "{}" 'keep "update" 5500)))
             (with-raw g (lambda (db)
                           (execute! db "PRAGMA ignore_check_constraints = ON")
                           (execute! db "UPDATE nodes SET props = 'secret-props-6 {' WHERE id = ?" (nid 1))
@@ -1438,11 +1456,11 @@
                (let loop ((n 10))
                  (when (<= n 114)
                    (insert-node! tx (nid n) acct-a "note" (string-append "n" (number->string n))
-                                 "body" "text/plain" "{}" #f (+ 6000 n))
+                                 "body" "text/plain" "{}" #f '() (+ 6000 n))
                    (loop (+ n 1))))
                (let loop ((n 200))
                  (when (<= n 204)
-                   (insert-node! tx (nid n) acct-b "note" "b" "body" "text/plain" "{}" #f 7000)
+                   (insert-node! tx (nid n) acct-b "note" "b" "body" "text/plain" "{}" #f '() 7000)
                    (loop (+ n 1)))))))
 
 ;; page : Rig String -> (List Natural (U String 'null) (U String #f))
@@ -1571,11 +1589,11 @@
 (define (five-revisions! g)
   (run-write (rig-store g)
              (lambda (tx)
-               (insert-node! tx (nid 1) acct-a "note" "r1" "body 1" "text/plain" "{}" #f 100)
+               (insert-node! tx (nid 1) acct-a "note" "r1" "body 1" "text/plain" "{}" #f '() 100)
                (let loop ((r 1))
                  (when (< r 5)
                    (write-node! tx (nid 1) acct-a r (string-append "r" (number->string (+ r 1)))
-                                "body" "text/plain" "{}" "update" (+ 100 r))
+                                "body" "text/plain" "{}" 'keep "update" (+ 100 r))
                    (loop (+ r 1)))))))
 
 ;; revisions : Rig String -> (List (Listof Natural) Any)
@@ -1927,8 +1945,8 @@
 (define (seed-state! g owner n kind state)
   (run-write (rig-store g)
              (lambda (tx)
-               (insert-node! tx (nid n) owner kind "seed" "seed body" "text/plain" "{}" #f 5000)
-               (write-node! tx (nid n) owner 1 "seed 2" "seed body 2" "text/markdown" "{}" "update" 5500)
+               (insert-node! tx (nid n) owner kind "seed" "seed body" "text/plain" "{}" #f '() 5000)
+               (write-node! tx (nid n) owner 1 "seed 2" "seed body 2" "text/markdown" "{}" 'keep "update" 5500)
                (case state
                  ((active) 2)
                  ((archived) (set-node-state! tx (nid n) owner 2 "archived" "archive" 6000) 3)
@@ -2400,7 +2418,7 @@
                     (lambda (tx)
                       (let loop ((n 10))
                         (when (<= n 25)
-                          (insert-node! tx (nid n) acct-a "note" "t" "b" "text/plain" "{}" #f 5000)
+                          (insert-node! tx (nid n) acct-a "note" "t" "b" "text/plain" "{}" #f '() 5000)
                           (when (even? n) (set-node-state! tx (nid n) acct-a 1 "archived" "archive" 5100))
                           (loop (+ n 1))))))
          (list (page g "?state=archived&limit=3")
@@ -2612,7 +2630,7 @@
        (lambda (g)
          (run-write (rig-store g)
                     (lambda (tx) (insert-node! tx (nid 1) acct-a "note" "secret-title-4" "secret-body-4"
-                                               "text/plain" "{}" #f 5000)))
+                                               "text/plain" "{}" #f '() 5000)))
          (let* ((as (in-order (lambda (step) (lifecycle! g 1 1 (car step) (cdr step)))
                               '((archive . 1) (unarchive . 2) (trash . 3) (untrash . 4) (trash . 5)
                                 (purge . 6))))
@@ -2652,7 +2670,7 @@
 (define (seed-in! g owner n kind p)
   (run-write (rig-store g)
              (lambda (tx) (insert-node! tx (nid n) owner kind "seed" "seed body" "text/plain" "{}"
-                                        (and p (nid p)) 5000))))
+                                        (and p (nid p)) '() 5000))))
 
 ;; set-state-at! : Rig Bytevector Natural Natural String String -> Void
 ;; Node N, at revision REV, moved to STATE by OP at 6000, through the store.
@@ -3031,7 +3049,7 @@
                (let loop ((n from))
                  (when (<= n to)
                    (insert-node! tx (nid n) acct-a "project" "c" "b" "text/plain" "{}"
-                                 (and (> n from) (nid (- n 1))) 5000)
+                                 (and (> n from) (nid (- n 1))) '() 5000)
                    (loop (+ n 1)))))))
 
 (test-equal "depth: a parent with 63 ancestors takes a create and a move; one with 64 refuses both, 409 invalid_parent (P18); the forest holds"
@@ -3451,10 +3469,10 @@
 (define (brood! g from to trashed-to)
   (run-write (rig-store g)
              (lambda (tx)
-               (insert-node! tx (nid 1) acct-a "project" "p" "b" "text/plain" "{}" #f 5000)
+               (insert-node! tx (nid 1) acct-a "project" "p" "b" "text/plain" "{}" #f '() 5000)
                (let loop ((n from))
                  (when (<= n to)
-                   (insert-node! tx (nid n) acct-a "note" "c" "b" "text/plain" "{}" (nid 1) 5000)
+                   (insert-node! tx (nid n) acct-a "note" "c" "b" "text/plain" "{}" (nid 1) '() 5000)
                    (when (<= n trashed-to)
                      (set-node-state! tx (nid n) acct-a 1 "trashed" "trash" 5100))
                    (loop (+ n 1)))))))
@@ -3920,7 +3938,7 @@
          (seed-in! g acct-a 1 "project" #f)
          (run-write (rig-store g)
                     (lambda (tx) (insert-node! tx (nid 2) acct-a "note" "secret-title-5" "secret-body-5"
-                                               "text/plain" "{}" #f 5000)))
+                                               "text/plain" "{}" #f '() 5000)))
          (let* ((a (move! g 1 2 1 1))
                 (b (move-children! g 1 1 1 #f))
                 (c (move! g 1 2 3 2))
@@ -4323,7 +4341,7 @@
              (lambda (tx)
                (let ((note! (lambda (owner n)
                               (insert-node! tx (nid n) owner "note" "seed" "seed body" "text/plain" "{}"
-                                            #f 5000))))
+                                            #f '() 5000))))
                  (note! acct-a 1)
                  (for-each (lambda (k)
                              (note! acct-a k)
@@ -4755,7 +4773,7 @@
          (for-each (lambda (n)
                      (run-write (rig-store g)
                                 (lambda (tx) (insert-node! tx (nid n) acct-a "note" "secret-title-6"
-                                                           "secret-body-6" "text/plain" "{}" #f 5000))))
+                                                           "secret-body-6" "text/plain" "{}" #f '() 5000))))
                    '(1 2 3))
          (set-state-at! g acct-a 3 1 "trashed" "trash")
          (let* ((as (in-order (lambda (send) (send))
@@ -5264,10 +5282,10 @@
 (define (seed-task! g n props state)
   (run-write (rig-store g)
              (lambda (tx)
-               (insert-node! tx (nid 10) acct-a "project" "p" "pb" "text/plain" "{}" #f 4000)
-               (insert-node! tx (nid 11) acct-a "note" "n" "nb" "text/plain" "{}" #f 4000)
+               (insert-node! tx (nid 10) acct-a "project" "p" "pb" "text/plain" "{}" #f '() 4000)
+               (insert-node! tx (nid 11) acct-a "note" "n" "nb" "text/plain" "{}" #f '() 4000)
                (insert-node! tx (nid n) acct-a "task" "task title" "task body" "text/markdown" props
-                             (nid 10) 5000)
+                             (nid 10) '() 5000)
                (insert-link! tx acct-a (nid n) "related" (nid 11) 1 5100)
                (insert-link! tx acct-a (nid 11) "related" (nid n) 1 5200)
                (if (eq? state 'archived)
@@ -5576,9 +5594,9 @@
                     (lambda (tx)
                       (insert-node! tx (nid 1) acct-a "contact" "secret-title-1" "secret-body-1" "text/plain"
                                     "{\"emails\":{\"e1\":{\"address\":\"a@b\",\"label\":\"secret-props-1\"}}}"
-                                    #f 5000)
+                                    #f '() 5000)
                       (insert-node! tx (nid 2) acct-a "task" "secret-title-2" "secret-body-2" "text/plain"
-                                    "{\"status\":\"DONE\",\"closed\":5}" #f 5000)))
+                                    "{\"status\":\"DONE\",\"closed\":5}" #f '() 5000)))
          (let* ((label (lambda (s) (string-append "{\"emails\":{\"e1\":{\"address\":\"a@b\",\"label\":\"" s "\"}}}")))
                 (as (in-order (lambda (send) (send))
                               (list (lambda () (make! g 1 3 "contact" (label "secret-props-3")))
@@ -5595,6 +5613,1098 @@
            (list (map answer-status as) (length lines)
                  (for-all (lambda (l) (contains? l (string-append "account=" (id->string acct-a)))) lines)
                  (contains? text "secret-"))))))))
+
+;;; Slice 7a: tags
+;;;
+;;; A node's tags through real requests: what is stored, read from
+;;; node_tags and from the snapshots' tags column; what is answered; the
+;;; order of answers as the plan's review has it; the filter, the tags list
+;;; and the two commands. The stored forms expected are written out here by
+;;; the plan's rule (NFKC, lower case, NFKC, trim, spaces to -), not read
+;;; from (techo tags).
+
+;; tag-rows : Rig Natural -> (Listof String)     node N's rows in node_tags, in order
+(define (tag-rows g n)
+  (run-read (rig-store g)
+            (lambda (tx)
+              (map (lambda (r) (vector-ref r 0))
+                   (tx-query tx "SELECT tag FROM node_tags WHERE node = ? ORDER BY tag" (nid n))))))
+
+;; snapshot-tag-lists : Rig Natural -> (Listof (Pair Natural Any))
+;; Node N's snapshots' tags, by revision, each its column's text parsed.
+(define (snapshot-tag-lists g n)
+  (run-read (rig-store g)
+            (lambda (tx)
+              (map (lambda (r) (cons (vector-ref r 0) (string->json (vector-ref r 1))))
+                   (tx-query tx "SELECT revision, tags FROM revisions WHERE node = ? ORDER BY revision"
+                             (nid n))))))
+
+;; tags-in : Answer -> Any     an answer's tags, as the client reads them: a vector
+(define (tags-in a) (member-of (answer-json a) "tags"))
+
+;; arrayed? : Answer -> Boolean
+;; Whether the answer's text writes its tags as an array, never an object.
+(define (arrayed? a)
+  (and (contains? (answer-body a) "\"tags\":[") (not (contains? (answer-body a) "\"tags\":{"))))
+
+;; empty-tags? : Answer -> Boolean     the text holds "tags":[] and no "tags":{}
+(define (empty-tags? a)
+  (and (contains? (answer-body a) "\"tags\":[]") (not (contains? (answer-body a) "\"tags\":{"))))
+
+;; tags-text : (Listof String) -> String     the strings as a JSON array's text
+(define (tags-text ts) (json->string (list->vector ts)))
+
+;; tag-node-text : (U String #f) String (U String #f) (U String #f) -> String
+;; A write's JSON text: KIND (left out when #f), title "t", the string
+;; BODY, text/plain, PROPS and TAGS, each JSON text, as their members
+;; (left out when #f).
+(define (tag-node-text kind body props tags)
+  (string-append "{" (if kind (string-append "\"kind\":\"" kind "\",") "")
+                 "\"title\":\"t\",\"body\":" (json->string body)
+                 ",\"content_type\":\"text/plain\""
+                 (if props (string-append ",\"props\":" props) "")
+                 (if tags (string-append ",\"tags\":" tags) "")
+                 "}"))
+
+;; tag-make! : Rig Natural Natural String (U String #f) -> Answer
+;; WHO's create of node N, of KIND, with TAGS as JSON text (#f: none).
+(define (tag-make! g who n kind tags)
+  (put! g n (list (key-h who) json-type none-match) (tag-node-text kind "b" #f tags)))
+
+;; tag-change! : Rig Natural Natural Natural (U String #f) -> Answer
+;; WHO's replace of node N at If-Match REV, naming no kind, with TAGS as
+;; JSON text (#f: none).
+(define (tag-change! g who n rev tags)
+  (put! g n (list (key-h who) json-type (match-h rev)) (tag-node-text #f "b" #f tags)))
+
+;; seed-tagged! : Rig Bytevector Natural String (U Natural #f) (Listof String) -> Void
+;; Node N for OWNER, of KIND, under P (#f: the top level), with TAGS as the
+;; store takes them (stored forms), at revision 1, made at 5000, through
+;; the store.
+(define (seed-tagged! g owner n kind p tags)
+  (run-write (rig-store g)
+             (lambda (tx) (insert-node! tx (nid n) owner kind "seed" "seed body" "text/plain" "{}"
+                                        (and p (nid p)) tags 5000))))
+
+;; seed-many! : Rig Bytevector Natural Natural (Natural -> (Listof String)) -> Void
+;; Notes FROM to FROM + COUNT - 1 for OWNER at the top level, each with
+;; (TAGS-OF n), in one write job.
+(define (seed-many! g owner from count tags-of)
+  (run-write (rig-store g)
+             (lambda (tx)
+               (let loop ((n from))
+                 (when (< n (+ from count))
+                   (insert-node! tx (nid n) owner "note" "seed" "seed body" "text/plain" "{}" #f
+                                 (tags-of n) 5000)
+                   (loop (+ n 1)))))))
+
+;; nodes-get : Rig Natural String -> Answer     WHO's GET of /v1/nodes?QUERY
+(define (nodes-get g who query) (get! g who (string-append "/v1/nodes?" query)))
+
+;; tags-get : Rig Natural String -> Answer     WHO's GET of /v1/tags, QUERY after the ? ("" for none)
+(define (tags-get g who query)
+  (get! g who (if (string=? query "") "/v1/tags" (string-append "/v1/tags?" query))))
+
+(define rename-path "/v1/tags/rename")
+(define remove-path "/v1/tags/remove")
+(define (rename-body from to) (json->string (list (cons "from" from) (cons "to" to))))
+(define (remove-body t) (json->string (list (cons "tag" t))))
+
+;; rename! : Rig Natural String String -> Answer     WHO's rename of FROM to TO
+(define (rename! g who from to)
+  ((rig-call g) 'POST rename-path (list (key-h who) json-type) (rename-body from to)))
+
+;; remove! : Rig Natural String -> Answer     WHO's removal of T
+(define (remove! g who t)
+  ((rig-call g) 'POST remove-path (list (key-h who) json-type) (remove-body t)))
+
+;; item-ns : Answer -> (Listof Natural)     a page's items, each its node's n
+(define (item-ns a)
+  (map (lambda (i) (string->number (substring (id-of i) 24 36) 16)) (items a)))
+
+;; heads-of : Rig Bytevector -> (Listof (Pair Bytevector Natural))     OWNER's nodes' revisions, by id
+(define (heads-of g owner)
+  (run-read (rig-store g)
+            (lambda (tx)
+              (map (lambda (r) (cons (vector-ref r 0) (vector-ref r 1)))
+                   (tx-query tx "SELECT id, revision FROM nodes WHERE owner = ? ORDER BY id" owner)))))
+
+;; count-of : Rig String Any ... -> Natural     the one number SQL answers
+(define (count-of g sql . args)
+  (run-read (rig-store g) (lambda (tx) (vector-ref (apply tx-query-row tx sql args) 0))))
+
+;; counts : Answer -> Any     a command's answer: its status, ETag, and body
+(define (counts a) (list (answer-status a) (answer-header a "etag") (answer-json a)))
+
+;; iota-of : Natural -> (Listof Natural)     0 to N - 1
+(define (iota-of n)
+  (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+
+;; bytes-append : Bytevector Bytevector -> Bytevector
+(define (bytes-append a b)
+  (let ((v (make-bytevector (+ (bytevector-length a) (bytevector-length b)))))
+    (bytevector-copy! a 0 v 0 (bytevector-length a))
+    (bytevector-copy! b 0 v (bytevector-length a) (bytevector-length b))
+    v))
+
+;;; (techo requests)' query-all
+
+(test-equal "query-all: every value of a name, in order, as circuit decodes a query: none; one; three among others; + a space and %2B a plus; an empty value, and a name with no =, kept as empty; UTF-8 decoded, bad UTF-8 U+FFFD; the name matched exactly; query-one is 'invalid for a name given twice"
+  (list '() '("a") '("b" "a" "b") '("a b" "c+") '("" "x" "") '("\x65E5;\x672C;" "\xFFFD;") '() 'invalid)
+  (attempt
+   (lambda ()
+     (let ((all (lambda (target) (query-all (make-test-req 'GET target) "tag"))))
+       (list (all "/v1/nodes")
+             (all "/v1/nodes?tag=a")
+             (all "/v1/nodes?tag=b&limit=2&tag=a&state=x&tag=b")
+             (all "/v1/nodes?tag=a+b&tag=c%2B")
+             (all "/v1/nodes?tag=&tag=x&tag")
+             (all "/v1/nodes?tag=%E6%97%A5%E6%9C%AC&tag=%FF")
+             (all "/v1/nodes?Tag=a&tags=b")
+             (query-one (make-test-req 'GET "/v1/nodes?tag=a&tag=a") "tag"))))))
+
+;;; L13: a step's states are the table's
+
+(test-equal "L13: the store's states for a tag's step equal the lifecycle table's retag-states, as strings: every live state"
+  '(("active" "archived" "trashed") ("active" "archived" "trashed"))
+  (attempt (lambda () (list (list-sort string<? (map symbol->string retag-states))
+                            (list-sort string<? retag-store-states)))))
+
+;;; A PUT's tags (G1, G2, G3, G5)
+
+(test-equal "create: tags are stored folded, sorted by code point, each once; the rows, the snapshot and the answer agree; 201"
+  (list 201 '#("b" "work" "work-space" "\xE9;") '("b" "work" "work-space" "\xE9;")
+        '((1 . #("b" "work" "work-space" "\xE9;"))))
+  (attempt
+   (lambda ()
+     (with-rig "tags-create.db"
+       (lambda (g)
+         (let ((a (tag-make! g 1 1 "note" (tags-text (list "Work" "b" " Work  Space " "work" "\xC9;" "work-space")))))
+           (list (answer-status a) (tags-in a) (tag-rows g 1) (snapshot-tag-lists g 1))))))))
+
+(test-equal "G2: a create with no tags has none, written \"tags\":[]; a replace with no tags keeps them; a list replaces them; [] clears them; each snapshot holds the tags its write left"
+  (list (list 201 '#() #t '())
+        (list 200 '#("a" "b") '("a" "b"))
+        (list 200 '#("a" "b") '("a" "b"))
+        (list 200 '#("c") '("c"))
+        (list 200 '#() #t '())
+        '((1 . #()) (2 . #("a" "b")) (3 . #("a" "b")) (4 . #("c")) (5 . #())))
+  (attempt
+   (lambda ()
+     (with-rig "tags-g2.db"
+       (lambda (g)
+         (let* ((a (tag-make! g 1 1 "note" #f))
+                (a-rows (tag-rows g 1))
+                (b (tag-change! g 1 1 1 (tags-text '("b" "A"))))
+                (b-rows (tag-rows g 1))
+                (c (tag-change! g 1 1 2 #f))
+                (c-rows (tag-rows g 1))
+                (d (tag-change! g 1 1 3 (tags-text '("c"))))
+                (d-rows (tag-rows g 1))
+                (e (tag-change! g 1 1 4 "[]"))
+                (e-rows (tag-rows g 1)))
+           (list (list (answer-status a) (tags-in a) (empty-tags? a) a-rows)
+                 (list (answer-status b) (tags-in b) b-rows)
+                 (list (answer-status c) (tags-in c) c-rows)
+                 (list (answer-status d) (tags-in d) d-rows)
+                 (list (answer-status e) (tags-in e) (empty-tags? e) e-rows)
+                 (snapshot-tag-lists g 1))))))))
+
+;; refused-tags : (Listof (Pair String String))     each a tags member's JSON text, refused
+(define refused-tags
+  (list (cons "null" "null")
+        (cons "a string" "\"work\"")
+        (cons "an object" "{\"a\":1}")
+        (cons "an empty object" "{}")
+        (cons "a number" "1")
+        (cons "an empty string" "[\"\"]")
+        (cons "spaces alone" "[\"   \"]")
+        (cons "a number in the list" "[\"a\",1]")
+        (cons "null in the list" "[null]")
+        (cons "a list in the list" "[[\"a\"]]")
+        (cons "51 entries that fold to one" (tags-text (repeat 51 "Work")))
+        (cons "4 of U+FDFA: 72 characters once folded" (tags-text (list (make-string 4 (integer->char #xFDFA)))))
+        (cons "65 characters" (tags-text (list (make-string 65 #\a))))
+        (cons "257 as sent, though it folds to one" (tags-text (list (string-append (make-string 256 #\space) "a"))))
+        (cons "a tab" (tags-text (list "a\tb")))
+        (cons "a line feed" (tags-text (list "a\nb")))
+        (cons "U+2028" (tags-text (list "a\x2028;b")))
+        (cons "U+0001" (tags-text (list "a\x1;b")))
+        (cons "U+0085" (tags-text (list "a\x85;b")))
+        (cons "a zero-width space" (tags-text (list "a\x200B;b")))
+        (cons "a soft hyphen" (tags-text (list "a\xAD;b")))
+        (cons "a left-to-right mark" (tags-text (list "a\x200E;b")))
+        (cons "an emoji with its variation selector, U+2764 U+FE0F" (tags-text (list "\x2764;\xFE0F;")))
+        (cons "two emoji joined by U+200D" (tags-text (list "\x1F468;\x200D;\x1F469;")))))
+
+(for-each
+ (lambda (c)
+   (test-equal (string-append "tags refused, " (car c) ": a create and a replace are 400 before the job, a read job each and no write job, nothing written")
+     '((400 "invalid_request" (1 0)) (400 "invalid_request" (2 0)) #t)
+     (attempt
+      (lambda ()
+        (with-rig "tags-refused.db"
+          (lambda (g)
+            (seed-tagged! g acct-a 1 "note" #f '("keep"))
+            (let* ((before (tables g))
+                   (a (tag-make! g 1 2 "note" (cdr c)))
+                   (ja (jobs-of g))
+                   (b (tag-change! g 1 1 1 (cdr c)))
+                   (jb (jobs-of g)))
+              (list (append (status+code a) (list ja)) (append (status+code b) (list jb))
+                    (equal? before (tables g))))))))))
+ refused-tags)
+
+(test-equal "tags folded by the rule: full-width WORK, ㈱, Ⓐ, half-width ﾒﾓ, E with a combining acute, 日本, an ideographic space and a no-break space; Work Space three ways is one tag"
+  (list '#("work") '#("(\x682A;)") '#("a") '#("\x30E1;\x30E2;") '#("\xE9;") '#("\x65E5;\x672C;")
+        '#("work") '#("a-b") '#("work-space"))
+  (attempt
+   (lambda ()
+     (with-rig "tags-folds.db"
+       (lambda (g)
+         (in-order (lambda (c) (tags-in (tag-make! g 1 (car c) "note" (tags-text (cdr c)))))
+                   (list (list 1 "\xFF37;\xFF2F;\xFF32;\xFF2B;")
+                         (list 2 "\x3231;")
+                         (list 3 "\x24B6;")
+                         (list 4 "\xFF92;\xFF93;")
+                         (list 5 "E\x301;")
+                         (list 6 "\x65E5;\x672C;")
+                         (list 7 "\x3000;Work\x3000;")
+                         (list 8 "a\xA0;b")
+                         (list 9 "Work Space" " work  space " "work-space"))))))))
+
+(test-equal "tags: U+2010, U+2212 and - are one tag, and the wave dash another (F5); not merged: Straße and STRASSE two; hiragana and katakana two"
+  (list '#("a-b" "a\x301C;b") '#("strasse" "stra\xDF;e") '#("\x3072;\x3089;" "\x30D2;\x30E9;"))
+  (attempt
+   (lambda ()
+     (with-rig "tags-apart.db"
+       (lambda (g)
+         (in-order (lambda (c) (tags-in (tag-make! g 1 (car c) "note" (tags-text (cdr c)))))
+                   (list (list 1 "a\x2212;b" "a-b" "a\x2010;b" "a\x301C;b")
+                         (list 2 "Stra\xDF;e" "STRASSE")
+                         (list 3 "\x30D2;\x30E9;" "\x3072;\x3089;"))))))))
+
+(test-equal "tags at their limits are taken: 64 characters once folded; 256 as sent; 50 entries; 50 entries that fold to fewer"
+  (list (list 201 (vector (make-string 64 #\a)))
+        (list 201 '#("a"))
+        (list 201 50)
+        (list 201 '#("work")))
+  (attempt
+   (lambda ()
+     (with-rig "tags-limits.db"
+       (lambda (g)
+         (let* ((a (tag-make! g 1 1 "note" (tags-text (list (make-string 64 #\A)))))
+                (b (tag-make! g 1 2 "note" (tags-text (list (string-append (make-string 255 #\space) "A")))))
+                (c (tag-make! g 1 3 "note" (tags-text (map (lambda (i) (string-append "t" (number->string i)))
+                                                          (iota-of 50)))))
+                (d (tag-make! g 1 4 "note" (tags-text (repeat 50 "Work")))))
+           (list (list (answer-status a) (tags-in a))
+                 (list (answer-status b) (tags-in b))
+                 (list (answer-status c) (vector-length (tags-in c)))
+                 (list (answer-status d) (tags-in d)))))))))
+
+;;; A PUT's order of answers, with tags (the review's "The order of answers")
+
+(test-equal "order: a PUT's refused tags beat everything after them: a body over its cap, props over theirs, props refused too, a stale If-Match, a missing node, a trashed node, another kind, an id in use; each 400 in one read job and no write job; the same requests with good tags get what follows; nothing written by any"
+  (list (repeat 8 '(400 "invalid_request")) '(8 0)
+        '((413 "payload_too_large") (413 "props_too_large") (400 "invalid_request") (412 "precondition_failed")
+          (404 "not_found") (409 "wrong_state") (409 "kind_fixed") (412 "precondition_failed"))
+        #t)
+  (attempt
+   (lambda ()
+     (with-rig "tags-order-put.db"
+       (lambda (g)
+         (seed-props! g acct-a 1 "note" "{}")
+         (seed-props! g acct-a 2 "note" "{}")
+         (trashed-at! g acct-a 2 1)
+         (let* ((over (make-string (+ body-cap 1) #\a))
+                (send (lambda (n pre text) (put! g n (list (key-h 1) json-type pre) text)))
+                (cases (lambda (tags)
+                         (list (list 5 none-match (tag-node-text "note" over #f tags))
+                               (list 5 none-match (tag-node-text "contact" "b" (sized 4097) tags))
+                               (list 5 none-match (tag-node-text "note" "b" "{\"a\":1}" tags))
+                               (list 1 (match-h 9) (tag-node-text #f "b" #f tags))
+                               (list 99 (match-h 1) (tag-node-text #f "b" #f tags))
+                               (list 2 (match-h 2) (tag-node-text #f "b" #f tags))
+                               (list 1 (match-h 1) (tag-node-text "task" "b" #f tags))
+                               (list 1 none-match (tag-node-text "note" "b" #f tags)))))
+                (before (tables g))
+                (bad (in-order (lambda (c) (status+code (apply send c))) (cases "[1]")))
+                (jobs (jobs-of g))
+                (good (in-order (lambda (c) (status+code (apply send c))) (cases "[\"a\"]"))))
+           (list bad jobs good (equal? before (tables g)))))))))
+
+(test-equal "order: refused tags come after the cheap checks and the key: no key 401 and no job; a bad id 400 and no job; no precondition 428 and no job; an unknown key 401 in the read job; text/plain 415 after it; a request over 2 MiB 413 after it"
+  '((401 "unauthorized" (0 0)) (400 "invalid_request" (0 0)) (428 "precondition_required" (0 0))
+    (401 "unauthorized" (1 0)) (415 "unsupported_media_type" (2 0)) (413 "payload_too_large" (3 0)))
+  (attempt
+   (lambda ()
+     (with-rig "tags-order-cheap.db"
+       (lambda (g)
+         (let* ((bad (tag-node-text "note" "b" #f "[1]"))
+                (step (lambda (a) (append (status+code a) (list (jobs-of g)))))
+                (a (step (put! g 1 (list json-type none-match) bad)))
+                (b (step ((rig-call g) 'PUT (node-path-of v4-text) (list (key-h 1) json-type none-match) bad)))
+                (c (step (put! g 1 (list (key-h 1) json-type) bad)))
+                (d (step (put! g 1 (list (key-h 9) json-type none-match) bad)))
+                (e (step (put! g 1 (list (key-h 1) (cons "Content-Type" "text/plain") none-match) bad)))
+                (f (step (put! g 1 (list (key-h 1) json-type none-match)
+                               (tag-node-text "note" (make-string request-cap #\a) #f "[1]")))))
+           (list a b c d e f)))))))
+
+;;; Tags in every answer that holds a node (the review's blocker 7)
+
+(test-equal "answers: tags follow props, sorted, in the node of every answer: a create, a GET, a replace with none (kept), the list's item, a link item's node, a state change, a move, a Task's command, a restore, and a whole snapshot; the revisions list shows none; each written as an array"
+  (list (list 201 '#("a" "b") #t) (list 200 '#("a" "b") #t) (list 200 '#("a" "b") #t)
+        (list 200 '#("a" "b") #t) (list 200 '#("a" "b") #t) (list 200 '#("a" "b") #t)
+        (list 200 '#("a" "b") #t) (list 200 '#("t") #t) (list 200 '#("a" "b") #t)
+        (list 200 '#("a" "b") #t)
+        '("id" "kind" "state" "parent" "title" "body" "content_type" "props" "tags" "revision" "created" "updated")
+        '("revision" "title" "body" "content_type" "props" "tags" "created")
+        (repeat 3 '("revision" "title" "content_type" "props" "created")))
+  (attempt
+   (lambda ()
+     (with-rig "tags-shapes.db"
+       (lambda (g)
+         (let* ((make (tag-make! g 1 1 "project" (tags-text '("b" "A"))))
+                (get (get! g 1 (node-path 1)))
+                (keep (tag-change! g 1 1 1 #f))
+                (note (tag-make! g 1 2 "note" #f))
+                (lst (get! g 1 "/v1/nodes?parent=null"))
+                (item (car (filter (lambda (i) (equal? (id-of i) (nid-text 1))) (items lst))))
+                (link (link! g 1 2 "related" 1))
+                (links (links-get g 1 2 ""))
+                (link-node (member-of (car (items links)) "node"))
+                (arch (lifecycle! g 1 1 'archive 2))
+                (unarch (lifecycle! g 1 1 'unarchive 3))
+                (moved (move! g 1 1 4 #f))
+                (task (tag-make! g 1 3 "task" (tags-text '("T"))))
+                (done (task! g 1 3 'done 1))
+                (rest (restore! g 1 1 1 5))
+                (snap (get! g 1 (revision-path 1 1)))
+                (revs (get! g 1 (revisions-path 1)))
+                (shape (lambda (a) (list (answer-status a) (tags-in a) (arrayed? a)))))
+           (list (shape make) (shape get) (shape keep)
+                 (list (answer-status lst) (member-of item "tags") (arrayed? lst))
+                 (list (answer-status links) (member-of link-node "tags") (arrayed? links))
+                 (shape arch) (shape moved) (shape done) (shape rest) (shape snap)
+                 (names (answer-json get)) (names (answer-json snap))
+                 (map names (items revs)))))))))
+
+(test-equal "answers: a node with no tags is written \"tags\":[] in every shape: a create, a GET, a replace, the list's item, a link item's node, a state change, a move, a Task's command, a restore and a whole snapshot"
+  (repeat 10 #t)
+  (attempt
+   (lambda ()
+     (with-rig "tags-empty.db"
+       (lambda (g)
+         (let* ((a (tag-make! g 1 1 "note" #f))
+                (b (get! g 1 (node-path 1)))
+                (c (tag-change! g 1 1 1 #f))
+                (d (get! g 1 "/v1/nodes"))
+                (e (begin (tag-make! g 1 2 "note" #f) (link! g 1 2 "related" 1) (links-get g 1 2 "")))
+                (f (lifecycle! g 1 1 'archive 2))
+                (h (move! g 1 1 3 #f))
+                (i (begin (tag-make! g 1 3 "task" #f) (task! g 1 3 'done 1)))
+                (j (restore! g 1 1 1 4))
+                (k (get! g 1 (revision-path 1 1))))
+           (map empty-tags? (list a b c d e f h i j k))))))))
+
+;;; A restore, a command, a state change and a move (G1, L11)
+
+(test-equal "restore: a restore brings back the snapshot's tags, rows and answer, and its new snapshot holds them; a snapshot from before migration 7, whose column holds the default [], clears them; a snapshot's tags are taken as stored, never folded again"
+  (list (list 200 '#("a") '("a") '(3 . #("a")))
+        (list 200 '#() '())
+        (list 200 '#("W") '("W")))
+  (attempt
+   (lambda ()
+     (with-rig "tags-restore.db"
+       (lambda (g)
+         (let* ((x (tag-make! g 1 1 "note" (tags-text '("A"))))
+                (y (tag-change! g 1 1 1 (tags-text '("b"))))
+                (a (restore! g 1 1 1 2))
+                (a-rows (tag-rows g 1))
+                (a-snap (car (reverse (snapshot-tag-lists g 1))))
+                (p (tag-make! g 1 2 "note" (tags-text '("x"))))
+                (q (tag-change! g 1 2 1 (tags-text '("y")))))
+           (with-raw g (lambda (db)
+                         (execute! db "UPDATE revisions SET tags = '[]' WHERE node = ? AND revision = 1" (nid 2))
+                         (execute! db "UPDATE revisions SET tags = '[\"W\"]' WHERE node = ? AND revision = 2" (nid 2))))
+           (let* ((b (restore! g 1 2 1 2))
+                  (b-rows (tag-rows g 2))
+                  (c (restore! g 1 2 2 3))
+                  (c-rows (tag-rows g 2)))
+             (list (list (answer-status a) (tags-in a) a-rows a-snap)
+                   (list (answer-status b) (tags-in b) b-rows)
+                   (list (answer-status c) (tags-in c) c-rows)))))))))
+
+(test-equal "keep: a Task's command, a state change and a move keep a node's tags: answered, in the rows, and in the command's snapshot"
+  (list (list 200 '#("t") '("t") '(2 . #("t")))
+        (list 200 '#("t") '("t"))
+        (list 200 '#("t") '("t")))
+  (attempt
+   (lambda ()
+     (with-rig "tags-keep.db"
+       (lambda (g)
+         (let* ((x (tag-make! g 1 1 "task" (tags-text '("T"))))
+                (a (task! g 1 1 'done 1))
+                (a-rows (tag-rows g 1))
+                (a-snap (car (reverse (snapshot-tag-lists g 1))))
+                (b (lifecycle! g 1 1 'archive 2))
+                (b-rows (tag-rows g 1))
+                (c (move! g 1 1 3 #f))
+                (c-rows (tag-rows g 1)))
+           (list (list (answer-status a) (tags-in a) a-rows a-snap)
+                 (list (answer-status b) (tags-in b) b-rows)
+                 (list (answer-status c) (tags-in c) c-rows))))))))
+
+(test-equal "purge: a purged node's tags are gone: no row, no count, no filter result"
+  (list 204 '() '#() '#())
+  (attempt
+   (lambda ()
+     (with-rig "tags-purge.db"
+       (lambda (g)
+         (seed-tagged! g acct-a 1 "note" #f '("gone"))
+         (trashed-at! g acct-a 1 1)
+         (let* ((a (lifecycle! g 1 1 'purge 2)))
+           (list (answer-status a) (tag-rows g 1)
+                 (member-of (answer-json (tags-get g 1 "")) "items")
+                 (member-of (answer-json (nodes-get g 1 "tag=gone&state=trashed")) "items"))))))))
+
+;;; The filter: GET /v1/nodes?tag= (G6)
+
+;; filter-family! : Rig -> Void
+;; A's 1 (a b), 2 (a), 3 (b), 4 (none), Project 5 (a) holding 6 (a b),
+;; 7 (a) archived, 8 (a b) trashed; B's 20 (a b). Through the store.
+(define (filter-family! g)
+  (seed-tagged! g acct-a 1 "note" #f '("a" "b"))
+  (seed-tagged! g acct-a 2 "note" #f '("a"))
+  (seed-tagged! g acct-a 3 "note" #f '("b"))
+  (seed-tagged! g acct-a 4 "note" #f '())
+  (seed-tagged! g acct-a 5 "project" #f '("a"))
+  (seed-tagged! g acct-a 6 "note" 5 '("a" "b"))
+  (seed-tagged! g acct-a 7 "note" #f '("a"))
+  (archived-at! g acct-a 7 1)
+  (seed-tagged! g acct-a 8 "note" #f '("a" "b"))
+  (trashed-at! g acct-a 8 1)
+  (seed-tagged! g acct-b 20 "note" #f '("a" "b")))
+
+(test-equal "filter: the nodes that carry every tag named, in id order, with state, parent and paging as before: a; a and b in either order; A folded; archived; trashed; under 5; at the top; two a page; a tag none carries; B sees only its own"
+  (list '(1 2 5 6) '(1 6) '(1 6) '(1 2 5 6) '(7) '(8) '(6) '(1 2 5)
+        (list '(1 2) (nid-text 2) '(5 6) 'null)
+        '() '() '(20))
+  (attempt
+   (lambda ()
+     (with-rig "tags-filter.db"
+       (lambda (g)
+         (filter-family! g)
+         (let* ((ns (lambda (q) (item-ns (nodes-get g 1 q))))
+                (p1 (nodes-get g 1 "tag=a&limit=2"))
+                (p2 (nodes-get g 1 (string-append "tag=a&limit=2&after=" (nid-text 2)))))
+           (list (ns "tag=a") (ns "tag=a&tag=b") (ns "tag=b&tag=a") (ns "tag=A")
+                 (ns "tag=a&state=archived") (ns "tag=b&state=trashed")
+                 (ns (string-append "tag=a&parent=" (nid-text 5))) (ns "tag=a&parent=null")
+                 (list (item-ns p1) (member-of (answer-json p1) "next") (item-ns p2)
+                       (member-of (answer-json p2) "next"))
+                 (ns "tag=nothing") (ns "tag=a&tag=nothing")
+                 (item-ns (nodes-get g 3 "tag=a")))))))))
+
+(test-equal "filter: each item carries its tags and no body"
+  '((#("a" "b") absent) (#("a" "b") absent))
+  (attempt
+   (lambda ()
+     (with-rig "tags-filter-items.db"
+       (lambda (g)
+         (filter-family! g)
+         (map (lambda (i) (list (member-of i "tags") (member-of i "body")))
+              (items (nodes-get g 1 "tag=b&tag=a"))))))))
+
+(test-equal "filter: a tag in a query, as the review's table has it: a+b is a-b; c++ is c; c%2B%2B is c++; %E6%97%A5%E6%9C%AC, %2F and %26 are 日本, / and &; %FF is U+FFFD, a tag; a cut-off sequence is 200"
+  '((1) (2) (3) (4) (5) (6) (7) 200)
+  (attempt
+   (lambda ()
+     (with-rig "tags-filter-query.db"
+       (lambda (g)
+         (seed-tagged! g acct-a 1 "note" #f '("a-b"))
+         (seed-tagged! g acct-a 2 "note" #f '("c"))
+         (seed-tagged! g acct-a 3 "note" #f '("c++"))
+         (seed-tagged! g acct-a 4 "note" #f '("\x65E5;\x672C;"))
+         (seed-tagged! g acct-a 5 "note" #f '("/"))
+         (seed-tagged! g acct-a 6 "note" #f '("&"))
+         (seed-tagged! g acct-a 7 "note" #f '("\xFFFD;"))
+         (let ((ns (lambda (q) (item-ns (nodes-get g 1 q)))))
+           (list (ns "tag=a+b") (ns "tag=c++") (ns "tag=c%2B%2B") (ns "tag=%E6%97%A5%E6%9C%AC")
+                 (ns "tag=%2F") (ns "tag=%26") (ns "tag=%FF")
+                 (answer-status (nodes-get g 1 "tag=%E6%97")))))))))
+
+;; ten-of : String -> String     ?tag=T ten times, joined by &
+(define (tags-query ts)
+  (let loop ((ts ts) (acc ""))
+    (if (null? ts) acc
+        (loop (cdr ts) (string-append acc (if (string=? acc "") "" "&") "tag=" (car ts))))))
+
+(test-equal "filter: its cap is 10 as sent: ten that fold to one tag are taken, eleven are 400; ten distinct are taken, eleven 400; an empty value, a name with no =, and a tab are 400; each 400 with no job"
+  (list '(200 (1)) '(400 "invalid_request") '(200 ()) '(400 "invalid_request")
+        '(400 "invalid_request") '(400 "invalid_request") '(400 "invalid_request") 2)
+  (attempt
+   (lambda ()
+     (with-rig "tags-filter-cap.db"
+       (lambda (g)
+         (seed-tagged! g acct-a 1 "note" #f '("work"))
+         (let* ((ten-same (append '("Work" "work" "WORK") (repeat 7 "work")))
+                (ten (map (lambda (i) (string-append "t" (number->string i))) (iota-of 10)))
+                (a (nodes-get g 1 (tags-query ten-same)))
+                (b (nodes-get g 1 (tags-query (cons "work" ten-same))))
+                (c (nodes-get g 1 (tags-query ten)))
+                (d (nodes-get g 1 (tags-query (cons "t10" ten))))
+                (e (nodes-get g 1 "tag="))
+                (f (nodes-get g 1 "tag"))
+                (h (nodes-get g 1 "tag=a%09b")))
+           (list (list (answer-status a) (item-ns a)) (status+code b)
+                 (list (answer-status c) (item-ns c)) (status+code d)
+                 (status+code e) (status+code f) (status+code h) ((rig-jobs g)))))))))
+
+(test-equal "order: the filter's 400 comes after the key's shape and before the job: no key 401 and no job; with an unknown key, a bad tag is the 400 and no job; with a parent that is no node, a bad tag is the 400 and no job; with good tags, an unknown key is 401 in its job and a missing parent 404 in its job; a bad limit beside a good tag is the 400"
+  '((401 "unauthorized" 0) (400 "invalid_request" 0) (400 "invalid_request" 0)
+    (401 "unauthorized" 1) (404 "not_found" 2) (400 "invalid_request" 2))
+  (attempt
+   (lambda ()
+     (with-rig "tags-filter-order.db"
+       (lambda (g)
+         (let* ((step (lambda (a) (append (status+code a) (list ((rig-jobs g))))))
+                (missing (string-append "&parent=" (nid-text 99)))
+                (a (step ((rig-call g) 'GET "/v1/nodes?tag=" '())))
+                (b (step (nodes-get g 9 "tag=")))
+                (c (step (nodes-get g 1 (string-append "tag=" missing))))
+                (d (step (nodes-get g 9 "tag=a")))
+                (e (step (nodes-get g 1 (string-append "tag=a" missing))))
+                (f (step (nodes-get g 1 "tag=a&limit=0"))))
+           (list a b c d e f)))))))
+
+;;; The tags list: GET /v1/tags (G6, H6)
+
+;; list-family! : Rig -> Void
+;; A's 1 (a b), 2 (a c), 3 (a d) trashed, 4 (e) archived; B's 20 (a zz).
+(define (list-family! g)
+  (seed-tagged! g acct-a 1 "note" #f '("a" "b"))
+  (seed-tagged! g acct-a 2 "note" #f '("a" "c"))
+  (seed-tagged! g acct-a 3 "note" #f '("a" "d"))
+  (trashed-at! g acct-a 3 1)
+  (seed-tagged! g acct-a 4 "note" #f '("e"))
+  (archived-at! g acct-a 4 1)
+  (seed-tagged! g acct-b 20 "note" #f '("a" "zz")))
+
+;; tag-item : String Natural -> Alist     a tags list's item
+(define (tag-item t n) (list (cons "tag" t) (cons "count" n)))
+
+(test-equal "tags: none is {\"items\":[],\"next\":null}; then each of the account's tags once, in order, with its count over every state; two a page, next the last tag; after folded; B's own"
+  (list (list 200 "{\"items\":[],\"next\":null}")
+        (list 200 (list (tag-item "a" 3) (tag-item "b" 1) (tag-item "c" 1) (tag-item "d" 1) (tag-item "e" 1)) 'null)
+        (list (list (list (tag-item "a" 3) (tag-item "b" 1)) "b")
+              (list (list (tag-item "c" 1) (tag-item "d" 1)) "d")
+              (list (list (tag-item "e" 1)) 'null))
+        (list (tag-item "c" 1) (tag-item "d" 1) (tag-item "e" 1))
+        (list (tag-item "a" 1) (tag-item "zz" 1)))
+  (attempt
+   (lambda ()
+     (with-rig "tags-list.db"
+       (lambda (g)
+         (let ((empty (tags-get g 1 "")))
+           (list-family! g)
+           (let* ((all (tags-get g 1 ""))
+                  (page (lambda (q) (let ((a (tags-get g 1 q)))
+                                      (list (items a) (member-of (answer-json a) "next")))))
+                  (p1 (page "limit=2"))
+                  (p2 (page "limit=2&after=b"))
+                  (p3 (page "limit=2&after=d")))
+             (list (list (answer-status empty) (answer-body empty))
+                   (list (answer-status all) (items all) (member-of (answer-json all) "next"))
+                   (list p1 p2 p3)
+                   (items (tags-get g 1 "after=B"))
+                   (items (tags-get g 3 ""))))))))))
+
+;; The guide's paging rule for tags: next is a tag, so a client sends it
+;; back percent-encoded; c++ unencoded is c and two spaces, folded to c,
+;; and answers the page it came from again, with the same next.
+(test-equal "tags: next is the tag as stored; sent back as after percent-encoded, c%2B%2B, it pages on; sent as it is, c++ reads as c and answers the same page and next again"
+  (list (list (list (tag-item "c++" 1)) "c++")
+        (list (list (tag-item "d" 1)) 'null)
+        (list (list (tag-item "c++" 1)) "c++"))
+  (attempt
+   (lambda ()
+     (with-rig "tags-list-next.db"
+       (lambda (g)
+         (tag-make! g 1 1 "note" (tags-text (list "c++" "d")))
+         (let ((page (lambda (q) (let ((a (tags-get g 1 q)))
+                                   (list (items a) (member-of (answer-json a) "next"))))))
+           (list (page "limit=1") (page "limit=1&after=c%2B%2B") (page "limit=1&after=c++"))))))))
+
+(test-equal "tags: a count stops at 1,000 (H6): 1,001 carriers count 1000, 999 count 999; limit is capped at 100 as every list's"
+  (list (list (tag-item "big" 1000) (tag-item "nine" 999)) (list 100 "t099"))
+  (attempt
+   (lambda ()
+     (with-rig "tags-count-cap.db"
+       (lambda (g)
+         (seed-many! g acct-a 100 1001 (lambda (n) (if (< n 1099) '("big" "nine") '("big"))))
+         (seed-tagged! g acct-b 3000 "note" #f
+                       (map (lambda (i) (string-append "t" (if (< i 10) "00" (if (< i 100) "0" "")) (number->string i)))
+                            (iota-of 50)))
+         (seed-tagged! g acct-b 3001 "note" #f
+                       (map (lambda (i) (string-append "t" (if (< i 100) "0" "") (number->string i)))
+                            (map (lambda (i) (+ i 50)) (iota-of 50))))
+         (seed-tagged! g acct-b 3002 "note" #f '("t100" "t101" "t102"))
+         (let ((wide (tags-get g 3 "limit=1000")))
+           (list (items (tags-get g 1 ""))
+                 (list (length (items wide)) (member-of (answer-json wide) "next")))))))))
+
+(test-equal "order: the tags list: no key 401 and no job; with an unknown key, a bad limit and a bad after are each the 400 and no job; after given twice, empty, or refused is the 400; with good ones an unknown key is 401 in its job"
+  '((401 "unauthorized" 0) (400 "invalid_request" 0) (400 "invalid_request" 0) (400 "invalid_request" 0)
+    (400 "invalid_request" 0) (400 "invalid_request" 0) (400 "invalid_request" 0) (401 "unauthorized" 1))
+  (attempt
+   (lambda ()
+     (with-rig "tags-list-order.db"
+       (lambda (g)
+         (let* ((step (lambda (a) (append (status+code a) (list ((rig-jobs g))))))
+                (a (step ((rig-call g) 'GET "/v1/tags?limit=0" '())))
+                (b (step (tags-get g 9 "limit=0")))
+                (c (step (tags-get g 9 "after=a%09b")))
+                (d (step (tags-get g 1 "after=a&after=b")))
+                (e (step (tags-get g 1 "after=")))
+                (f (step (tags-get g 1 (string-append "after=" (make-string 257 #\a)))))
+                (h (step (tags-get g 1 "limit=x")))
+                (i (step (tags-get g 9 "limit=2&after=a"))))
+           (list a b c d e f h i)))))))
+
+;;; L8: a tag's count is what the filter finds over the three states
+
+(test-equal "L8: below the cap, each tag's count is the number of nodes the filter finds over active, archived and trashed"
+  '(#t #t)
+  (attempt
+   (lambda ()
+     (with-rig "tags-l8.db"
+       (lambda (g)
+         (seed-many! g acct-a 100 40 (lambda (n) (append (if (even? n) '("even") '())
+                                                         (if (= 0 (mod n 3)) '("three") '())
+                                                         '("all"))))
+         (let loop ((n 100))
+           (when (< n 140)
+             (cond ((= 1 (mod n 4)) (archived-at! g acct-a n 1))
+                   ((= 2 (mod n 4)) (trashed-at! g acct-a n 1)))
+             (loop (+ n 1))))
+         (let* ((listed (map (lambda (i) (cons (member-of i "tag") (member-of i "count")))
+                             (items (tags-get g 1 ""))))
+                (found (map (lambda (p)
+                              (cons (car p)
+                                    (apply + (map (lambda (s)
+                                                    (length (items (nodes-get g 1 (string-append "limit=100&tag=" (car p) "&state=" s)))))
+                                                  '("active" "archived" "trashed")))))
+                            listed)))
+           (list (equal? listed found) (equal? (map car listed) '("all" "even" "three")))))))))
+
+;;; The two commands: POST /v1/tags/rename and /v1/tags/remove (G8, L5, L6)
+
+(test-equal "rename: over 1,001 carriers in every state, some carrying both tags, each step takes 500 until left is 0; 200, no ETag; then no node carries the old tag, each carries the new one once, each was bumped once with one change row of op tags at its new revision; no snapshot; B's node untouched; the list shows the new tag"
+  (list (list 200 #f '(("renamed" . 500) ("left" . 501)))
+        (list 200 #f '(("renamed" . 500) ("left" . 1)))
+        (list 200 #f '(("renamed" . 1) ("left" . 0)))
+        (list 200 #f '(("renamed" . 0) ("left" . 0)))
+        0 1001 #t 1001 1001 #t #t 1 (list (tag-item "to" 1000)))
+  (attempt
+   (lambda ()
+     (with-rig "tags-rename.db"
+       (lambda (g)
+         (seed-many! g acct-a 100 1001 (lambda (n) (if (< n 150) '("from" "to") '("from"))))
+         (let loop ((n 150))
+           (when (< n 250)
+             (if (< n 200) (archived-at! g acct-a n 1) (trashed-at! g acct-a n 1))
+             (loop (+ n 1))))
+         (seed-tagged! g acct-b 3000 "note" #f '("from"))
+         (let* ((before (heads-of g acct-a))
+                (snaps (count-of g "SELECT count(*) FROM revisions"))
+                (a1 (rename! g 1 "From" "TO"))
+                (a2 (rename! g 1 "from" "to"))
+                (a3 (rename! g 1 "from" "to"))
+                (a4 (rename! g 1 "from" "to"))
+                (after (heads-of g acct-a)))
+           (list (counts a1) (counts a2) (counts a3) (counts a4)
+                 (count-of g "SELECT count(*) FROM node_tags WHERE owner = ? AND tag = 'from'" acct-a)
+                 (count-of g "SELECT count(*) FROM node_tags WHERE owner = ? AND tag = 'to'" acct-a)
+                 (equal? after (map (lambda (h) (cons (car h) (+ (cdr h) 1))) before))
+                 (count-of g "SELECT count(DISTINCT node) FROM changes WHERE owner = ? AND op = 'tags'" acct-a)
+                 (count-of g (string-append "SELECT count(*) FROM changes c JOIN nodes n ON n.id = c.node"
+                                            " WHERE c.owner = ? AND c.op = 'tags' AND c.revision = n.revision")
+                           acct-a)
+                 (= snaps (count-of g "SELECT count(*) FROM revisions"))
+                 (equal? (tag-rows g 3000) '("from"))
+                 (car (stored g 3000))
+                 (items (tags-get g 1 "")))))))))
+
+(test-equal "remove: over 600 carriers, 500 then 100, then 0; no row of the tag is left; each carrier bumped once; no snapshot"
+  (list (list 200 #f '(("removed" . 500) ("left" . 100)))
+        (list 200 #f '(("removed" . 100) ("left" . 0)))
+        (list 200 #f '(("removed" . 0) ("left" . 0)))
+        0 #t #t 600)
+  (attempt
+   (lambda ()
+     (with-rig "tags-remove.db"
+       (lambda (g)
+         (seed-many! g acct-a 100 600 (lambda (n) '("gone" "kept")))
+         (let* ((before (heads-of g acct-a))
+                (snaps (count-of g "SELECT count(*) FROM revisions"))
+                (a1 (remove! g 1 "Gone"))
+                (a2 (remove! g 1 "gone"))
+                (a3 (remove! g 1 "gone")))
+           (list (counts a1) (counts a2) (counts a3)
+                 (count-of g "SELECT count(*) FROM node_tags WHERE tag = 'gone'")
+                 (equal? (heads-of g acct-a) (map (lambda (h) (cons (car h) (+ (cdr h) 1))) before))
+                 (= snaps (count-of g "SELECT count(*) FROM revisions"))
+                 (count-of g "SELECT count(*) FROM node_tags WHERE tag = 'kept'"))))))))
+
+(test-equal "commands: a tag only B carries is {renamed 0, left 0} and {removed 0, left 0} for A, nothing written but the key's last_used: never 404; A's list and filter do not see B's tags; B's rename does not touch A's"
+  (list (list 200 '(("renamed" . 0) ("left" . 0))) (list 200 '(("removed" . 0) ("left" . 0))) #t
+        '() '() (list 200 '(("renamed" . 0) ("left" . 0))) '("mine"))
+  (attempt
+   (lambda ()
+     (with-rig "tags-other.db"
+       (lambda (g)
+         (seed-tagged! g acct-b 20 "note" #f '("theirs"))
+         (seed-tagged! g acct-a 1 "note" #f '("mine"))
+         (let* ((before (tables g))
+                (a (rename! g 1 "theirs" "x"))
+                (b (remove! g 1 "theirs"))
+                (after (tables g))
+                (same? (equal? (map (lambda (t) (list-ref before t)) '(0 1 2 3 5))
+                               (map (lambda (t) (list-ref after t)) '(0 1 2 3 5))))
+                (lst (items (tags-get g 1 "after=mine")))
+                (flt (items (nodes-get g 1 "tag=theirs")))
+                (c (rename! g 3 "mine" "x")))
+           (list (list (answer-status a) (answer-json a)) (list (answer-status b) (answer-json b)) same?
+                 lst flt (list (answer-status c) (answer-json c)) (tag-rows g 1))))))))
+
+(test-equal "rename: onto a tag a node has is a merge, one tag, one bump; from and to the same once folded is 400 after the key's read job, nothing written"
+  (list (list 200 '(("renamed" . 1) ("left" . 0))) '("b") 2 1
+        (list 400 "invalid_request" '(2 1)) #t)
+  (attempt
+   (lambda ()
+     (with-rig "tags-merge.db"
+       (lambda (g)
+         (seed-tagged! g acct-a 1 "note" #f '("a" "b"))
+         (let* ((a (rename! g 1 "a" "b"))
+                (rows (tag-rows g 1))
+                (rev (car (stored g 1)))
+                (chg (count-of g "SELECT count(*) FROM changes WHERE op = 'tags'"))
+                (before (tables g))
+                (b (rename! g 1 "Work" "work")))
+           (list (list (answer-status a) (answer-json a)) rows rev chg
+                 (append (status+code b) (list (jobs-of g))) (equal? before (tables g)))))))))
+
+(test-equal "rename: a node given the old tag between steps raises left; each step takes min(500, left); a device with an unsent edit to a renamed node gets a 412; a restore of the newest snapshot brings the old tag back"
+  (list '(("renamed" . 500) ("left" . 100)) 101 '(("renamed" . 101) ("left" . 0))
+        '(412 "precondition_failed") (list 200 '#("from")))
+  (attempt
+   (lambda ()
+     (with-rig "tags-left.db"
+       (lambda (g)
+         (seed-many! g acct-a 100 600 (lambda (n) '("from")))
+         (let* ((a (rename! g 1 "from" "to"))
+                (x (tag-make! g 1 1 "note" (tags-text '("from"))))
+                (mid (member-of (car (items (tags-get g 1 ""))) "count"))
+                (b (rename! g 1 "from" "to"))
+                (stale (tag-change! g 1 1 1 #f))
+                (back (restore! g 1 1 1 2)))
+           (list (answer-json a) mid (answer-json b) (status+code stale)
+                 (list (answer-status back) (tags-in back)))))))))
+
+(test-equal "rename: two steps sent at once on one connection run one after the other on the one writer: 500 then 100, no node touched twice"
+  (list '(200 200) '((("renamed" . 500) ("left" . 100)) (("renamed" . 100) ("left" . 0))) #t)
+  (attempt
+   (lambda ()
+     (with-rig "tags-twice.db"
+       (lambda (g)
+         (seed-many! g acct-a 100 600 (lambda (n) '("from")))
+         (let* ((before (heads-of g acct-a))
+                (one (request-bytes 'POST rename-path (list (key-h 1) json-type) (rename-body "from" "to")))
+                (as (exchange-bytes (rig-handler g) (bytes-append one one))))
+           (list (map answer-status as) (map answer-json as)
+                 (equal? (heads-of g acct-a) (map (lambda (h) (cons (car h) (+ (cdr h) 1))) before)))))))))
+
+;; tag-commands : (Listof (List String String String))
+;; Each command: its name, its path, a body it takes.
+(define tag-commands
+  (list (list "rename" rename-path "{\"from\":\"a\",\"to\":\"b\"}")
+        (list "remove" remove-path "{\"tag\":\"a\"}")))
+
+;; bad-command-bodies : String -> (Listof (Pair String String))     each a 400 invalid_request
+(define (bad-command-bodies name)
+  (append
+   (if (string=? name "rename")
+       (list (cons "an empty object" "{}")
+             (cons "from alone" "{\"from\":\"a\"}")
+             (cons "to alone" "{\"to\":\"b\"}")
+             (cons "a third member" "{\"from\":\"a\",\"to\":\"b\",\"x\":1}")
+             (cons "from twice" "{\"from\":\"a\",\"from\":\"a\",\"to\":\"b\"}")
+             (cons "from a number" "{\"from\":1,\"to\":\"b\"}")
+             (cons "from null" "{\"from\":null,\"to\":\"b\"}")
+             (cons "from empty" "{\"from\":\"\",\"to\":\"b\"}")
+             (cons "to refused" "{\"from\":\"a\",\"to\":\"a\\tb\"}")
+             (cons "from and to one once folded" "{\"from\":\"A\",\"to\":\"a\"}")
+             (cons "from in capitals" "{\"From\":\"a\",\"to\":\"b\"}"))
+       (list (cons "an empty object" "{}")
+             (cons "another member beside it" "{\"tag\":\"a\",\"x\":1}")
+             (cons "the member twice" "{\"tag\":\"a\",\"tag\":\"a\"}")
+             (cons "a number" "{\"tag\":1}")
+             (cons "null" "{\"tag\":null}")
+             (cons "a list" "{\"tag\":[\"a\"]}")
+             (cons "empty" "{\"tag\":\"\"}")
+             (cons "an invisible character" "{\"tag\":\"a\\u200bb\"}")
+             (cons "the member in capitals" "{\"Tag\":\"a\"}")))
+   (list (cons "an array" "[]")
+         (cons "null" "null")
+         (cons "a string" "\"a\"")
+         (cons "a number" "1")
+         (cons "an empty body" ""))))
+
+;; padded : String Natural -> String     the JSON object TEXT made N bytes, spaces after its {
+(define (padded text n)
+  (string-append "{" (make-string (- n (text-bytes text)) #\space) (substring text 1 (string-length text))))
+
+(for-each
+ (lambda (cmd)
+   (let* ((name (car cmd))
+          (path (cadr cmd))
+          (good (caddr cmd))
+          (send (lambda (g headers text) ((rig-call g) 'POST path headers text)))
+          (label (lambda (s) (string-append name ": " s))))
+     (test-equal (label "no key is 401, no job, even with If-Match")
+       '((401 "unauthorized" 0) (401 "unauthorized" 0))
+       (attempt
+        (lambda ()
+          (with-rig "cmd-nokey.db"
+            (lambda (g)
+              (let* ((a (send g (list json-type) good))
+                     (ja ((rig-jobs g)))
+                     (b (send g (list json-type (match-h 1)) good)))
+                (list (append (status+code a) (list ja)) (append (status+code b) (list ((rig-jobs g)))))))))))
+     (for-each
+      (lambda (pre)
+        (test-equal (label (string-append (car pre) " is 400, never 428, with no job: with A's key and with an unknown key"))
+          '((400 "invalid_request") (400 "invalid_request") 0)
+          (attempt
+           (lambda ()
+             (with-rig "cmd-pre.db"
+               (lambda (g)
+                 (let* ((a (send g (append (list (key-h 1) json-type) (cdr pre)) good))
+                        (b (send g (append (list (key-h 9) json-type) (cdr pre)) good)))
+                   (list (status+code a) (status+code b) ((rig-jobs g))))))))))
+      (list (list "If-Match \"1\"" (match-h 1))
+            (list "If-None-Match: *" none-match)
+            (list "If-Match: *" (cons "If-Match" "*"))
+            (list "a weak tag" (cons "If-Match" "W/\"1\""))
+            (list "If-Match empty" (cons "If-Match" ""))
+            (list "If-None-Match empty" (cons "If-None-Match" ""))
+            (list "both" (match-h 1) none-match)))
+     (test-equal (label "an unknown key is 401 in its read job, no write job: with a bad body, one over the cap, one that does not parse and text/plain, still the 401; a revoked key the same")
+       '((401 "unauthorized") (401 "unauthorized") (401 "unauthorized") (401 "unauthorized") (401 "unauthorized")
+         (read read read read read) #t (401 "unauthorized" (read)))
+       (attempt
+        (lambda ()
+          (append
+           (with-rig "cmd-unknown.db"
+             (lambda (g)
+               (let* ((before (tables g))
+                      (h (list (key-h 9) json-type))
+                      (a (send g h good))
+                      (b (send g h "{}"))
+                      (c (send g h (padded good 20000)))
+                      (d (send g h "{nope"))
+                      (e (send g (list (key-h 9) (cons "Content-Type" "text/plain")) good)))
+                 (list (status+code a) (status+code b) (status+code c) (status+code d) (status+code e)
+                       ((rig-order g)) (equal? before (tables g))))))
+           (with-rig "cmd-revoked.db"
+             (lambda (g)
+               (run-write (rig-store g) (lambda (tx) (revoke-key! tx acct-a (kid 1) 1500)))
+               (let ((a (send g (list (key-h 1) json-type) "{nope")))
+                 (list (append (status+code a) (list ((rig-order g))))))))))))
+     (test-equal (label "a media type that is not JSON is 415 after the key's read job, no write job, even with a body over the cap or one that does not parse")
+       '((415 "unsupported_media_type") (415 "unsupported_media_type") (415 "unsupported_media_type")
+         (415 "unsupported_media_type") (read read read read))
+       (attempt
+        (lambda ()
+          (with-rig "cmd-type.db"
+            (lambda (g)
+              (let* ((a (send g (list (key-h 1)) good))
+                     (b (send g (list (key-h 1) (cons "Content-Type" "text/plain")) good))
+                     (c (send g (list (key-h 1) (cons "Content-Type" "text/plain")) (padded good 20000)))
+                     (d (send g (list (key-h 1) (cons "Content-Type" "text/plain")) "{nope")))
+                (list (status+code a) (status+code b) (status+code c) (status+code d) ((rig-order g)))))))))
+     (test-equal (label "the body's cap is 16 KiB: 16,384 bytes is 200; one more is 413 after the key's read job, even when it would not parse; nothing written")
+       '((200) (413 "payload_too_large") (413 "payload_too_large") (read read) #t)
+       (attempt
+        (lambda ()
+          (append
+           (with-rig "cmd-at-cap.db"
+             (lambda (g) (list (list (answer-status (send g (list (key-h 1) json-type) (padded good 16384)))))))
+           (with-rig "cmd-over-cap.db"
+             (lambda (g)
+               (let* ((before (tables g))
+                      (a (send g (list (key-h 1) json-type) (padded good 16385)))
+                      (b (send g (list (key-h 1) json-type) (string-append (padded good 16385) "{nope"))))
+                 (list (status+code a) (status+code b) ((rig-order g)) (equal? before (tables g))))))))))
+     (test-equal (label "JSON that does not parse is 400 invalid_json after the key's read job, no write job")
+       '(400 "invalid_json" (read))
+       (attempt
+        (lambda ()
+          (with-rig "cmd-json.db"
+            (lambda (g)
+              (let ((a (send g (list (key-h 1) json-type) "{\"from\": nope")))
+                (append (status+code a) (list ((rig-order g))))))))))
+     (for-each
+      (lambda (bad)
+        (test-equal (label (string-append (car bad) " is 400 invalid_request after the key's read job, no write job, nothing written"))
+          '(400 "invalid_request" (read) #t)
+          (attempt
+           (lambda ()
+             (with-rig "cmd-bad.db"
+               (lambda (g)
+                 (seed-tagged! g acct-a 1 "note" #f '("a"))
+                 (let* ((before (tables g))
+                        (a (send g (list (key-h 1) json-type) (cdr bad))))
+                   (append (status+code a) (list ((rig-order g)) (equal? before (tables g)))))))))))
+      (bad-command-bodies name))
+     (test-equal (label "a key revoked after the head came and before the body did is 401 from the write job, nothing written")
+       '(((401 "unauthorized")) (read write) #t)
+       (attempt
+        (lambda ()
+          (with-rig "cmd-revoked-between.db"
+            (lambda (g)
+              (seed-tagged! g acct-a 1 "note" #f '("a"))
+              (let* ((bytes (string->utf8 good))
+                     (before (tables g)))
+                (let-values (((answers waiting? closed?)
+                              (exchange-steps (rig-handler g)
+                                              (list (request-bytes 'POST path
+                                                                   (list (key-h 1) json-type
+                                                                         (cons "Content-Length" (number->string (bytevector-length bytes)))))
+                                                    (lambda ()
+                                                      (run-write (rig-store g)
+                                                                 (lambda (tx) (revoke-key! tx acct-a (kid 1) 1500))))
+                                                    bytes))))
+                  (let ((after (tables g)))
+                    (list (map status+code answers) ((rig-order g))
+                          (equal? (map (lambda (t) (list-ref before t)) '(0 1 2 3 5))
+                                  (map (lambda (t) (list-ref after t)) '(0 1 2 3 5))))))))))))
+     (test-equal (label "the head alone: a 2 MB Content-Length with an unknown key is 401 at once from the read job; with A's key, 413 at once after it")
+       (list (list '((401 "unauthorized")) '(read)) (list '((413 "payload_too_large")) '(read)))
+       (attempt
+        (lambda ()
+          (let ((one (lambda (db k)
+                       (with-rig db
+                         (lambda (g)
+                           (let-values (((answers waiting? closed?)
+                                         (exchange-steps (rig-handler g)
+                                                         (list (request-bytes 'POST path
+                                                                              (list (key-h k) json-type
+                                                                                    (cons "Content-Length" "2000000")))))))
+                             (list (map status+code answers) ((rig-order g)))))))))
+            (list (one "cmd-head.db" 9) (one "cmd-head-a.db" 1))))))
+     (test-equal (label "GET and PUT are 405, allow POST; no job")
+       '((405 "method_not_allowed" "POST") (405 "method_not_allowed" "POST") 0)
+       (attempt
+        (lambda ()
+          (with-rig "cmd-405.db"
+            (lambda (g)
+              (let* ((a ((rig-call g) 'GET path (list (key-h 1))))
+                     (b ((rig-call g) 'PUT path (list (key-h 1) json-type) good)))
+                (list (list (answer-status a) (member-of (answer-json a) "code") (answer-header a "allow"))
+                      (list (answer-status b) (member-of (answer-json b) "code") (answer-header b "allow"))
+                      ((rig-jobs g)))))))))))
+ tag-commands)
+
+(test-equal "tags: POST and PUT on /v1/tags are 405, allow GET, HEAD"
+  '((405 "method_not_allowed" "GET, HEAD") (405 "method_not_allowed" "GET, HEAD"))
+  (attempt
+   (lambda ()
+     (with-rig "tags-405.db"
+       (lambda (g)
+         (map (lambda (m) (let ((a ((rig-call g) m "/v1/tags" (list (key-h 1)))))
+                            (list (answer-status a) (member-of (answer-json a) "code") (answer-header a "allow"))))
+              '(POST PUT)))))))
+
+;;; Jobs and the log (L10, L12)
+
+;; tag-like? : Any -> Boolean     a member of a parsed JSON object that names tags or a command's tag
+(define (tag-like? x)
+  (and (pair? x) (member (car x) '("tags" "from" "to" "tag")) #t))
+
+(test-equal "job: a create's and a replace's jobs hold the stored forms, never the tags as sent nor the parsed member; a rename's and a removal's jobs the same"
+  '((201 #t #f #f #f) (200 #t #f #f) (200 #t #f #f) (200 #t #f #f))
+  (attempt
+   (lambda ()
+     (with-rig "tags-job.db"
+       (lambda (g)
+         (let* ((a (tag-make! g 1 1 "note" (tags-text '("Secret-Q" "secret-q"))))
+                (ja ((rig-job g)))
+                (b (tag-change! g 1 1 1 (tags-text '("Secret-R"))))
+                (jb ((rig-job g)))
+                (c (rename! g 1 "Secret-R" "Secret-S"))
+                (jc ((rig-job g)))
+                (d (remove! g 1 "Secret-S"))
+                (jd ((rig-job g))))
+           (list (list (answer-status a) (reaches? ja (lambda (x) (equal? x "secret-q")))
+                       (reaches? ja (lambda (x) (equal? x "Secret-Q"))) (reaches? ja tag-like?)
+                       (reaches? ja req-like?))
+                 (list (answer-status b) (reaches? jb (lambda (x) (equal? x "secret-r")))
+                       (reaches? jb (lambda (x) (equal? x "Secret-R"))) (reaches? jb tag-like?))
+                 (list (answer-status c) (reaches? jc (lambda (x) (equal? x "secret-s")))
+                       (reaches? jc (lambda (x) (equal? x "Secret-S"))) (reaches? jc tag-like?))
+                 (list (answer-status d) (reaches? jd (lambda (x) (equal? x "secret-s")))
+                       (reaches? jd (lambda (x) (equal? x "Secret-S"))) (reaches? jd tag-like?)))))))))
+
+(test-equal "log: writes with tags, the filter, the list, the commands and their refusals: no line holds a tag; each line of a request that reached its key's job names the account (the filter's 400 has none)"
+  (list '(201 200 400 200 400 200 200 200 400 400) 10 9 #f)
+  (attempt
+   (lambda ()
+     (with-rig "tags-log.db"
+       (lambda (g)
+         (let* ((as (in-order (lambda (send) (send))
+                              (list (lambda () (tag-make! g 1 1 "note" (tags-text '("zqtag-1"))))
+                                    (lambda () (tag-change! g 1 1 1 (tags-text '("zqtag-1" "zqtag-2"))))
+                                    (lambda () (tag-make! g 1 2 "note" "[\"zqtag-3\",1]"))
+                                    (lambda () (nodes-get g 1 "tag=zqtag-1"))
+                                    (lambda () (nodes-get g 1 "tag=zqtag%09"))
+                                    (lambda () (tags-get g 1 "after=zqtag-1"))
+                                    (lambda () (rename! g 1 "zqtag-1" "zqtag-4"))
+                                    (lambda () (remove! g 1 "zqtag-2"))
+                                    (lambda () (rename! g 1 "Zqtag-5" "zqtag-5"))
+                                    (lambda () (remove! g 1 "zqtag\t6")))))
+                (lines ((rig-lines g)))
+                (text (apply string-append lines)))
+           (list (map answer-status as) (length lines)
+                 (length (filter (lambda (l) (contains? l (string-append "account=" (id->string acct-a)))) lines))
+                 (contains? text "zqtag"))))))))
+
+(test-equal "raise: stored tags holding a null (put there past any write) are a 500 for the snapshot's GET, and for a restore, whose row takes no null, which writes nothing; a step whose count check fails (a row left on a purged node, past any write) is a 500 and writes nothing; no raise names a tag"
+  (list '((500 "internal") (500 "internal") (500 "internal")) #t #f #t)
+  (attempt
+   (lambda ()
+     (with-rig "tags-raise.db"
+       (lambda (g)
+         (seed-tagged! g acct-a 1 "note" #f '("zqtag-6"))
+         (seed-tagged! g acct-a 2 "note" #f '("zqtag-7"))
+         (seed-tagged! g acct-a 3 "note" #f '())
+         (purged-at! g acct-a 3 1)
+         (with-raw g (lambda (db)
+                       (execute! db "UPDATE revisions SET tags = '[\"zqtag-6\",null]' WHERE node = ?" (nid 1))
+                       (execute! db "INSERT INTO node_tags(owner, tag, node) VALUES (?, 'zqtag-7', ?)" acct-a (nid 3))))
+         (let ((before (tables g)))
+           (let-values (((as text)
+                         (capture-output
+                          (lambda ()
+                            (let* ((a (get! g 1 (revision-path 1 1)))
+                                   (b (restore! g 1 1 1 1))
+                                   (c (rename! g 1 "zqtag-7" "zqtag-8")))
+                              (list a b c))))))
+             (list (map status+code as) (contains? text "handler-failed") (contains? text "zqtag")
+                   (equal? before (tables g))))))))))
 
 (test-end "node-routes")
 

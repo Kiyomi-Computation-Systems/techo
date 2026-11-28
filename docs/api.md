@@ -134,12 +134,14 @@ curl -X POST -H "Authorization: Bearer $KEY" \
 ## Nodes
 
 A node is one note: a title, a body of text, and what kind of note it is. Every
-write is checked against the node's revision, and every write is kept until the node is deleted.
+write is checked against the node's revision, and every change of its content is kept until the
+node is deleted. A [rename or removal of a tag](#rename-or-remove-a-tag) is an exception to both: it
+takes no `If-Match` and keeps no copy.
 
 ```json
 {"id":"0193a5c0-9000-7000-8000-000000000001","kind":"note","state":"active",
  "parent":null,"title":"Shopping","body":"* apples\n* pears","content_type":"text/org","props":{},
- "revision":1,"created":1795515226123,"updated":1795515226123}
+ "tags":["errands"],"revision":1,"created":1795515226123,"updated":1795515226123}
 ```
 
 | Field | What it is |
@@ -152,7 +154,8 @@ write is checked against the node's revision, and every write is kept until the 
 | `body` | Text, up to 1 MiB (1,048,576 bytes of UTF-8). Techo never reads it. |
 | `content_type` | What the body is, such as `text/org`: 1 to 255 printable ASCII characters (a space is fine, a tab is not) with a `/`. Techo stores it and does nothing with it. |
 | `props` | What is particular to the kind: a Task's status, a Contact's details. See [props](#props-by-kind). 4,096 bytes at most. |
-| `revision` | 1 when made, one more after every write, every change of state, every move and every Task command. |
+| `tags` | Short labels, at most 50: a list, sorted, `[]` for none. Techo stores each in one form. See [tags](#tags). |
+| `revision` | 1 when made, one more after every write, every change of state, every move, every Task command, and every rename or removal of a tag it carries. |
 | `created`, `updated` | [Times](#times). |
 
 Neither the title nor the body may hold the character U+0000.
@@ -204,7 +207,9 @@ curl -X PUT -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' 
 - `kind` may be left out. Given, it must be the node's own, or it is a `409`.
 - `props` may be left out, and the node's are then kept. Send `{}` to clear
   them. See [props](#props-by-kind).
-- Send only the five content fields. `id`, `revision` and the times are a `400`
+- `tags` may be left out, and the node's are then kept. Send `[]` to clear
+  them. See [tags](#tags).
+- Send only the six content fields. `id`, `revision` and the times are a `400`
   in a request.
 - The same content sent twice makes two revisions.
 
@@ -221,25 +226,29 @@ Your **active** nodes, in id order, **without their bodies**. [Paged](#paging).
 - `?parent=<id>` lists one node's children, and `?parent=null` the top level.
   Without it the list is flat: every node, wherever it is. See
   [folders](#folders).
+- `?tag=work` lists the nodes that carry a tag, and `&tag=` again those that
+  carry every one. See [tags](#tags).
 
 ### `GET /v1/nodes/{id}/revisions`
 
-Every write of content the node has had, newest first, without bodies:
-`revision`, `title`, `content_type`, `props`, `created`. [Paged](#paging), but
-`after` and `next` are revision numbers here.
+Every copy of the node's content Techo kept, newest first, without bodies:
+`revision`, `title`, `content_type`, `props`, `created`. A write, a restore
+and a Task command each keep one. [Paged](#paging), but `after` and `next` are
+revision numbers here.
 
-**The numbers can skip.** A change of state takes a revision number and keeps no
-copy. A node at revision 2 that is archived is at revision 3 and still lists
-2, 1. Write it again and it lists 4, 2, 1. Revision 3 is a `404`.
+**The numbers can skip.** A change of state, a move, and a rename or removal
+of a tag each take a revision number and keep no copy. A node at revision 2
+that is archived is at revision 3 and still lists 2, 1. Write it again and it
+lists 4, 2, 1. Revision 3 is a `404`.
 
 ### `GET /v1/nodes/{id}/revisions/{n}`
 
-One old revision, whole, with its `body`.
+One old revision, whole, with its `body` and its `tags`.
 
 ### `POST /v1/nodes/{id}/revisions/{n}/restore`
 
-Makes a **new** revision with revision `n`'s title, body, content type and props.
-Nothing old is changed. A Task keeps its present `status` and `closed`: see
+Makes a **new** revision with revision `n`'s title, body, content type, props
+and tags. Nothing old is changed. A Task keeps its present `status` and `closed`: see
 [a Task](#a-task). It needs `If-Match`, takes no body, and answers `200`,
 the node, and the new `ETag`.
 
@@ -450,7 +459,7 @@ second try means it is done.**
 ```json
 {"items":[{"type":"mentions","created":1795515226123,
            "node":{"id":"0193a5c0-9000-7000-8000-000000000002","kind":"contact","state":"active",
-                   "parent":null,"title":"Ada","content_type":"text/org","props":{},
+                   "parent":null,"title":"Ada","content_type":"text/org","props":{},"tags":[],
                    "revision":4,"created":1795515200000,"updated":1795515220000}}],
  "next":null}
 ```
@@ -668,6 +677,155 @@ A member in **bold** must be there in each entry. A `name` needs its
 `"version": "1.0"`, a `uid` (such as `urn:uuid:` and the node's id), and
 `name.full` from the title.
 
+### Tags
+
+A tag is a short label on a node. A node has at most 50. Send them as `tags`,
+a list of strings, when you make or replace a node:
+
+```sh
+curl -X PUT -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -H 'If-None-Match: *' \
+  -d '{"kind":"note","title":"Shopping","body":"* apples","content_type":"text/org","tags":["Errands","Home Life"]}' \
+  http://127.0.0.1:8080/v1/nodes/0193a5c0-9000-7000-8000-000000000001
+```
+
+The node comes back with `"tags":["errands","home-life"]`.
+
+**Techo keeps one form of each tag, and answers that form.** Show what Techo
+answers, not what was typed.
+
+| Sent | Stored |
+|---|---|
+| `Work`, `WORK`, full-width `ＷＯＲＫ` | `work` |
+| `Work Space`, ` work  space `, `work-space` | `work-space` |
+| `a–b`, `a—b`, `a−b`, `a‐b` | `a-b` |
+| `日本` | `日本` |
+| `Straße`, `STRASSE` | `straße`, `strasse`: two tags |
+| `ひらがな`, `ヒラガナ` | two tags |
+
+How: Unicode NFKC, lower case, NFKC again. Then each hyphen or dash
+(`‐ ‑ ‒ – — ―` and the minus `−`, and their small and full-width forms)
+becomes `-`. Then spaces are trimmed from both ends, and each run of spaces
+inside is made one `-`. A `-` you send stays, and so does a run of dashes:
+`a––b` is `a--b`.
+
+A space is an ordinary space, a no-break space, an ideographic space, or one
+of the typographic spaces (en, em, thin, hair and their kind). A tab is no
+space: it is refused.
+
+A character is a Unicode code point, not a byte: `é` sent as `e` and U+0301 is
+two characters sent, and one stored.
+
+These are a `400`:
+
+| Refused | Example |
+|---|---|
+| over 256 characters as sent, or over 64 once stored | `ﷺﷺﷺﷺ`: 4 sent, 72 stored |
+| empty, or only spaces | `""`, `"   "` |
+| a tab, a line break, any control character | `"a\tb"` |
+| an invisible character, from a fixed list: a zero-width space or joiner, a soft hyphen, a direction mark, a variation selector, a blank Braille cell | `"a​b"` |
+| a private-use character | `"\uE000"` |
+| a character Unicode has not assigned, until the server knows it | `"\u0378"` |
+| a combining mark first, once stored: a lone accent, or a spacing accent alone | `"\u0301"`, `"´"` |
+| more than 50, counted as sent | 51 times `"work"` |
+| `tags` that is not a list of strings | `null`, `"work"`, `[1]` |
+
+Only the first character counts: `e` and U+0301 is `é`, and `कः` keeps its
+mark.
+
+**The invisible characters are a fixed list, and some emoji pay for it.**
+`❤️` is U+2764 and U+FE0F, and U+FE0F is on the list. **Strip U+FE0F before
+you send a tag:** `❤` alone is fine. These cannot be tags at all: an emoji
+joined with U+200D (a ZWJ), such as 👨‍👩‍👧; the flags of England, Scotland and
+Wales, which are built of invisible tag characters. A keycap such as #️⃣ is
+taken only once you strip its U+FE0F, and some screens then draw it as
+plain `#`.
+
+- `["Work", "work"]` is one tag, not an error.
+- A node's tags are a set, sorted by code point.
+- **A replace with no `tags` keeps the node's tags.** `[]` clears them. A list
+  replaces them whole.
+- Tags are content. A write that changes them is a revision, which keeps the
+  tags the node had then, and a restore brings those back. **A rename or
+  removal rewrites no old revision:** one can hold a tag's old name, and
+  restoring it, even the newest, brings the old tag back.
+- Every node in every answer has `tags`, `[]` for none. The revisions list
+  leaves them out; one revision, whole, has them.
+
+#### Nodes by tag
+
+`GET /v1/nodes?tag=errands` lists the nodes that carry `errands`. Give `tag`
+again for nodes that carry every one:
+
+```sh
+curl -H "Authorization: Bearer $KEY" 'http://127.0.0.1:8080/v1/nodes?tag=Errands&tag=home-life'
+```
+
+- A tag here is folded as a stored one is: `?tag=Errands` finds `errands`.
+- At most 10 `tag`s, counted as sent. More is a `400`, and so is an empty one
+  or one Techo refuses.
+- `state`, `parent` and [paging](#paging) work as without it: it lists only
+  the state you ask for, `active` by default.
+- **Percent-encode a tag in a query.** `+` means a space there: `?tag=c++`
+  asks for `c`. **Send `+` as `%2B`:** `?tag=c%2B%2B`. Encode `/`, `&`, `#`,
+  `%` and anything outside ASCII too: `?tag=%E6%97%A5%E6%9C%AC` is `日本`.
+- Bad UTF-8 in an escape, such as `%FF`, reads as U+FFFD, not as an error.
+
+#### `GET /v1/tags`
+
+Your tags, in order, each with how many nodes carry it.
+
+```sh
+curl -H "Authorization: Bearer $KEY" 'http://127.0.0.1:8080/v1/tags?limit=2'
+```
+
+```json
+{"items":[{"tag":"errands","count":12},{"tag":"home-life","count":1000}],"next":"home-life"}
+```
+
+- [Paged](#paging). `after` and `next` are a tag: **percent-encode `next`
+  when you send it back as `after`.**
+- **A count of `1000` means "1,000 or more".** Techo stops counting there.
+- A count includes archived and trashed nodes, though `?tag=` lists only the
+  state you ask for.
+
+#### Rename or remove a tag
+
+```sh
+curl -X POST -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -d '{"from":"home-life","to":"home"}' http://127.0.0.1:8080/v1/tags/rename
+```
+
+```json
+{"renamed":500,"left":700}
+```
+
+```sh
+curl -X POST -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -d '{"tag":"errands"}' http://127.0.0.1:8080/v1/tags/remove
+```
+
+```json
+{"removed":12,"left":0}
+```
+
+- Each call changes at most 500 nodes. **Call it again until `left` is `0`.**
+- A rename onto a tag that exists merges them: a node with both keeps one.
+- It changes nodes in every state, trashed ones too.
+- No `If-Match`: it names no one node. `If-Match` or `If-None-Match` is a
+  `400`.
+- The body is exactly `{"from", "to"}` or `{"tag"}`, at most 16 KiB. A `from`
+  and `to` that are one tag once stored are a `400`.
+- **Sending it twice is safe.** A tag no node carries answers
+  `{"renamed":0,"left":0}` or `{"removed":0,"left":0}`, never a `404`.
+- It answers `200`, with no `ETag`.
+- **Each node it changes gets a new revision, but no copy.** So:
+  - a device with an unsent edit to one of them gets a `412`: read the node
+    again;
+  - restoring a revision made before it, even the newest, brings the old tag
+    back.
+- `left` can grow between calls, if someone adds the tag meanwhile.
+
 ### What can go wrong with a node
 
 | Status | `code` | When |
@@ -684,21 +842,24 @@ A member in **bold** must be there in each entry. A `name` needs its
 | 409 | `wrong_status` | The Task's status does not allow the command. |
 | 409 | `status_fixed` | A replace sent a `status` or `closed` other than the Task's own. |
 | 412 | `precondition_failed` | The node is not at the revision you gave, or the id you want to make is in use. |
-| 413 | `payload_too_large` | The body is over 1 MiB, or the whole request is over 2 MiB. A move's request is over 16 KiB. |
+| 413 | `payload_too_large` | The body is over 1 MiB, or the whole request is over 2 MiB. A move's request, or a tag command's, is over 16 KiB. |
 | 413 | `props_too_large` | `props` is over 4,096 bytes. |
 | 415 | `unsupported_media_type` | `Content-Type` is not `application/json`. |
 | 428 | `precondition_required` | A write with neither `If-Match` nor `If-None-Match`. |
 
 A `400` `invalid_request` is one of:
 
-- a bad id, revision, `limit`, `after`, `state`, `parent`, `direction` or link
-  type, or a link from a node to itself;
+- a bad id, revision, `limit`, `after`, `state`, `parent`, `tag`, `direction`
+  or link type, or a link from a node to itself;
+- more than 10 `tag`s in a list's query;
 - a bad `If-Match` or `If-None-Match`: both at once, `If-None-Match` that is not
   `*`, `If-None-Match` on a restore, a change of state, a move or a `DELETE`,
-  or either on a link's `PUT` or `DELETE`;
+  or either on a link's `PUT` or `DELETE`, or on a tag's rename or removal;
 - no body, or a body that is not one JSON object;
 - a field missing, unknown, given twice or of the wrong type;
 - a `kind` that is not one of the five, or `props` its kind does not take;
+- `tags` that are not a list of at most 50, or a tag Techo
+  [refuses](#tags); a rename whose `from` and `to` are one tag;
 - a title or content type past its limit, or U+0000 in the title or body.
 
 Other things to know:
@@ -739,7 +900,8 @@ other key. To replace a key's secret, use that key.
 
 ## Paging
 
-`GET /v1/keys`, `GET /v1/nodes`, a node's revisions and a node's links take:
+`GET /v1/keys`, `GET /v1/nodes`, a node's revisions, a node's links and
+`GET /v1/tags` take:
 
 - `limit`: how many, 1 or more. Default `50`. Over `100` counts as `100`. Anything
   else is a `400`.
@@ -747,7 +909,9 @@ other key. To replace a key's secret, use that key.
 
 `next` is the id to pass as `after`, or `null` on the last page. For a node's
 revisions both are revision numbers, and the page starts below `after`. For a
-node's links both are a type and an id, as `mentions:<id>`.
+node's links both are a type and an id, as `mentions:<id>`. For the tags both
+are a tag, so **percent-encode `next` as `after`**, `+` as `%2B`. Sent as it
+is, `c++` reads as `c`, and you get the same page back, forever.
 
 ## Times
 

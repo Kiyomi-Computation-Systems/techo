@@ -78,7 +78,8 @@ disagree, the record wins and this file gets fixed.
   one by source never does; a typed page compares the id alone. A test holds
   each plan (traps.md).
 - **History is append-only,** but for a purge, which removes a node's. A restore
-  is a new revision (ADR-0004, amended).
+  is a new revision (ADR-0004, amended). A rename or removal of a tag bumps a
+  node and appends no snapshot (Tags, below).
 - **A node's content is its newest snapshot's** (ADR-0004, amended).
 - **A purged node's row stays, and no query that answers a client reads it.**
   Its id is never used again (ADR-0004, amended).
@@ -236,7 +237,15 @@ disagree, the record wins and this file gets fixed.
 ## Tags (slice 7a; ADR-0002, 0003 and 0004, amended 2026-11-27)
 
 - **A tag is stored in one form,** and that form is a fixed point: folding a
-  stored tag gives the same tag. NFKC, lower case, NFKC, trim, spaces to `-`.
+  stored tag gives the same tag. An unassigned code point as sent is refused;
+  then NFKC, lower case, NFKC, dashes to `-`, trim, spaces to `-`. The form
+  begins with no combining mark and holds no control, invisible, private-use
+  or unassigned code point (ADR-0003, amended 2026-11-28).
+- **A tag rule, once shipped, may only widen:** every route that takes a tag
+  folds it, so a stored tag must stay its own stored form.
+- **`unassigned-char?` and `mark-char?` are the only rules that read Chez's
+  tables.** `test-chars.sps` pins their counts (814,730 and 2,543 in Unicode
+  17). A changed count on a Chez upgrade means rereading the tag records.
 - **A sent tag over 256 characters is refused before it is folded.** Folding
   is on the loop's thread.
 - **A tag is judged before any job.** A request refused for its tags makes no

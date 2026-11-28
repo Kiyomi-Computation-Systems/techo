@@ -3,7 +3,8 @@
 Date: 2026-11-27
 Status: the owner decided G1 to G8 on 2026-11-27 (below). Reviewed (the review
 section, at the end): where it and the text above disagree, the review wins.
-Not built.
+Built 2026-11-27. The build was reviewed, and the owner ruled on F1 to F6 on
+2026-11-28 (the last section): where it and anything above disagree, it wins.
 Records: ADR-0002 (the API), ADR-0003 (nodes), ADR-0004 (revisions), ADR-0007
 (machines), ADR-0012 (migrations), ADR-0013 (the doorway). Read
 [global-constraints.md](global-constraints.md) first, then the plans of slices
@@ -203,7 +204,8 @@ Tasks 1 and 2 share no file and can run together. 3 needs both, 4 needs 3.
 
 Read-only. Its probes are in `build/review-7a/` (22 scripts). Timings are on
 files opened by `open-techo-db`, in the operating system's cache, on SQLite
-3.53.1. Chez 10.4.1's tables are Unicode 16.0. I reproduced blockers 1 to 5
+3.53.1. Chez 10.4.1's tables are Unicode 17.0 (this said 16.0; the build's review
+measured it). I reproduced blockers 1 to 5
 myself (`build/verify-7a/v.sps`).
 
 ### Blockers, and what they change
@@ -455,7 +457,7 @@ This replaces the table above.
   only U+0020 and U+1680 can be left. U+2028 and U+2029 are refused, as in a
   Contact.
 - **H3:** an invisible character is a 400. `invisible-char?` replaces
-  `zero-width-char?` in `(techo chars)`, and is Unicode 16's
+  `zero-width-char?` in `(techo chars)`, and is Unicode 17's
   Default_Ignorable_Code_Point, written out: U+00AD, U+034F, U+061C, U+115F,
   U+1160, U+17B4, U+17B5, U+180B to U+180F, U+200B to U+200F, U+202A to
   U+202E, U+2060 to U+206F, U+3164, U+FE00 to U+FE0F, U+FEFF, U+FFA0, U+FFF0
@@ -466,3 +468,90 @@ This replaces the table above.
 - **H5:** the three rules are amended (ADR-0004; the constraints).
 - **H6:** a tag's count stops at 1,000. `tags-page` answers
   `min(count, 1000)` for each tag, and L8 is held against that.
+
+## Changed at the build (2026-11-27)
+
+- **`write-node!`'s tags are `(U (Listof String) 'keep String)`.** The String
+  is a restored snapshot's tags as stored: the store expands it with
+  `json_each`, since it does not import `(techo tags)`.
+- **`invisible-char?` is the name,** not `zero-width-char?` (H3).
+- **The store exports `rarest-first`,** pure: tags with their capped counts,
+  rarest first, ties by `string<?`. A timing test of "the filter drives from
+  the rarest tag" was replaced by a test of it and one that reads
+  `tagged-page`'s source.
+- **The filter has 30 statements,** `nodes-tagged-N`, `-top-N` and `-of-N` for
+  1 to 10 tags: any parent, the top level, and one parent. The top level
+  drives from the rarest tag; only a named parent drives from `nodes_parent`.
+- **Slow, and left:** a rare tag under a parent of 20,000 children, 43 ms at
+  4 KiB props. Driving from the tag when it is rare would fix it with ten
+  statements more.
+- **`tags-page` is one recursive statement:** it steps from tag to tag and
+  counts each up to 1,000, so a page costs at most its length times 1,000
+  rows: 1.1 ms for 51.
+- **A step that finds fewer carriers than the cap** counts them, capped, for
+  its check. One that finds none writes nothing and answers `(0 . 0)`.
+- **Migration 7's checks:** `length(tag) BETWEEN 1 AND 64`, and
+  `json_type(tags) = 'array'`, legal in an `ADD COLUMN` on a table with rows.
+- **`event-op` names no `retag`:** the store writes op `tags` itself.
+- **Known, and left:** a snapshot's `tags` holding a number, which no write
+  can make, would restore as that number's text (traps.md). A step that
+  touches no node still writes the key's `last_used`. Thirty-two format
+  characters outside Unicode's list pass `invisible-char?`.
+- **The model:** a corpus of 239 tags written by hand; six seeds a run with
+  over 500 carriers of one tag; 38,821 requests in about 50 s (37,181 in 39 s
+  before). L8 is held for the first tag of each tags list, and L3's "differ
+  by the steps since" by the model's own comparison.
+
+## The review of the build (Opus, 2026-11-27), and what it changed (2026-11-28)
+
+Read-only; its probes are in `build/review-7a-build/`. No bug in behaviour:
+no 500 from a request a client can make, no write on a refused request, no
+leak between accounts or into a log; 370 raced pairs with every invariant
+held; a database from before migration 7 migrated and served; about 50
+million checks of the fold, all stable; 101 of 106 mutants caught. I
+reproduced F1 to F6 (`build/verify-7a/r.sps`).
+
+### Ruled by the owner, 2026-11-28, and built
+
+- **F1:** a code point Unicode has not assigned is refused, in the tag as
+  sent, before folding. By Chez's table (general category `Cn`), on purpose.
+- **F2, F3:** 22 code points more are `invisible-char?`: U+FFF9 to U+FFFB,
+  U+13430 to U+1343F; U+2800, U+16FE4, U+1D159. The list is 4,196.
+- **F4:** a stored form that begins with a combining mark (`Mn`, `Mc`, `Me`)
+  is refused. Only the first character: `a´b` stores `a-` U+0301 `b`.
+- **F5:** U+2010 to U+2015 and U+2212 become `-`, after the last NFKC. Not
+  trimmed, runs not collapsed. U+301C and U+30FC are left.
+- **F6:** private use is refused: U+E000 to U+F8FF, U+F0000 to U+FFFFD,
+  U+100000 to U+10FFFD.
+- `(techo chars)` gains `private-use-char?`, `unassigned-char?`,
+  `mark-char?` and `dash-char?`. Of every single character, 157,022 are a
+  tag and 955,042 are refused.
+
+### The two test gaps, closed
+
+No test noticed the filter handing `rarest-first` counts of 0, or
+`tag-counts` answering 1: only cost changes. The store now exports
+`tag-counts` and a pure `tagged-query` (the statement's name and its
+arguments, tags rarest first); both are tested with real counts, and
+`tagged-page`, which only runs `tagged-query`'s answer, is held whole by a
+test. Any edit to `tagged-page` must update that test.
+
+### Known, and left
+
+- A mark after a hyphen (`a´b`); Turkish `İ`, which folds to `i` and a dot;
+  letters of different scripts that look alike.
+- U+0E33, U+0EB3, U+FF9E, U+FF9F and each spacing accent are refused alone:
+  their fold begins with a mark.
+- An emoji with U+FE0F or a joiner; the flags of England, Scotland and
+  Wales; a keycap written with U+FE0F.
+- Unicode promises that normalisation is stable. It does not promise a
+  character's general category or lower case; both are assumed.
+- The costs in [schema.md](schema.md), `node_tags`: a step holds the writer
+  18 to 48 ms; the filter's worst case is 203 to 269 ms on a reader.
+- `tags->json` and `content-tags` are exported and used by no source.
+
+### Checked
+
+42 suites pass. `test-chars` 51, `test-tags` 449, `test-node-store` 284,
+`test-node-routes` 1,036, the model 743. Ten mutants of mine, eight in the
+rule and two in the filter, each caught.

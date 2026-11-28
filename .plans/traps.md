@@ -443,6 +443,52 @@ it.
   "multiple definitions" (the same review; both names checked).
 - **Rule:** name nothing in the store `step!` or `changes`.
 
+## jsonparse writes a list as an object
+
+- **Seen:** `(json->string '())` is `"{}"`, an alist member whose value is
+  `'()` is written `{}`, and a list of strings raises (slice 7a's pure task;
+  reproduced with `build/verify-7a/j.sps`). An empty list of tags would read
+  as an empty object.
+- **Rule:** a JSON array is a vector. Turn a list into one before it reaches
+  the writer, the empty one too.
+
+## A raise caught inside a write job commits what ran before it
+
+- **Seen:** `purge-node!` deletes, then checks the revision and raises on a
+  stale one. A job that catches that raise and returns is committed: the
+  snapshots were gone for good (slice 7a's store task; reproduced with
+  `build/task7a-2/caught-commits.sps`). No route catches inside a job; a test
+  did.
+- **Rule:** a job never catches a store procedure's raise and returns. A test
+  that looks inside a job after a raise raises again, so the job rolls back.
+
+## Two runs of one suite in one directory break each other
+
+- **Seen:** `test-node-store.sps` keeps its files in `build/test-node-store/`
+  and deletes them at its start. A second run beside the first failed 110 of
+  280 (the same task: a mutant run beside another agent's `make test`).
+- **Rule:** a mutant run beside any other run gets its own working directory,
+  with the library path made absolute.
+
+## A STRICT TEXT column takes an integer, as text
+
+- **Seen:** inserting the integer 1 into a `TEXT` column of a `STRICT` table
+  stores `"1"`: STRICT converts what converts without loss, and raises only
+  for what does not (slice 7a's routes task; reproduced with
+  `build/task7a-3/strict-converts.sps`). A snapshot's `tags` holding a
+  number, which no write can make, would restore as the tag `"1"`.
+- **Rule:** STRICT is no check of a value's JSON type. Where the type
+  matters, check it: `json_type`, or the code.
+
+## One below U+E000 is a surrogate
+
+- **Seen:** a test of a range's edges took the code point one below U+E000,
+  U+DFFF. `integer->char` raises for a surrogate, and in a suite's top level
+  the suite dies with no test named (slice 7a's last task; reproduced in the
+  container).
+- **Rule:** the code point below the private-use area is U+D7FF. A sweep of
+  every character skips U+D800 to U+DFFF.
+
 The siblings' traps apply wherever Techo touches the same ground. Read them there:
 
 - chez-sqlite3: `.plans/traps.md`

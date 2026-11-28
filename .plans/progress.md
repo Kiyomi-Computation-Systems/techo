@@ -70,8 +70,9 @@ close-out under **Close-outs**, newest first.
 
 ## Next
 
-**Slice 7a: tags.** [Planned](2026-11-27-slice-7a-tags.md): the owner decided
-S1 and G1 to G8 on 2026-11-27. Not reviewed, not built.
+**Slice 7a: tags.** [Built](2026-11-27-slice-7a-tags.md) on `slice-7a-tags`:
+the owner decided S1 and G1 to G8 on 2026-11-27, and F1 to F6 on 2026-11-28
+after the build's review. Not merged; no Mac run yet.
 
 **Slice 7b: search.** [Decided](2026-11-27-slice-7b-search.md), Q1 to Q7, with
 its measurements. Not planned further.
@@ -184,7 +185,7 @@ Task `DONE`.
 | 5a | The tree and move | merged, #19 | |
 | 5b | Links | merged, #20 | |
 | 6 | Kinds and props; task transitions | merged, #22 | |
-| 7a | Tags | planned, on `slice-7a-tags` | |
+| 7a | Tags | built, on `slice-7a-tags` | |
 | 7b | Search | decided, not planned | 7a |
 | 8 | The change feed | not planned | |
 | 9 | Docker image and backup | not planned | |

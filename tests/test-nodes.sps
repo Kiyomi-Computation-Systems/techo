@@ -5,19 +5,20 @@
 ;;;   ids               a node's id is a UUID of version 7, RFC variant (D2, H10)
 ;;;   revisions         a path's revision, and the ETag (D4)
 ;;;   preconditions     If-Match and If-None-Match, exactly as D4 takes them (H9)
-;;;   content           the body's members, types and limits (D6, D7, H8), a create's parent
+;;;   content           the body's members, types and limits (D6, D7, H8), a create's parent;
+;;;                     props and tags handed on as read (slices 6 and 7a)
 ;;;   the linear rule   a request at the cap, whatever its members, is quick (H13)
 ;;;   a move's body     and the list's ?parent= (slice 5a)
 ;;;   the table         D5's table, checked exhaustively, every cell stepped (H7)
-;;;   the lifecycle     slice 4b's table with 5a's two events and 5b's two,
-;;;                     every cell stepped (G1)
+;;;   the lifecycle     slice 4b's table with 5a's two events, 5b's two and 7a's
+;;;                     retag, every cell stepped (G1)
 ;;;   the tree          what may hold what, the verdict on a new parent, which
 ;;;                     children a bulk move takes, every combination (T2, T5, T8, P18)
 ;;;   node-command      the two tables, the verdict and the children answer one
-;;;                     request, every cell; link and unlink are not its (G5,
-;;;                     G15, P6, P17, Q19)
-;;;   states and events the store's names, ?state=, the two lists of events
-;;;                     and the feed's ops
+;;;                     request, every cell; link, unlink and retag are not its
+;;;                     (G5, G15, P6, P17, Q19; slice 7a's review, blocker 10)
+;;;   states and events the store's names, ?state=, the three lists of events,
+;;;                     retag-states and the feed's ops
 ;;;   the diagrams      .plans/machines/write.md and lifecycle.md are what the tables render
 ;;;
 ;;; Everything that can raise is computed under `attempt`, and a raise comes
@@ -405,11 +406,59 @@
   (list "an object as the parent" (with "parent" (list (cons "id" v7-text)) good) #t)
   (list "parent twice, the same" (append (with "parent" v7-text good) (list (cons "parent" v7-text))) #t)
   (list "parent twice, null then an id" (append (with "parent" 'null good) (list (cons "parent" v7-text))) #t)
-  (list "a seventh member" (with "x" 1 (with "props" '() (with "parent" v7-text good))) #t)
+  (list "a seventh member, unknown" (with "x" 1 (with "props" '() (with "parent" v7-text good))) #t)
   (list "Parent, another case" (with "Parent" v7-text good) #t)
   (list "a replace with a parent" (with "parent" v7-text (without "kind" good)) #f)
   (list "a replace with parent null" (with "parent" 'null (without "kind" good)) #f)
   (list "a replace with a kind and a parent" (with "parent" v7-text good) #f)))
+
+;;; Tags (slice 7a): parse-content takes tags of any value, and hands them
+;;; on as read; (techo tags)' request-tags judges them.
+
+(define (tags-of x create?)
+  (attempt (lambda ()
+             (let ((r (parse-content x create?)))
+               (if (content? r) (list 'tags (content-tags r)) r)))))
+
+(test-equal "content: tags not given are absent, on a create and a replace"
+  '((tags absent) (tags absent))
+  (list (tags-of good #t) (tags-of (without "kind" good) #f)))
+
+(test-equal "content: tags of any value are handed on as read, not judged, on a create and a replace"
+  '(#t #t #t #t #t #t #t #t #t #t #t #t)
+  (attempt
+   (lambda ()
+     (apply append
+            (map (lambda (v)
+                   (map (lambda (create?)
+                          (let ((r (parse-content (with "tags" v (if create? good (without "kind" good))) create?)))
+                            (and (content? r) (eq? (content-tags r) v))))
+                        '(#t #f)))
+                 (list (vector "Work" "work") (vector) 'null "work" 5 (vector 5 'null)))))))
+
+(test-equal "content: tags change none of the other members, and props and tags are each their own"
+  '(("note" "A title" "Some text" "text/plain" absent) ("note" "A title" "Some text" "text/plain" (("a" . 1))))
+  (list (parsed (with "tags" (vector "a") good) #t)
+        (parsed (with "tags" '(("b" . 2)) (with "props" '(("a" . 1)) good)) #t)))
+
+(test-equal "content: a create's seven members and a replace's six, tags among them, in another order"
+  (list (list 'parent v7-bytes) '(tags #("a")))
+  (list (parent-of (reverse (with "tags" (vector "a") (with "props" '() (with "parent" v7-text good)))) #t)
+        (tags-of (reverse (with "tags" (vector "a") (with "props" '() good))) #f)))
+
+(for-each
+ (lambda (c)
+   (test-equal (string-append "content: invalid, " (car c))
+     'invalid
+     (judged (cadr c) (caddr c))))
+ (list
+  (list "tags twice" (append good '(("tags" . #()) ("tags" . #()))) #t)
+  (list "tags twice, a replace" (append (without "kind" good) '(("tags" . #("a")) ("tags" . #("a")))) #f)
+  (list "Tags, another case" (with "Tags" (vector "a") good) #t)
+  (list "tag, not tags" (with "tag" (vector "a") good) #t)
+  (list "an eighth member" (with "x" 1 (with "tags" (vector) (with "props" '() (with "parent" v7-text good)))) #t)
+  (list "a replace's seventh member, its parent"
+        (with "parent" v7-text (with "tags" (vector) (with "props" '() good))) #f)))
 
 ;;; The limits, at each and one past it (H8)
 
@@ -534,7 +583,7 @@
       (mod (div state 65536) n))))
 
 (define fuzz-names
-  '("kind" "title" "body" "content_type" "props" "parent" "id" "revision" "Title" "Parent" ""))
+  '("kind" "title" "body" "content_type" "props" "parent" "tags" "id" "revision" "Title" "Parent" ""))
 (define fuzz-strings
   (list "" "note" "task" "Note" "text/plain" "/" "plain" (string #\a (integer->char 0)) "x"
         (make-string 1001 #\t) v7-text v4-text))
@@ -571,6 +620,7 @@
 ;; fits? : Alist Content -> Boolean     each field what the object gave
 ;; A parent not given, or null, is #f; a given one is its id's bytes.
 ;; Props not given are absent; given, they are the very value, an object.
+;; Tags the same, of any value.
 (define (fits? x c)
   (let ((given (lambda (name) (let ((m (assoc name x))) (and m (cdr m))))))
     (and (equal? (content-title c) (given "title"))
@@ -581,6 +631,8 @@
            (if m
                (and (eq? (content-props c) (cdr m)) (or (null? (cdr m)) (pair? (cdr m))))
                (eq? (content-props c) 'absent)))
+         (let ((m (assoc "tags" x)))
+           (if m (eq? (content-tags c) (cdr m)) (eq? (content-tags c) 'absent)))
          (equal? (content-parent c)
                  (let ((p (given "parent")))
                    (if (or (not p) (eq? p 'null)) #f (parse-node-id p)))))))
@@ -628,10 +680,10 @@
   '(invalid quick)
   (timed (lambda () (members 200000 (lambda (i) (cons "title" "t")) '())) #t))
 
-(test-equal "linear: the five known members, then 199,995 repeats of title"
+(test-equal "linear: the six known members, then 199,994 repeats of title"
   '(invalid quick)
-  (timed (lambda () (members 199995 (lambda (i) (cons "title" "t"))
-                             (append good '(("props"))))) #t))
+  (timed (lambda () (members 199994 (lambda (i) (cons "title" "t"))
+                             (append good '(("props") ("tags" . #()))))) #t))
 
 (test-equal "linear: a body of the request's cap, 2 MiB of ASCII, too large at once"
   '(too-large quick)
@@ -645,11 +697,15 @@
   '(content quick)
   (timed (lambda () (with "props" (members 200000 (lambda (i) (cons "x" i)) '()) good)) #t))
 
-(test-equal "linear: a create's six members, then 199,994 repeats of parent"
+(test-equal "linear: a create's seven members, then 199,993 repeats of parent"
   '(invalid quick)
-  (timed (lambda () (members 199994 (lambda (i) (cons "parent" 'null))
-                             (append (with "parent" 'null good) '(("props")))))
+  (timed (lambda () (members 199993 (lambda (i) (cons "parent" 'null))
+                             (append (with "parent" 'null good) '(("props") ("tags" . #())))))
          #t))
+
+(test-equal "linear: tags of 200,000 entries are handed on at once, not walked"
+  '(content quick)
+  (timed (lambda () (with "tags" (make-vector 200000 (make-string 300 #\a)) good)) #t))
 
 ;;; A move's body and the list's ?parent= (slice 5a)
 
@@ -916,7 +972,7 @@
 ;;; The lifecycle's table (slice 4b, G1)
 
 (define life-states '(active archived trashed purged))
-(define life-events '(archive unarchive trash untrash purge write move move-children link unlink))
+(define life-events '(archive unarchive trash untrash purge write move move-children link unlink retag))
 
 ;; The table the owner approved, written out here, not read from
 ;; lifecycle-rows: (state event next command) for a row, (state event) for a
@@ -924,7 +980,8 @@
 ;; (T8, the review's blocker 3): move is refused for a trashed node, and
 ;; move-children allowed in every state. Slice 5b's two (K6, the review's
 ;; blocker 5): link is refused for a trashed node, and unlink allowed in
-;; every state.
+;; every state. Slice 7a's retag (its review, blocker 10): a rename's or a
+;; removal's step takes a node in every live state.
 (define lifecycle-table
   '((active archive archived set-state)
     (active unarchive active refuse-wrong-state)
@@ -936,6 +993,7 @@
     (active move-children active allow)
     (active link active allow)
     (active unlink active allow)
+    (active retag active allow)
     (archived archive archived refuse-wrong-state)
     (archived unarchive active set-state)
     (archived trash trashed set-state)
@@ -946,6 +1004,7 @@
     (archived move-children archived allow)
     (archived link archived allow)
     (archived unlink archived allow)
+    (archived retag archived allow)
     (trashed archive trashed refuse-wrong-state)
     (trashed unarchive trashed refuse-wrong-state)
     (trashed trash trashed refuse-wrong-state)
@@ -956,6 +1015,7 @@
     (trashed move-children trashed allow)
     (trashed link trashed refuse-wrong-state)
     (trashed unlink trashed allow)
+    (trashed retag trashed allow)
     (purged archive)
     (purged unarchive)
     (purged trash)
@@ -965,7 +1025,8 @@
     (purged move)
     (purged move-children)
     (purged link)
-    (purged unlink)))
+    (purged unlink)
+    (purged retag)))
 
 (define (lifecycle-problems rows)
   (attempt (lambda () (machine-problems (make-machine rows) '(active) '(purged)
@@ -975,8 +1036,8 @@
   '()
   (lifecycle-problems lifecycle-rows))
 
-(test-equal "lifecycle: thirty rows, three states by ten events"
-  30
+(test-equal "lifecycle: thirty-three rows, three states by eleven events"
+  33
   (attempt (lambda () (length lifecycle-rows))))
 
 (test-equal "lifecycle: the rows are exactly the table's, in its order"
@@ -984,12 +1045,12 @@
   (attempt (lambda () (map (lambda (r) (list (car r) (cadr r) (caddr r) (cadddr r)))
                            lifecycle-rows))))
 
-(test-equal "lifecycle: the can't-happen pairs are purged's ten, in the table's order"
+(test-equal "lifecycle: the can't-happen pairs are purged's eleven, in the table's order"
   (filter (lambda (c) (= (length c) 2)) lifecycle-table)
   (attempt (lambda () (map (lambda (c) (list (car c) (cadr c))) lifecycle-cant-happen))))
 
 (test-equal "lifecycle: every can't-happen pair has a reason, a non-empty string"
-  '(#t #t #t #t #t #t #t #t #t #t)
+  '(#t #t #t #t #t #t #t #t #t #t #t)
   (attempt (lambda ()
              (map (lambda (c) (and (string? (caddr c)) (> (string-length (caddr c)) 0)))
                   lifecycle-cant-happen))))
@@ -1031,7 +1092,7 @@
             (#t (list 'raised (describe x))))
     (call-with-values (lambda () (lifecycle-step s e)) list)))
 
-;; Every one of the 40 cells, by construction: a cell the table above lacks
+;; Every one of the 44 cells, by construction: a cell the table above lacks
 ;; expects what no step answers.
 (for-each
  (lambda (s)
@@ -1245,10 +1306,11 @@
 
 ;; link and unlink are the lifecycle table's events but no request's to
 ;; node-command: link-command answers them (the review's blocker 5, Q19), so
-;; every cell of theirs here cannot happen.
+;; every cell of theirs here cannot happen. retag the same: a tag's step
+;; names no one node (slice 7a's review, blocker 10).
 (define request-events '(create replace replace-other-kind restore restore-unknown
                          archive unarchive trash untrash purge move move-children
-                         link unlink))
+                         link unlink retag))
 (define request-states '(#f active archived trashed purged))
 (define verdicts '(ok missing trashed loop wrong-kind too-deep))
 
@@ -1270,50 +1332,50 @@
   '((none
      (#f       (parent insert) refuse-404 X X refuse-404
                refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404
-               X X)
+               X X X)
      (active   (parent insert) refuse-404 X X refuse-404
                refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404
-               X X)
+               X X X)
      (archived (parent insert) refuse-404 X X refuse-404
                refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404
-               X X)
+               X X X)
      (trashed  (parent insert) refuse-404 X X refuse-404
                refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404
-               X X)
+               X X X)
      (purged   (parent insert) refuse-404 X X refuse-404
                refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404 refuse-404
-               X X))
+               X X X))
     (match
-     (#f       X X X X X X X X X X X X X X)
+     (#f       X X X X X X X X X X X X X X X)
      (active   X write refuse-409 copy refuse-404
                (set-state archived) refuse-wrong-state (set-state trashed)
                refuse-wrong-state refuse-wrong-state (parent move) (parent move-children)
-               X X)
+               X X X)
      (archived X write refuse-409 copy refuse-404
                refuse-wrong-state (set-state active) (set-state trashed)
                refuse-wrong-state refuse-wrong-state (parent move) (parent move-children)
-               X X)
+               X X X)
      (trashed  X refuse-wrong-state refuse-wrong-state refuse-wrong-state refuse-wrong-state
                refuse-wrong-state refuse-wrong-state refuse-wrong-state
                (set-state active) (children purge) refuse-wrong-state (parent move-children)
-               X X)
-     (purged   X X X X X X X X X X X X X X))
+               X X X)
+     (purged   X X X X X X X X X X X X X X X))
     (differ
      (#f       refuse-412 refuse-412 refuse-412 refuse-412 refuse-412 refuse-412
                refuse-412 refuse-412 refuse-412 refuse-412 refuse-412 refuse-412
-               X X)
+               X X X)
      (active   refuse-412 refuse-412 refuse-412 refuse-412 refuse-412 refuse-412
                refuse-412 refuse-412 refuse-412 refuse-412 refuse-412 refuse-412
-               X X)
+               X X X)
      (archived refuse-412 refuse-412 refuse-412 refuse-412 refuse-412 refuse-412
                refuse-412 refuse-412 refuse-412 refuse-412 refuse-412 refuse-412
-               X X)
+               X X X)
      (trashed  refuse-412 refuse-412 refuse-412 refuse-412 refuse-412 refuse-412
                refuse-412 refuse-412 refuse-412 refuse-412 refuse-412 refuse-412
-               X X)
+               X X X)
      (purged   refuse-412 refuse-412 refuse-412 refuse-412 refuse-412 refuse-412
                refuse-412 refuse-412 refuse-412 refuse-412 refuse-412 refuse-412
-               X X))))
+               X X X))))
 
 ;; expected-command : Found (U Symbol #f) Symbol Symbol Boolean -> Any
 ;; The table's entry for the cell, with the verdict V and the children C, as
@@ -1349,7 +1411,7 @@
             (#t (list 'raised (describe x))))
     (call-with-values (lambda () (node-command f s e v c)) list)))
 
-;; Every one of the 2,520 cells, by construction: 3 Founds, 5 states, 14
+;; Every one of the 2,700 cells, by construction: 3 Founds, 5 states, 15
 ;; events, 6 verdicts, and with children or without.
 (for-each
  (lambda (f)
@@ -1523,14 +1585,38 @@
                           (commanded 'match 'trashed e 'ok #f) (commanded 'differ 'active e 'ok #f)))
                   link-events))))
 
+(test-equal "tag-events: the one a tag's rename or removal sends to each node it steps"
+  '(retag)
+  (attempt (lambda () tag-events)))
+
+(test-equal "tag-events: retag is not node-command's: it cannot happen, whatever was found"
+  '((cannot-happen cannot-happen cannot-happen cannot-happen cannot-happen))
+  (attempt (lambda ()
+             (map (lambda (e)
+                    (list (commanded 'none #f e 'ok #f) (commanded 'match 'active e 'ok #f)
+                          (commanded 'match 'archived e 'ok #f) (commanded 'match 'trashed e 'ok #f)
+                          (commanded 'differ 'active e 'ok #f)))
+                  tag-events))))
+
+(test-equal "retag-states: every live state, in the table's order"
+  '(active archived trashed)
+  (attempt (lambda () retag-states)))
+
+(test-equal "retag-states: exactly the states whose retag the table allows"
+  (attempt (lambda ()
+             (filter (lambda (s) (let-values (((next command) (lifecycle-step s 'retag)))
+                                   (and (eq? command 'allow) (eq? next s))))
+                     '(active archived trashed))))
+  (attempt (lambda () retag-states)))
+
 (test-equal "event-op: each event's op in the feed is its own name, a move's is move, a link's link and unlink"
   '("archive" "unarchive" "trash" "untrash" "purge" "move" "link" "unlink")
   (attempt (lambda () (map event-op '(archive unarchive trash untrash purge move link unlink)))))
 
-(test-equal "event-op: a write's events, the table's write, a bulk move and what is no event raise"
-  '(assertion assertion assertion assertion assertion assertion assertion assertion)
+(test-equal "event-op: a write's events, the table's write, a bulk move, retag and what is no event raise"
+  '(assertion assertion assertion assertion assertion assertion assertion assertion assertion)
   (map (lambda (x) (raised-kind (lambda () (event-op x))))
-       (list 'create 'replace 'write 'move-children "archive" #f "link" 'keep)))
+       (list 'create 'replace 'write 'move-children 'retag "archive" #f "link" 'keep)))
 
 ;;; The diagram, held to its file
 
@@ -1566,23 +1652,25 @@
   (read-file ".plans/machines/lifecycle.md"))
 
 (test-equal "the lifecycle document shows the diagram and every cell's answer"
-  '(#t #t #t #t #t #t #t #t #t #t #t #t #t #t)
+  '(#t #t #t #t #t #t #t #t #t #t #t #t #t #t #t #t)
   (let ((doc (attempt (lambda () (lifecycle-document)))))
     (map (lambda (needle) (and (string? doc) (string-index-of doc needle) #t))
          (list "stateDiagram-v2"
                "trashed --> purged: purge"
-               "active --> active: unarchive, untrash, purge, write, move, move-children, link, unlink\n"
-               "archived --> archived: archive, untrash, purge, write, move, move-children, link, unlink\n"
-               "trashed --> trashed: archive, unarchive, trash, write, move, move-children, link, unlink\n"
-               "| State | archive | unarchive | trash | untrash | purge | write | move | move-children | link | unlink |\n"
-               "| active | -> archived, set-state | refuse-wrong-state | -> trashed, set-state | refuse-wrong-state | refuse-wrong-state | allow | allow | allow | allow | allow |\n"
-               "| archived | refuse-wrong-state | -> active, set-state | -> trashed, set-state | refuse-wrong-state | refuse-wrong-state | allow | allow | allow | allow | allow |\n"
-               "| trashed | refuse-wrong-state | refuse-wrong-state | refuse-wrong-state | -> active, set-state | -> purged, purge | refuse-wrong-state | refuse-wrong-state | allow | refuse-wrong-state | allow |\n"
-               "| purged | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen |\n"
+               "active --> active: unarchive, untrash, purge, write, move, move-children, link, unlink, retag\n"
+               "archived --> archived: archive, untrash, purge, write, move, move-children, link, unlink, retag\n"
+               "trashed --> trashed: archive, unarchive, trash, write, move, move-children, link, unlink, retag\n"
+               "| State | archive | unarchive | trash | untrash | purge | write | move | move-children | link | unlink | retag |\n"
+               "| active | -> archived, set-state | refuse-wrong-state | -> trashed, set-state | refuse-wrong-state | refuse-wrong-state | allow | allow | allow | allow | allow | allow |\n"
+               "| archived | refuse-wrong-state | -> active, set-state | -> trashed, set-state | refuse-wrong-state | refuse-wrong-state | allow | allow | allow | allow | allow | allow |\n"
+               "| trashed | refuse-wrong-state | refuse-wrong-state | refuse-wrong-state | -> active, set-state | -> purged, purge | refuse-wrong-state | refuse-wrong-state | allow | refuse-wrong-state | allow | allow |\n"
+               "| purged | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen |\n"
                "`node-command`"
                "`link-command` in `(techo links)`"
                "`write` is a replace, a revision's restore or a Task's transition"
-               "`task-command` in `(techo tasks)`"))))
+               "`task-command` in `(techo tasks)`"
+               "`retag` is a step of a tag's rename or removal"
+               "`retag-states`"))))
 
 (test-equal "the lifecycle document gives each verdict its answer"
   '(#t #t #t #t #t #t #t)
@@ -1597,7 +1685,7 @@
                "| too-deep | refuse-invalid-parent |"))))
 
 (test-equal "the lifecycle document gives each can't-happen pair its reason"
-  '(#t #t #t #t #t #t #t #t #t #t)
+  '(#t #t #t #t #t #t #t #t #t #t #t)
   (attempt
    (lambda ()
      (let ((doc (lifecycle-document)))

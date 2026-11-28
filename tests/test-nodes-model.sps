@@ -1,27 +1,32 @@
 #!r6rs
 ;;; The nodes model suite: ADR-0007's third layer for D5's versioned write
 ;;; (slice 4, task 5a), the node lifecycle (slice 4b, task 4a), the tree
-;;; (slice 5a, task 4a), links (slice 5b, task 4a), and props and a Task's
-;;; commands (slice 6, task 4a). Seeded random
+;;; (slice 5a, task 4a), links (slice 5b, task 4a), props and a Task's
+;;; commands (slice 6, task 4a), and tags (slice 7a, task 4a). Seeded random
 ;;; sequences of requests by two accounts run against the real handlers
 ;;; (make-app inside wrap-server, raw HTTP through a test host) and real
 ;;; SQLite (the test doorway on a migrated file), with a wall clock the
 ;;; sequence steps. After every request the answer is compared with the
 ;;; model's, which is the plan's rules written again in (nodes-model), never
 ;;; the tables of (techo nodes) nor (techo links)' link-command, nor
-;;; (techo props), (techo tasks), (techo contact) or (techo when); the answers
+;;; (techo props), (techo tasks), (techo contact), (techo when), (techo
+;;; tags) or (techo chars); the answers
 ;;; are held to laws that need no model; the four tables and every key's
 ;;; last_used are read whole and held to laws that need no model (H1 to H6,
 ;;; H11, H2', H3', H15'', H16, G3', G6', G7', G9, G11, G12, G16; P1 to P4,
 ;;; P8, P11, P12, P15, P16; H1', H4'', H14', Q1, Q2, Q8, Q9; R1, R2, R4,
-;;; R5, R9, R13, R14, G11') and to the model's world, its links and props
-;;; among it; and every request's write jobs are counted (R15).
+;;; R5, R9, R13, R14, G11'; L2 to L11 and L13, and a step's own, as the
+;;; bulk move's) and to the model's world, its links, props and tags among
+;;; it; and every request's write jobs are counted (R15, L10).
 ;;;
 ;;;   1. the oracle on hand-made worlds, pure: the lifecycle's, then a tree
 ;;;      on it, then a chain to the depth's boundary, then links on it, then
-;;;      props and a Task's commands on it; then the props corpus, by itself
-;;;      and each entry once through the real handlers
-;;;   2. the run: SEQUENCES seeds of 88 to 127 requests, every one to agree;
+;;;      props and a Task's commands on it, then tags on it; then the props
+;;;      corpus and the tags corpus, each by itself and each entry once
+;;;      through the real handlers
+;;;   2. the run: SEQUENCES seeds of 97 to 140 requests, every one to agree;
+;;;      a crowd seed (ending in 04 or 54) first holds over 500 carriers of
+;;;      a tag, renames and removes it until left is 0, then 14 to 27;
 ;;;      a family seed (ending in 3 or 7) first makes a mixed tree; a linked
 ;;;      seed (ending in 1 or 9) first makes a hub of links both ways and
 ;;;      steps it through the states; a deep seed (a multiple of fifteen)
@@ -45,7 +50,10 @@
 ;;;      refusal of a command by its cause, each refusal of props by kind and
 ;;;      by where it is answered, the 413, status_fixed, P10's restores,
 ;;;      P11's replaces, P14's creates, commands and reads on Tasks stored
-;;;      {} and on seeded ones, R17's two orderings
+;;;      {} and on seeded ones, R17's two orderings; slice 7a's: each kind of
+;;;      tags sent and what came of it, the other writes on tagged nodes,
+;;;      the filter by count, refusal and raw value, the tags list, each
+;;;      command's outcome and refusal, and a crowd's steps over 500
 ;;;   4. teeth: the oracle given a twisted rule disagrees with the handlers;
 ;;;      each tree, link and slice 6 twist on the first seeds whose run
 ;;;      reached what it bends
@@ -922,6 +930,163 @@
      (list (member-of (expectation-json (expect wontdo-resets-closed tasks (command-at tat6 'a 41 1 'wontdo))) "props")
            (expectation-status (expect status-claim-taken tasks (put-props tat6 'a 40 1 #f (corpus 'task-done))))))))
 
+;;; Tags, on the hand world (slice 7a)
+
+;; names->sent : (U 'absent (Listof Symbol)) -> TagsSent     the corpus's entries of those names, as sent
+(define (names->sent names) (if (eq? names 'absent) 'absent (list 'entries (map tag-named names))))
+
+(define (tag-put at tag n pre kind names)
+  (make-event 'put at tag (key-of tag) (nid n) pre '() (make-tagged-content kind "t" "b" "text/plain" #f 'absent (names->sent names))
+              #f #f #f #f '() 'absent))
+(define (tag-put-props at tag n pre kind props sent)
+  (make-event 'put at tag (key-of tag) (nid n) pre '() (make-tagged-content kind "t" "b" "text/plain" props 'absent sent)
+              #f #f #f #f '() 'absent))
+
+;; step-at : Natural Tag Symbol (Listof (Pair String Symbol)) [Body-or-#f (Listof Header) Boolean] -> Event
+(define (step-at at tag kind members)
+  (make-tag-event kind at tag (key-of tag) '() #f '()
+                  (make-command-spec (list 'members (map (lambda (m) (cons (car m) (tag-named (cdr m)))) members)) #t)))
+(define (step-with at tag kind body headers json?)
+  (make-tag-event kind at tag (key-of tag) headers #f '() (make-command-spec body json?)))
+
+(define (tags-of w n) (mnode-tags (node-in w n)))
+(define (snap-tags w n) (map msnap-tags (mnode-snaps (node-in w n))))
+
+(define tg (+ t0 120))
+
+;; tagged : hand, with a's 60 a Note made with Work, home and WORK; 61 a
+;; Note with work, archived at 2; 62 a Note with work and É, trashed at 2;
+;; b's 63 a Note with work; a's 64 a Task with Errands
+(define tagged
+  (attempt
+   (lambda ()
+     (walk-world hand
+                 (list (tag-put tg 'a 60 'create "note" '(work-capital home work-upper))
+                       (tag-put (+ tg 1) 'a 61 'create "note" '(work))
+                       (life-at (+ tg 2) 'a a1 61 1 'archive)
+                       (tag-put (+ tg 3) 'a 62 'create "note" '(work e-acute-upper))
+                       (life-at (+ tg 4) 'a a1 62 1 'trash)
+                       (tag-put (+ tg 5) 'b 63 'create "note" '(work))
+                       (tag-put (+ tg 6) 'a 64 'create "task" '(errands-capital)))))))
+
+(define ta (+ tg 20))
+
+(test-equal "oracle: a create's tags are stored folded, sorted, each once: the answer shows them, the node and its snapshot hold them (G3, L3)"
+  (list 201 '#("home" "work") '("home" "work") '(("home" "work")) '#() '())
+  (attempt
+   (lambda ()
+     (let ((x (expect as-planned hand (tag-put ta 'a 60 'create "note" '(work-capital home work-upper))))
+           (y (expect as-planned hand (tag-put ta 'a 60 'create "note" 'absent))))
+       (list (expectation-status x) (member-of (expectation-json x) "tags") (tags-of (expectation-world x) 60)
+             (snap-tags (expectation-world x) 60) (member-of (expectation-json y) "tags") (tags-of (expectation-world y) 60))))))
+
+(test-equal "oracle: a replace with no tags keeps them (G2, L4); [] clears them; a list replaces them whole"
+  '(#("home" "work") #() #("\x1f389;"))
+  (map (lambda (names)
+         (attempt (lambda () (member-of (expectation-json (expect as-planned tagged (tag-put ta 'a 60 1 #f names))) "tags"))))
+       (list 'absent '() '(party))))
+
+(test-equal "oracle: a PUT's order: the props' 400 before the tags'; the tags' 400 before the props' 413; 51 entries that fold to one, a value no array, a refused tag: 400, with no write job (L10)"
+  '((400 "props" 0) (400 "tags" 0) (413 "props" 0) (400 "tags" 0) (400 "tags" 0) (400 "tags" 0) (201 #f 1))
+  (map (lambda (e)
+         (attempt (lambda ()
+                    (let ((x (expect as-planned tagged e)))
+                      (list (expectation-status x)
+                            (let ((c (expectation-clause x)))
+                              (cond ((not (= (expectation-status x) 201)) (if (contains? c "tags that") "tags" "props"))
+                                    (else #f)))
+                            (expectation-jobs x))))))
+       (list (tag-put-props ta 'a 70 'create "note" (corpus 'nothing-colour) (names->sent '(tab)))
+             (tag-put-props ta 'a 70 'create "contact" (corpus 'contact-over-cap) (names->sent '(tab)))
+             (tag-put-props ta 'a 70 'create "contact" (corpus 'contact-over-cap) (names->sent '(work)))
+             (tag-put ta 'a 70 'create "note" (map (lambda (i) 'work-capital) (from-to 0 50)))
+             (tag-put-props ta 'a 70 'create "note" #f '(raw "null" null))
+             (tag-put ta 'a 60 1 #f '(work heart-variation-selector))
+             (tag-put ta 'a 70 'create "note" (map tag-entry-name numbered-sent)))))
+
+(test-equal "oracle: a restore brings a snapshot's tags back, as stored (L11); a Task's command keeps the node's tags and its snapshot holds them (L3); a purge leaves none (L7)"
+  (list '#("home" "work") '("errands") '("errands") '())
+  (attempt
+   (lambda ()
+     (let* ((w1 (walk-world tagged (list (tag-put ta 'a 60 1 #f '()))))
+            (x (expect as-planned w1 (restore-at (+ ta 1) 'a a1 60 2 1)))
+            (y (expect as-planned tagged (command-at ta 'a 64 1 'done)))
+            (z (expect as-planned tagged (life-at ta 'a a1 62 2 'purge))))
+       (list (member-of (expectation-json x) "tags") (tags-of (expectation-world y) 64)
+             (car (snap-tags (expectation-world y) 64)) (tags-of (expectation-world z) 62))))))
+
+(test-equal "oracle: a rename touches every carrier of the account's, in any state, by id: each at its next revision, a change row tags each in id order, no snapshot; a merge keeps one tag; left 0; the other account's untouched (L5, L6, L13)"
+  (list 200 '(("left" . 0) ("renamed" . 3)) #f
+        '(("home") ("home") ("home" "\xe9;")) '(2 3 3) '(1 1 1)
+        (list (list (nid 60) 2 "tags" ta) (list (nid 61) 3 "tags" ta) (list (nid 62) 3 "tags" ta))
+        '("work"))
+  (attempt
+   (lambda ()
+     (let* ((x (expect as-planned tagged (step-at ta 'a 'rename-tag '(("from" . work-capital) ("to" . home)))))
+            (w (expectation-world x)))
+       (list (expectation-status x) (expectation-json x) (expectation-etag x)
+             (map (lambda (n) (tags-of w n)) '(60 61 62))
+             (map (lambda (n) (mnode-revision (node-in w n))) '(60 61 62))
+             (map (lambda (n) (length (mnode-snaps (node-in w n)))) '(60 61 62))
+             (map (lambda (c) (list (mchange-node c) (mchange-revision c) (mchange-op c) (mchange-created c)))
+                  (list-tail (world-changes-of w 'a) (- (length (world-changes-of w 'a)) 3)))
+             (tags-of w 63))))))
+
+(test-equal "oracle: a command on a tag only the other account carries is 0 and 0, never 404, one write job; a precondition 400, text/plain 415, a body over 16 KiB 413, no JSON invalid_json, from and to one tag 400, each with none"
+  '((200 (("left" . 0) ("removed" . 0)) 1) (400 "invalid_request" 0) (415 "unsupported_media_type" 0)
+    (413 "payload_too_large" 0) (400 "invalid_json" 0) (400 "invalid_request" 0) (400 "invalid_request" 0))
+  (map (lambda (e)
+         (attempt (lambda ()
+                    (let ((x (expect as-planned tagged e)))
+                      (list (expectation-status x) (or (expectation-code x) (expectation-json x)) (expectation-jobs x))))))
+       (list (step-at ta 'b 'remove-tag '(("tag" . home)))
+             (step-with ta 'a 'remove-tag (list 'members (list (cons "tag" (tag-named 'work)))) (list (cons "If-Match" "\"1\"")) #t)
+             (step-with ta 'a 'remove-tag (list 'members (list (cons "tag" (tag-named 'work)))) '() #f)
+             (step-with ta 'a 'remove-tag (list 'padded (list (cons "tag" (tag-named 'work))) 20000) '() #t)
+             (step-with ta 'a 'remove-tag '(text "{" not-json) '() #t)
+             (step-at ta 'a 'rename-tag '(("from" . work-capital) ("to" . work-upper)))
+             (step-at ta 'a 'rename-tag '(("from" . work) ("from" . home))))))
+
+;; crowded : 502 Notes of a's carrying crowd, made from the hand world
+(define crowded
+  (attempt
+   (lambda ()
+     (walk-world hand (map (lambda (k) (tag-put (+ tg k) 'a (+ 2000 k) 'create "note" '(crowd))) (from-to 1 502))))))
+
+(test-equal "oracle: a step takes 500 of 502 carriers, the first by id, and leaves 2; the next takes the 2 and leaves none (G8)"
+  (list '(("left" . 2) ("renamed" . 500)) '(("left" . 0) ("renamed" . 2)) 500 (list (nid 2501) (nid 2502)))
+  (attempt
+   (lambda ()
+     (let* ((x (expect as-planned crowded (step-at ta 'a 'rename-tag '(("from" . crowd) ("to" . throng)))))
+            (w (expectation-world x))
+            (y (expect as-planned w (step-at (+ ta 1) 'a 'rename-tag '(("from" . crowd-upper) ("to" . throng))))))
+       (list (expectation-json x) (expectation-json y)
+             (length (filter (lambda (n) (member "throng" (mnode-tags n))) (world-nodes w)))
+             (map mnode-id (filter (lambda (n) (member "crowd" (mnode-tags n))) (world-nodes w))))))))
+
+(define (tags-list-at at tag limit after) (make-tag-event 'list-tags at tag (key-of tag) '() limit '() (make-tags-list-spec after)))
+(define (filter-at at tag state names after)
+  (make-filter-event at tag (key-of tag) #f state 'absent '()
+                     (make-filter-spec (map (lambda (n) (if (eq? n 'bare) n (list 'entry (tag-named n) 'strict))) names) after)))
+
+(test-equal "oracle: the tags list counts each tag over every state, by code point; after a tag, folded; an after refused or given twice is 400; the filter takes every tag named, in the state asked, counted as sent toward ten"
+  (list '((("count" . 1) ("tag" . "errands")) (("count" . 1) ("tag" . "home")) (("count" . 3) ("tag" . "work")) (("count" . 1) ("tag" . "\xe9;")))
+        '((("count" . 3) ("tag" . "work")) (("count" . 1) ("tag" . "\xe9;")))
+        '(400 "invalid_request") '(400 "invalid_request")
+        (list (id-of 60)) (list (id-of 62)) '(400 "invalid_request") (list (id-of 60)) '(400 "invalid_request"))
+  (map (lambda (e)
+         (attempt (lambda ()
+                    (let ((x (expect as-planned tagged e)))
+                      (if (= (expectation-status x) 200)
+                          (let ((items (expectation-items x)))
+                            (if (and (pair? items) (assoc "id" (car items))) (map (lambda (i) (member-of i "id")) items) items))
+                          (list (expectation-status x) (expectation-code x)))))))
+       (list (tags-list-at ta 'a #f #f) (tags-list-at ta 'a #f (list 'entry (tag-named 'home-capital) 'strict))
+             (tags-list-at ta 'a #f (list 'entry (tag-named 'tab) 'strict)) (tags-list-at ta 'a #f 'twice)
+             (filter-at ta 'a #f '(work-capital home) #f) (filter-at ta 'a "trashed" '(e-acute work) #f)
+             (filter-at ta 'a #f '(work bare) #f) (filter-at ta 'a #f (map (lambda (i) 'work) (from-to 1 10)) #f)
+             (filter-at ta 'a #f (map (lambda (i) 'work) (from-to 0 10)) #f))))
+
 ;;; The store every sequence runs on, emptied by each
 
 (define dir (attempt (lambda () (fresh-dir "test-nodes-model"))))
@@ -957,7 +1122,15 @@
 
   (test-equal "corpus: every entry, as a create of every kind and a replace naming no kind of every kind, is answered as the corpus says, with its write jobs"
     '()
-    (attempt (lambda () (corpus-breaks store)))))
+    (attempt (lambda () (corpus-breaks store))))
+
+  (test-equal "tag corpus: its names, stored forms, fixed points (L1), raw query values and both caps hold"
+    '()
+    (attempt tag-corpus-self-breaks))
+
+  (test-equal "tag corpus: every entry, as a create's tags and as a list's ?tag=, and every raw query value, is answered as the corpus says"
+    '()
+    (attempt (lambda () (tag-corpus-breaks store)))))
 
 ;;; Replay: one seed, traced
 
@@ -994,7 +1167,9 @@
 (define aims-hit (tally verdict-aims))
 (define steps (apply + (map verdict-steps agreed)))
 (define requests (apply + (map verdict-requests agreed)))
-(define shortest (fold-left min 1000 (map verdict-steps agreed)))
+(define (crowd? v) (eq? (verdict-style v) 'crowd))
+(define shortest (fold-left min 1000 (map verdict-steps (filter (lambda (v) (not (crowd? v))) agreed))))
+(define shortest-crowd (fold-left min 1000 (map verdict-steps (filter crowd? agreed))))
 
 (define d5-events '(create replace replace-other-kind restore restore-unknown))
 (define move-events '(move move-children))
@@ -1341,6 +1516,89 @@
         (cons props-kept-aims 15) (cons p14-aims 2) (cons empty-task-aims 12) (cons entry-aims 1)))
 (define props-aims-all (apply append (map car props-floors)))
 
+;;; Slice 7a's coverage: tags
+
+;; tags-sent-aims : each kind of tags a create and a replace sent (the generator's aims)
+(define tags-sent-aims
+  '(tags-create-none tags-create-common tags-create-empty tags-create-any tags-create-folded-to-one
+    tags-create-refused-entry tags-create-at-cap tags-create-over-cap tags-create-many-kinds
+    tags-replace-none tags-replace-sent-back tags-replace-other-forms tags-replace-cleared tags-replace-new
+    tags-replace-added tags-replace-refused-entry tags-replace-at-cap tags-replace-over-cap tags-replace-many-kinds))
+
+;; tags-raw-values : each value that is no array of strings, a create's
+;; and a replace's counted together (each alone is too rare to floor)
+(define tags-raw-values '(null string object number-in-list null-in-list list-in-list true object-of-tags))
+(define (raw-count v)
+  (+ (hashtable-ref aims-hit (aim-of "tags-create-raw-" v) 0) (hashtable-ref aims-hit (aim-of "tags-replace-raw-" v) 0)))
+(define tags-raw-aims
+  (apply append (map (lambda (r) (map (lambda (k) (aim-of "tags-" r "-raw-" k)) tags-raw-values)) '(create replace))))
+
+;; tags-put-aims : what came of a PUT's tags: refused before the job, by a
+;; create and a replace (L10); stored none, some, fifty; several forms
+;; stored as one; kept by a replace that sent none (L4), with props sent
+;; too; cleared; replaced
+(define tags-put-aims
+  '(tags-400-create tags-400-replace tags-stored-none tags-stored-some tags-stored-fifty tags-folded-to-one
+    tags-kept tags-kept-with-props tags-cleared tags-replaced))
+
+;; tags-write-aims : tags met by the other writes: a restore that changed
+;; them, cleared them, brought one back, after a step (L11); a Task's
+;; command, a purge, a move and a change of state of a tagged node
+(define tags-write-aims
+  '(restore-tags-changed restore-tags-cleared restore-brings-back restore-after-a-step
+    task-command-tagged purge-tagged move-tagged state-change-tagged))
+
+;; rare-tags-aims : a PUT whose tags are refused with props over the cap
+;; (the tags' 400 first); a restore of a snapshot from before migration 7
+(define rare-tags-aims '(tags-400-with-props-413 restore-before-migration-7))
+
+;; tag-filter-aims : the filter by count of tags (ten as sent, eleven the
+;; 400), what it found, each refusal, with state, parent and after, pages
+;; followed, spaces sent as +, and each raw query value
+(define tag-filter-aims
+  (append '(tag-filter-200-1 tag-filter-200-2 tag-filter-200-3 tag-filter-200-6 tag-filter-200-10 tag-filter-11
+            tag-filter-found tag-filter-empty-page tag-filter-400 tag-filter-404-parent tag-filter-refused tag-filter-empty
+            tag-filter-bare tag-filter-with-state tag-filter-with-parent tag-filter-with-after tag-filter-pages-followed
+            tag-filter-plus-spaces)
+          (map (lambda (c) (aim-of "tag-filter-" (cadr c))) (filter (lambda (c) (string? (caddr c))) query-raw-cases))))
+
+;; list-tags-aims : the tags list from the start, after a tag, after a
+;; refused one and after twice (each the 400), empty, its pages followed
+;; or its first tag counted by the filter (L8)
+(define list-tags-aims
+  '(list-tags-from-the-start list-tags-after-a-tag list-tags-after-refused list-tags-after-twice
+    list-tags-200 list-tags-400 list-tags-empty list-tags-pages-or-counted))
+
+;; step-aims : each command on no carrier and on some; a merge; archived
+;; and trashed carriers touched (L13); a tag only the other account has
+;; (L6); each refusal by its cause, by each command
+(define step-aims
+  '(step-rename-none step-rename-some step-remove-none step-remove-some step-merge step-touched-archived
+    step-touched-trashed step-theirs-only
+    step-rename-400 step-remove-400 step-rename-415 step-remove-415 step-rename-413 step-remove-413
+    step-rename-invalid-json step-remove-invalid-json))
+
+;; crowd-aims : a crowd seed's (G8 over 500): a step that takes 500 and
+;; leaves more, by each command; a count stopped at 1,000; each step of
+;; the crowd's script
+(define crowd-aims
+  (append '(step-rename-cap step-remove-cap step-left-above-0 list-tags-count-capped)
+          (map (lambda (k) (aim-of "crowd-" k)) (from-to 1 15))))
+
+;; tag-floors : (Listof (Pair (Listof Symbol) Natural))
+;; Each group's floor is about half the fewest seen over six runs of 300
+;; (FIRST 1 to 5001 by thousands): a kind of tags sent 23 (a replace's
+;; tags in other forms), a PUT's outcome 7 (a replace that cleared tags),
+;; another write's 7 (a restore that cleared them), the rare ones 6, the
+;; filter's 8 (pages followed), the tags list's 8 (after twice), a
+;; command's 4 (no JSON), the crowd's 6 (one a crowd seed: six a run).
+;; A raw value, a create's and a replace's together, 8.
+(define raw-floor 4)
+(define tag-floors
+  (list (cons tags-sent-aims 11) (cons tags-put-aims 3) (cons tags-write-aims 3) (cons rare-tags-aims 3)
+        (cons tag-filter-aims 4) (cons list-tags-aims 4) (cons step-aims 2) (cons crowd-aims 3)))
+(define tag-aims-all (append tags-raw-aims (apply append (map car tag-floors))))
+
 (define (at-least floor n) (if (>= n floor) (list 'at-least floor) (list 'only n)))
 
 (define (cell-name c) (format "~a x ~a x ~a" (car c) (or (cadr c) "-") (caddr c)))
@@ -1352,15 +1610,18 @@
 
   (test-equal "the run: every one of the sequences ran and agreed" sequences (length agreed))
 
-  (test-equal "the run: every sequence is at least 60 requests" '(at-least 60) (at-least 60 shortest))
+  (test-equal "the run: every sequence is at least 60 requests, a crowd's at least 29 (its script and 14 to 27)"
+    '((at-least 60) (at-least 29))
+    (list (at-least 60 shortest) (at-least 29 shortest-crowd)))
 
   (test-equal "the run: at least 20,000 requests" '(at-least 20000) (at-least 20000 steps))
 
-  (test-equal "the run: one seed in fifteen is deep, one in five a family, one in five linked"
-    (list (/ sequences 15) (/ sequences 5) (/ sequences 5))
+  (test-equal "the run: one seed in fifteen is deep, one in five a family, one in five linked, one in fifty a crowd"
+    (list (/ sequences 15) (/ sequences 5) (/ sequences 5) (/ sequences 50))
     (list (length (filter (lambda (v) (eq? (verdict-style v) 'deep)) agreed))
           (length (filter (lambda (v) (eq? (verdict-style v) 'family)) agreed))
-          (length (filter (lambda (v) (eq? (verdict-style v) 'linked)) agreed))))
+          (length (filter (lambda (v) (eq? (verdict-style v) 'linked)) agreed))
+          (length (filter crowd? agreed))))
 
   ;;; 3. Coverage
 
@@ -1440,7 +1701,14 @@
           (list 'at-least (cdr group))
           (at-least (cdr group) (hashtable-ref aims-hit aim 0))))
       (car group)))
-   (append tree-floors link-floors props-floors))
+   (append tree-floors link-floors props-floors tag-floors))
+
+  (for-each
+   (lambda (v)
+     (test-equal (format "coverage: tags sent as the raw value ~a, by a create or a replace, at least ~a times" v raw-floor)
+       (list 'at-least raw-floor)
+       (at-least raw-floor (raw-count v))))
+   tags-raw-values)
 
   (test-equal "coverage: the model steps no cell of link-command's but the reachable ones"
     '()
@@ -1489,12 +1757,19 @@
               (display (format "   at least ~a:\n" (cdr group)))
               (for-each (lambda (aim) (display (format "    ~a: ~a\n" aim (hashtable-ref aims-hit aim 0)))) (car group)))
             props-floors)
+  (display "  tags (slice 7a):\n")
+  (display (format "   at least ~a, a create's and a replace's together:\n" raw-floor))
+  (for-each (lambda (v) (display (format "    raw ~a: ~a\n" v (raw-count v)))) tags-raw-values)
+  (for-each (lambda (group)
+              (display (format "   at least ~a:\n" (cdr group)))
+              (for-each (lambda (aim) (display (format "    ~a: ~a\n" aim (hashtable-ref aims-hit aim 0)))) (car group)))
+            tag-floors)
   (display "  and with no floor:\n")
   (for-each (lambda (aim) (display (format "    ~a: ~a\n" aim (hashtable-ref aims-hit aim 0))))
             (list-sort (lambda (x y) (string<? (symbol->string x) (symbol->string y)))
                        (filter (lambda (aim) (not (or (memq aim aims) (memq aim some-aims) (memq aim rare-aims)
                                                       (memq aim tree-aims-all) (memq aim link-aims-all)
-                                                      (memq aim props-aims-all))))
+                                                      (memq aim props-aims-all) (memq aim tag-aims-all))))
                                (vector->list (hashtable-keys aims-hit))))))
 
 ;;; 4. Teeth: the oracle with a twisted rule, the handlers as they are
@@ -1517,7 +1792,12 @@
 
   (test-equal "teeth: a rule that answers a stale purge with wrong_state disagrees with the handlers' 412"
     #t
-    (let ((f (first-difference stale-wrong-state (from-to 1 30))))
+    (let ((f (first-difference stale-wrong-state
+                               (take* (map verdict-seed
+                                           (filter (lambda (v) (exists (lambda (c) (member (car c) '((differ active purge) (differ archived purge))))
+                                                                       (verdict-cells v)))
+                                                   agreed))
+                                      5))))
       (and f
            (or (contains? f "stepping differ x active x purge") (contains? f "stepping differ x archived x purge"))
            (contains? f "status: the model has 409, the handlers answered 412")

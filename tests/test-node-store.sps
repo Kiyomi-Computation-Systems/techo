@@ -25,7 +25,8 @@
         (techo doorway)
         (techo store)
         (techo node-store)
-        (only (techo nodes) node-kinds child-moves? child-kind-filter))
+        (only (techo nodes) node-kinds child-moves? child-kind-filter)
+        (only (jsonparse easy) json->string))
 
 (define runner (test-runner-simple))
 (test-runner-current runner)
@@ -192,7 +193,7 @@
      (with-store "insert.db"
        (lambda (w r p)
          (w set-up!)
-         (let ((made (ok-of (w (lambda (tx) (node->list (insert-node! tx A1 acct-a "note" "Title" "Body text" "text/markdown" "{}" #f 5000)))))))
+         (let ((made (ok-of (w (lambda (tx) (node->list (insert-node! tx A1 acct-a "note" "Title" "Body text" "text/markdown" "{}" #f '() 5000)))))))
            (list made
                  (node->list (ok-of (r (lambda (tx) (node-of-owner tx acct-a A1)))))
                  (snap->list (ok-of (r (lambda (tx) (snapshot-of tx acct-a A1 1)))))
@@ -206,7 +207,7 @@
    (lambda ()
      (with-store "head.db"
        (lambda (w r p)
-         (w (lambda (tx) (set-up! tx) (insert-node! tx A1 acct-a "task" "t" "b" "text/plain" "{}" #f 1)))
+         (w (lambda (tx) (set-up! tx) (insert-node! tx A1 acct-a "task" "t" "b" "text/plain" "{}" #f '() 1)))
          (r (lambda (tx) (node-head tx acct-a A1))))))))
 
 (test-equal "insert: a missing id is #f everywhere, and not in use"
@@ -220,7 +221,7 @@
                (r (lambda (tx) (node-of-owner tx acct-a A1)))
                (r (lambda (tx) (snapshot-of tx acct-a A1 1)))
                (r (lambda (tx) (node-in-use? tx A1)))
-               (r (lambda (tx) (nodes-page tx acct-a "active" 'any #f 10)))
+               (r (lambda (tx) (nodes-page tx acct-a "active" 'any '() #f 10)))
                (r (lambda (tx) (snapshots-page tx acct-a A1 #f 10)))
                (r (lambda (tx) (node-in-use? tx (nid 99))))))))))
 
@@ -238,12 +239,12 @@
      (with-store "write.db"
        (lambda (w r p)
          (w set-up!)
-         (w (lambda (tx) (insert-node! tx A1 acct-a "project" "T1" "B1" "text/markdown" "{}" #f 100)))
+         (w (lambda (tx) (insert-node! tx A1 acct-a "project" "T1" "B1" "text/markdown" "{}" #f '() 100)))
          (let* ((s1 (snap->list (ok-of (r (lambda (tx) (snapshot-of tx acct-a A1 1))))))
-                (made (ok-of (w (lambda (tx) (node->list (write-node! tx A1 acct-a 1 "T2" "B2" "text/plain" "{\"a\":1}" "update" 200))))))
+                (made (ok-of (w (lambda (tx) (node->list (write-node! tx A1 acct-a 1 "T2" "B2" "text/plain" "{\"a\":1}" 'keep "update" 200))))))
                 (read (node->list (ok-of (r (lambda (tx) (node-of-owner tx acct-a A1))))))
                 (s2 (snap->list (ok-of (r (lambda (tx) (snapshot-of tx acct-a A1 2)))))))
-           (w (lambda (tx) (write-node! tx A1 acct-a 2 "T3" "B3" "text/html" "{}" "update" 300)))
+           (w (lambda (tx) (write-node! tx A1 acct-a 2 "T3" "B3" "text/html" "{}" 'keep "update" 300)))
            (list made read s2
                  (equal? s1 (snap->list (ok-of (r (lambda (tx) (snapshot-of tx acct-a A1 1))))))
                  (snap->list (ok-of (r (lambda (tx) (snapshot-of tx acct-a A1 3)))))
@@ -255,7 +256,7 @@
    (lambda ()
      (with-store "h2.db"
        (lambda (w r p)
-         (w (lambda (tx) (set-up! tx) (insert-node! tx A1 acct-a "note" "T1" "B1" "a/a" "{}" #f 1)))
+         (w (lambda (tx) (set-up! tx) (insert-node! tx A1 acct-a "note" "T1" "B1" "a/a" "{}" #f '() 1)))
          (let ((check (lambda ()
                         (ok-of (r (lambda (tx)
                                     (let ((n (node-of-owner tx acct-a A1)))
@@ -268,9 +269,9 @@
                                                    (string=? (node-body n) (snapshot-body s))
                                                    (eqv? (node-updated n) (snapshot-created s))))))))))))
            (let* ((c1 (check))
-                  (x (w (lambda (tx) (write-node! tx A1 acct-a 1 "T2" "B1" "a/a" "{}" "update" 2))))
+                  (x (w (lambda (tx) (write-node! tx A1 acct-a 1 "T2" "B1" "a/a" "{}" 'keep "update" 2))))
                   (c2 (check))
-                  (y (w (lambda (tx) (write-node! tx A1 acct-a 2 "T2" "B3" "b/b" "{\"k\":[1]}" "restore" 3))))
+                  (y (w (lambda (tx) (write-node! tx A1 acct-a 2 "T2" "B3" "b/b" "{\"k\":[1]}" 'keep "restore" 3))))
                   (c3 (check)))
              (list 'ok (list c1 c2 c3)))))))))
 
@@ -281,9 +282,9 @@
    (lambda ()
      (with-store "stale.db"
        (lambda (w r p)
-         (w (lambda (tx) (set-up! tx) (insert-node! tx A1 acct-a "note" "T1" "B1" "a/a" "{}" #f 1)))
+         (w (lambda (tx) (set-up! tx) (insert-node! tx A1 acct-a "note" "T1" "B1" "a/a" "{}" #f '() 1)))
          (let ((res (ok-of (w (lambda (tx)
-                                (let ((c (caught (lambda () (write-node! tx A1 acct-a 7 "SECRET-TITLE" "SECRET-BODY" "a/a" "{}" "update" 2)))))
+                                (let ((c (caught (lambda () (write-node! tx A1 acct-a 7 "SECRET-TITLE" "SECRET-BODY" "a/a" "{}" 'keep "update" 2)))))
                                   (list c (list (count-of tx "nodes") (count-of tx "revisions") (count-of tx "changes")))))))))
            (let ((c (car res)))
              (list (car c) (cadr c)
@@ -297,11 +298,11 @@
    (lambda ()
      (with-store "wrong-owner.db"
        (lambda (w r p)
-         (w (lambda (tx) (set-up! tx) (insert-node! tx A1 acct-a "note" "T1" "B1" "a/a" "{}" #f 1)))
+         (w (lambda (tx) (set-up! tx) (insert-node! tx A1 acct-a "note" "T1" "B1" "a/a" "{}" #f '() 1)))
          (let* ((before (ok-of (r all-rows)))
                 (res (ok-of (w (lambda (tx)
-                                 (caught (lambda () (write-node! tx A1 acct-b 1 "SECRET-TITLE" "SECRET-BODY" "a/a" "{}" "update" 2)))))))
-                (via-doorway (w (lambda (tx) (write-node! tx A1 acct-b 1 "SECRET-TITLE" "SECRET-BODY" "a/a" "{}" "update" 2)))))
+                                 (caught (lambda () (write-node! tx A1 acct-b 1 "SECRET-TITLE" "SECRET-BODY" "a/a" "{}" 'keep "update" 2)))))))
+                (via-doorway (w (lambda (tx) (write-node! tx A1 acct-b 1 "SECRET-TITLE" "SECRET-BODY" "a/a" "{}" 'keep "update" 2)))))
            (list (car res) (cadr res)
                  (contains? (caddr res) "SECRET-TITLE")
                  (contains? (caddr res) "SECRET-BODY")
@@ -314,11 +315,11 @@
    (lambda ()
      (with-store "undo.db"
        (lambda (w r p)
-         (w (lambda (tx) (set-up! tx) (insert-node! tx A1 acct-a "note" "T1" "B1" "a/a" "{}" #f 1)))
+         (w (lambda (tx) (set-up! tx) (insert-node! tx A1 acct-a "note" "T1" "B1" "a/a" "{}" #f '() 1)))
          (let* ((before (ok-of (r all-rows)))
                 (res (w (lambda (tx)
-                          (write-node! tx A1 acct-a 1 "T2" "B2" "a/a" "{}" "update" 2)
-                          (write-node! tx A1 acct-a 1 "T3" "B3" "a/a" "{}" "update" 3)))))
+                          (write-node! tx A1 acct-a 1 "T2" "B2" "a/a" "{}" 'keep "update" 2)
+                          (write-node! tx A1 acct-a 1 "T3" "B3" "a/a" "{}" 'keep "update" 3)))))
            (list (and (pair? res) (eq? (car res) 'raised))
                  (equal? before (ok-of (r all-rows))))))))))
 
@@ -337,12 +338,12 @@
        (lambda (w r p)
          (w (lambda (tx)
               (set-up! tx)
-              (insert-node! tx A1 acct-a "note" "t" "b" "a/a" "{}" #f 10)
-              (insert-node! tx A2 acct-a "note" "t" "b" "a/a" "{}" #f 11)
-              (insert-node! tx B1 acct-b "note" "t" "b" "a/a" "{}" #f 12)
-              (write-node! tx A1 acct-a 1 "t" "b2" "a/a" "{}" "update" 13)
-              (write-node! tx B1 acct-b 1 "t" "b2" "a/a" "{}" "update" 14)
-              (write-node! tx A1 acct-a 2 "t" "b3" "a/a" "{}" "restore" 15)))
+              (insert-node! tx A1 acct-a "note" "t" "b" "a/a" "{}" #f '() 10)
+              (insert-node! tx A2 acct-a "note" "t" "b" "a/a" "{}" #f '() 11)
+              (insert-node! tx B1 acct-b "note" "t" "b" "a/a" "{}" #f '() 12)
+              (write-node! tx A1 acct-a 1 "t" "b2" "a/a" "{}" 'keep "update" 13)
+              (write-node! tx B1 acct-b 1 "t" "b2" "a/a" "{}" 'keep "update" 14)
+              (write-node! tx A1 acct-a 2 "t" "b3" "a/a" "{}" 'keep "restore" 15)))
          (list (ok-of (r (lambda (tx) (changes-of tx acct-a))))
                (ok-of (r (lambda (tx) (changes-of tx acct-b))))))))))
 
@@ -355,14 +356,14 @@
      (with-store "owner.db"
        (lambda (w r p)
          (w (lambda (tx) (set-up! tx)
-                    (insert-node! tx A1 acct-a "note" "t" "b" "a/a" "{}" #f 1)
-                    (write-node! tx A1 acct-a 1 "t" "b" "a/a" "{}" "update" 2)
-                    (write-node! tx A1 acct-a 2 "t" "b" "a/a" "{}" "update" 3)))
+                    (insert-node! tx A1 acct-a "note" "t" "b" "a/a" "{}" #f '() 1)
+                    (write-node! tx A1 acct-a 1 "t" "b" "a/a" "{}" 'keep "update" 2)
+                    (write-node! tx A1 acct-a 2 "t" "b" "a/a" "{}" 'keep "update" 3)))
          (list (r (lambda (tx) (node-head tx acct-b A1)))
                (r (lambda (tx) (node-of-owner tx acct-b A1)))
                (r (lambda (tx) (snapshot-of tx acct-b A1 1)))
                (r (lambda (tx) (snapshot-of tx acct-b A1 3)))
-               (r (lambda (tx) (nodes-page tx acct-b "active" 'any #f 10)))
+               (r (lambda (tx) (nodes-page tx acct-b "active" 'any '() #f 10)))
                (r (lambda (tx) (snapshots-page tx acct-b A1 #f 10)))
                (r (lambda (tx) (node-in-use? tx A1)))
                (r (lambda (tx) (node-head tx acct-a A1)))))))))
@@ -373,9 +374,9 @@
    (lambda ()
      (with-store "dup-id.db"
        (lambda (w r p)
-         (w (lambda (tx) (set-up! tx) (insert-node! tx A1 acct-a "note" "t" "b" "a/a" "{}" #f 1)))
+         (w (lambda (tx) (set-up! tx) (insert-node! tx A1 acct-a "note" "t" "b" "a/a" "{}" #f '() 1)))
          (let ((before (ok-of (r all-rows))))
-           (list (w (lambda (tx) (insert-node! tx A1 acct-b "note" "x" "y" "a/a" "{}" #f 2)))
+           (list (w (lambda (tx) (insert-node! tx A1 acct-b "note" "x" "y" "a/a" "{}" #f '() 2)))
                  (equal? before (ok-of (r all-rows))))))))))
 
 ;;; Paging
@@ -388,17 +389,17 @@
        (lambda (w r p)
          (w (lambda (tx)
               (set-up! tx)
-              (for-each (lambda (n) (insert-node! tx (nid n) acct-a "note" "t" "body" "a/a" "{}" #f n)) '(5 1 3 2 6))
-              (insert-node! tx (nid 4) acct-b "note" "t" "body" "a/a" "{}" #f 9)))
-         (let* ((p1 (ok-of (r (lambda (tx) (nodes-page tx acct-a "active" 'any #f 2)))))
-                (p2 (ok-of (r (lambda (tx) (nodes-page tx acct-a "active" 'any (node-id (cadr p1)) 2)))))
-                (p3 (ok-of (r (lambda (tx) (nodes-page tx acct-a "active" 'any (node-id (cadr p2)) 2)))))
-                (p4 (ok-of (r (lambda (tx) (nodes-page tx acct-a "active" 'any (node-id (car p3)) 2)))))
+              (for-each (lambda (n) (insert-node! tx (nid n) acct-a "note" "t" "body" "a/a" "{}" #f '() n)) '(5 1 3 2 6))
+              (insert-node! tx (nid 4) acct-b "note" "t" "body" "a/a" "{}" #f '() 9)))
+         (let* ((p1 (ok-of (r (lambda (tx) (nodes-page tx acct-a "active" 'any '() #f 2)))))
+                (p2 (ok-of (r (lambda (tx) (nodes-page tx acct-a "active" 'any '() (node-id (cadr p1)) 2)))))
+                (p3 (ok-of (r (lambda (tx) (nodes-page tx acct-a "active" 'any '() (node-id (cadr p2)) 2)))))
+                (p4 (ok-of (r (lambda (tx) (nodes-page tx acct-a "active" 'any '() (node-id (car p3)) 2)))))
                 (all (append p1 p2 p3)))
            (list (node-ids all)
                  (map node-body all)
                  (map node-ids (list p1 p2 p3))
-                 (node-ids (ok-of (r (lambda (tx) (nodes-page tx acct-b "active" 'any #f 10)))))
+                 (node-ids (ok-of (r (lambda (tx) (nodes-page tx acct-b "active" 'any '() #f 10)))))
                  p4))))))
   )
 
@@ -408,8 +409,8 @@
    (lambda ()
      (with-store "page-fields.db"
        (lambda (w r p)
-         (w (lambda (tx) (set-up! tx) (insert-node! tx A1 acct-a "journal" "T" "body" "a/a" "{}" #f 7)))
-         (node->list (car (ok-of (r (lambda (tx) (nodes-page tx acct-a "active" 'any #f 5)))))))))))
+         (w (lambda (tx) (set-up! tx) (insert-node! tx A1 acct-a "journal" "T" "body" "a/a" "{}" #f '() 7)))
+         (node->list (car (ok-of (r (lambda (tx) (nodes-page tx acct-a "active" 'any '() #f 5)))))))))))
 
 (test-equal "snapshots-page: newest first, strictly falling, BEFORE exclusive, body #f, the owner's only"
   (list '(5 4) '(3 2) '(1) '(#f #f) '(5 4 3 2 1) '(4 3 2 1) '())
@@ -419,12 +420,12 @@
        (lambda (w r p)
          (w (lambda (tx)
               (set-up! tx)
-              (insert-node! tx A1 acct-a "note" "t1" "b1" "a/a" "{}" #f 1)
-              (insert-node! tx B1 acct-b "note" "u1" "c1" "a/a" "{}" #f 1)
-              (write-node! tx A1 acct-a 1 "t2" "b2" "a/a" "{}" "update" 2)
-              (write-node! tx A1 acct-a 2 "t3" "b3" "a/a" "{}" "update" 3)
-              (write-node! tx A1 acct-a 3 "t4" "b4" "a/a" "{}" "update" 4)
-              (write-node! tx A1 acct-a 4 "t5" "b5" "a/a" "{}" "update" 5)))
+              (insert-node! tx A1 acct-a "note" "t1" "b1" "a/a" "{}" #f '() 1)
+              (insert-node! tx B1 acct-b "note" "u1" "c1" "a/a" "{}" #f '() 1)
+              (write-node! tx A1 acct-a 1 "t2" "b2" "a/a" "{}" 'keep "update" 2)
+              (write-node! tx A1 acct-a 2 "t3" "b3" "a/a" "{}" 'keep "update" 3)
+              (write-node! tx A1 acct-a 3 "t4" "b4" "a/a" "{}" 'keep "update" 4)
+              (write-node! tx A1 acct-a 4 "t5" "b5" "a/a" "{}" 'keep "update" 5)))
          (let* ((revs (lambda (l) (map snapshot-revision l)))
                 (g1 (ok-of (r (lambda (tx) (snapshots-page tx acct-a A1 #f 2)))))
                 (g2 (ok-of (r (lambda (tx) (snapshots-page tx acct-a A1 4 2)))))
@@ -444,9 +445,9 @@
        (lambda (w r p)
          (w (lambda (tx)
               (set-up! tx)
-              (insert-node! tx A1 acct-a "note" "t1" "b1" "a/a" "{}" #f 10)
-              (write-node! tx A1 acct-a 1 "t2" "b2" "a/a" "{}" "update" 20)
-              (write-node! tx A1 acct-a 2 "t3" "b3" "c/c" "{\"x\":1}" "update" 30)))
+              (insert-node! tx A1 acct-a "note" "t1" "b1" "a/a" "{}" #f '() 10)
+              (write-node! tx A1 acct-a 1 "t2" "b2" "a/a" "{}" 'keep "update" 20)
+              (write-node! tx A1 acct-a 2 "t3" "b3" "c/c" "{\"x\":1}" 'keep "update" 30)))
          (snap->list (car (ok-of (r (lambda (tx) (snapshots-page tx acct-a A1 #f 1)))))))))))
 
 ;;; A snapshot of the right node
@@ -456,11 +457,11 @@
 ;; own at each revision; B's B1 at revision 1.
 (define (two-nodes! tx)
   (set-up! tx)
-  (insert-node! tx A1 acct-a "note" "A1 t1" "A1 b1" "a/a" "{}" #f 1)
-  (insert-node! tx A2 acct-a "note" "A2 t1" "A2 b1" "a/a" "{}" #f 2)
-  (insert-node! tx B1 acct-b "note" "B1 t1" "B1 b1" "a/a" "{}" #f 3)
-  (write-node! tx A1 acct-a 1 "A1 t2" "A1 b2" "a/a" "{}" "update" 4)
-  (write-node! tx A2 acct-a 1 "A2 t2" "A2 b2" "a/a" "{}" "update" 5))
+  (insert-node! tx A1 acct-a "note" "A1 t1" "A1 b1" "a/a" "{}" #f '() 1)
+  (insert-node! tx A2 acct-a "note" "A2 t1" "A2 b1" "a/a" "{}" #f '() 2)
+  (insert-node! tx B1 acct-b "note" "B1 t1" "B1 b1" "a/a" "{}" #f '() 3)
+  (write-node! tx A1 acct-a 1 "A1 t2" "A1 b2" "a/a" "{}" 'keep "update" 4)
+  (write-node! tx A2 acct-a 1 "A2 t2" "A2 b2" "a/a" "{}" 'keep "update" 5))
 
 (test-equal "snapshot-of: two nodes of one owner at the same revisions: each answers its own snapshot, title and body"
   (list (list A1 1 "A1 t1" "A1 b1") (list A1 2 "A1 t2" "A1 b2")
@@ -489,10 +490,10 @@
        (lambda (w r p)
          (w (lambda (tx)
               (set-up! tx)
-              (insert-node! tx A1 acct-a "note" "t" "b" "a/a" "{}" #f 1)
-              (write-node! tx A1 acct-a 1 "t" "b2" "a/a" "{}" "update" 2)
-              (insert-node! tx A2 acct-a "note" "t" "b" "a/a" "{}" #f 3)
-              (insert-node! tx B1 acct-b "note" "t" "b" "a/a" "{}" #f 4)))
+              (insert-node! tx A1 acct-a "note" "t" "b" "a/a" "{}" #f '() 1)
+              (write-node! tx A1 acct-a 1 "t" "b2" "a/a" "{}" 'keep "update" 2)
+              (insert-node! tx A2 acct-a "note" "t" "b" "a/a" "{}" #f '() 3)
+              (insert-node! tx B1 acct-b "note" "t" "b" "a/a" "{}" #f '() 4)))
          (r (lambda (tx)
               (list (snapshot-exists? tx acct-a A1 1)
                     (snapshot-exists? tx acct-a A1 2)
@@ -511,11 +512,11 @@
      (with-store "big.db"
        (lambda (w r p)
          (let ((big (string-append (make-string 1048575 #\x) "y")))
-           (w (lambda (tx) (set-up! tx) (insert-node! tx A1 acct-a "note" "t" big "a/a" "{}" #f 1)))
+           (w (lambda (tx) (set-up! tx) (insert-node! tx A1 acct-a "note" "t" big "a/a" "{}" #f '() 1)))
            (list (equal? big (node-body (ok-of (r (lambda (tx) (node-of-owner tx acct-a A1))))))
                  (equal? big (snapshot-body (ok-of (r (lambda (tx) (snapshot-of tx acct-a A1 1))))))
                  (let ((big2 (string-append big "z")))
-                   (w (lambda (tx) (write-node! tx A1 acct-a 1 "t" big2 "a/a" "{}" "update" 2)))
+                   (w (lambda (tx) (write-node! tx A1 acct-a 1 "t" big2 "a/a" "{}" 'keep "update" 2)))
                    (equal? big2 (node-body (ok-of (r (lambda (tx) (node-of-owner tx acct-a A1)))))))))))))
   )
 
@@ -526,7 +527,7 @@
      (with-store "utf8.db"
        (lambda (w r p)
          (w (lambda (tx) (set-up! tx)
-                    (insert-node! tx A1 acct-a "note" "t\x00e9;te \x65e5;\x672c;" "\x3b1;\x3b2;\x3b3; \x1f600; end" "text/\x3b4;" "{\"k\":\"\x1f600;\"}" #f 1)))
+                    (insert-node! tx A1 acct-a "note" "t\x00e9;te \x65e5;\x672c;" "\x3b1;\x3b2;\x3b3; \x1f600; end" "text/\x3b4;" "{\"k\":\"\x1f600;\"}" #f '() 1)))
          (let ((n (ok-of (r (lambda (tx) (node-of-owner tx acct-a A1))))))
            (list (node-title n) (node-body n) (node-content-type n) (node-props n))))))))
 
@@ -547,9 +548,9 @@
 ;; 5 and 6 active; B's node 7 active. Times 10 up.
 (define (lc-set-up! tx)
   (set-up! tx)
-  (for-each (lambda (n) (insert-node! tx (nid n) acct-a "note" (string-append "T" (number->string n)) (string-append "B" (number->string n)) "a/a" "{}" #f 10))
+  (for-each (lambda (n) (insert-node! tx (nid n) acct-a "note" (string-append "T" (number->string n)) (string-append "B" (number->string n)) "a/a" "{}" #f '() 10))
             '(1 2 3 4 5 6))
-  (insert-node! tx (nid 7) acct-b "note" "T7" "B7" "a/a" "{}" #f 10)
+  (insert-node! tx (nid 7) acct-b "note" "T7" "B7" "a/a" "{}" #f '() 10)
   (set-node-state! tx (nid 2) acct-a 1 "archived" "archive" 20)
   (set-node-state! tx (nid 3) acct-a 1 "trashed" "trash" 20)
   (set-node-state! tx (nid 4) acct-a 1 "trashed" "trash" 20)
@@ -566,8 +567,8 @@
    (lambda ()
      (with-store "newest.db"
        (lambda (w r p)
-         (w (lambda (tx) (set-up! tx) (insert-node! tx A1 acct-a "note" "T1" "B1" "text/markdown" "{}" #f 100)))
-         (w (lambda (tx) (write-node! tx A1 acct-a 1 "T2" "B2" "text/plain" "{\"a\":1}" "update" 200)))
+         (w (lambda (tx) (set-up! tx) (insert-node! tx A1 acct-a "note" "T1" "B1" "text/markdown" "{}" #f '() 100)))
+         (w (lambda (tx) (write-node! tx A1 acct-a 1 "T2" "B2" "text/plain" "{\"a\":1}" 'keep "update" 200)))
          (w (lambda (tx) (set-node-state! tx A1 acct-a 2 "archived" "archive" 300)))
          (let ((n (ok-of (r (lambda (tx) (node-of-owner tx acct-a A1))))))
            (list (append (node->list n) (list (node-state n)))
@@ -588,7 +589,7 @@
    (lambda ()
      (with-store "setstate.db"
        (lambda (w r p)
-         (w (lambda (tx) (set-up! tx) (insert-node! tx A1 acct-a "task" "T1" "B1" "text/markdown" "{\"k\":1}" #f 100)))
+         (w (lambda (tx) (set-up! tx) (insert-node! tx A1 acct-a "task" "T1" "B1" "text/markdown" "{\"k\":1}" #f '() 100)))
          (let* ((made (ok-of (w (lambda (tx) (let ((n (set-node-state! tx A1 acct-a 1 "trashed" "trash" 250)))
                                                (append (node->list n) (list (node-state n))))))))
                 (nrows (ok-of (r (lambda (tx) (raw tx "SELECT revision, updated FROM nodes WHERE id = ?" A1)))))
@@ -635,8 +636,8 @@
        (lambda (w r p)
          (w lc-set-up!)
          (let ((res (ok-of (w (lambda (tx)
-                                (list (nothing-changes tx (lambda () (write-node! tx (nid 3) acct-a 2 "SECRET-T" "SECRET-B" "a/a" "{}" "update" 50)))
-                                      (nothing-changes tx (lambda () (write-node! tx (nid 4) acct-a 3 "SECRET-T" "SECRET-B" "a/a" "{}" "update" 50)))))))))
+                                (list (nothing-changes tx (lambda () (write-node! tx (nid 3) acct-a 2 "SECRET-T" "SECRET-B" "a/a" "{}" 'keep "update" 50)))
+                                      (nothing-changes tx (lambda () (write-node! tx (nid 4) acct-a 3 "SECRET-T" "SECRET-B" "a/a" "{}" 'keep "update" 50)))))))))
            (list (list (raised-with (car (car res))) (cadr (car res)))
                  (list (raised-with (car (cadr res))) (cadr (cadr res)))
                  (contains? (caddr (car (car res))) "SECRET")
@@ -649,7 +650,7 @@
      (with-store "write-archived.db"
        (lambda (w r p)
          (w lc-set-up!)
-         (let ((n (ok-of (w (lambda (tx) (write-node! tx (nid 2) acct-a 2 "T2b" "B2b" "a/a" "{}" "update" 60))))))
+         (let ((n (ok-of (w (lambda (tx) (write-node! tx (nid 2) acct-a 2 "T2b" "B2b" "a/a" "{}" 'keep "update" 60))))))
            (list (node-state n) (node-revision n)
                  (node-state (ok-of (r (lambda (tx) (node-of-owner tx acct-a (nid 2))))))
                  (node-body (ok-of (r (lambda (tx) (node-of-owner tx acct-a (nid 2)))))))))))))
@@ -661,7 +662,7 @@
      (with-store "write-active.db"
        (lambda (w r p)
          (w lc-set-up!)
-         (node-state (ok-of (w (lambda (tx) (write-node! tx (nid 1) acct-a 1 "T" "B" "a/a" "{}" "update" 60))))))))))
+         (node-state (ok-of (w (lambda (tx) (write-node! tx (nid 1) acct-a 1 "T" "B" "a/a" "{}" 'keep "update" 60))))))))))
 
 (test-equal "purge-node!: no snapshot left; the row emptied; kind, author, owner, created and num kept; one purge change row; still in use; found by nothing that answers"
   (list '()
@@ -675,8 +676,8 @@
    (lambda ()
      (with-store "purge.db"
        (lambda (w r p)
-         (w (lambda (tx) (set-up! tx) (insert-node! tx A1 acct-a "note" "T1" "B1" "a/a" "{}" #f 10)
-                         (write-node! tx A1 acct-a 1 "T1" "B2" "a/a" "{}" "update" 15)
+         (w (lambda (tx) (set-up! tx) (insert-node! tx A1 acct-a "note" "T1" "B1" "a/a" "{}" #f '() 10)
+                         (write-node! tx A1 acct-a 1 "T1" "B2" "a/a" "{}" 'keep "update" 15)
                          (set-node-state! tx A1 acct-a 2 "trashed" "trash" 20)))
          (let ((num-before (ok-of (r (lambda (tx) (raw tx "SELECT num FROM nodes WHERE id = ?" A1))))))
            (w (lambda (tx) (purge-node! tx A1 acct-a 3 40)))
@@ -694,7 +695,7 @@
                        (ok-of (r (lambda (tx) (snapshot-exists? tx acct-a A1 1))))
                        (ok-of (r (lambda (tx) (snapshots-page tx acct-a A1 #f 10))))
                        (ok-of (r (lambda (tx) (snapshots-page tx acct-a A1 5 10)))))
-                 (map (lambda (st) (ok-of (r (lambda (tx) (node-ids (nodes-page tx acct-a st 'any #f 10))))))
+                 (map (lambda (st) (ok-of (r (lambda (tx) (node-ids (nodes-page tx acct-a st 'any '() #f 10))))))
                       '("active" "archived" "trashed" "purged")))))))))
 
 (test-equal "purge-node!: a node that is not trashed, a stale revision and another owner's node each raise with the id and revision only; the job rolls back, the snapshots are still there; another owner's are not even deleted in the job"
@@ -749,15 +750,15 @@
        (lambda (w r p)
          (w lc-set-up!)
          (let* ((page (lambda (st after n)
-                        (ok-of (r (lambda (tx) (node-ids (nodes-page tx acct-a st 'any after n)))))))
+                        (ok-of (r (lambda (tx) (node-ids (nodes-page tx acct-a st 'any '() after n)))))))
                 (states (map (lambda (st) (page st #f 10)) '("active" "archived" "trashed" "purged"))))
            (append states
                    (list (list-sort < (apply append states))
-                         (let* ((p1 (ok-of (r (lambda (tx) (nodes-page tx acct-a "active" 'any #f 2)))))
-                                (p2 (ok-of (r (lambda (tx) (nodes-page tx acct-a "active" 'any (node-id (cadr p1)) 2)))))
-                                (p3 (ok-of (r (lambda (tx) (nodes-page tx acct-a "active" 'any (node-id (car p2)) 2))))))
+                         (let* ((p1 (ok-of (r (lambda (tx) (nodes-page tx acct-a "active" 'any '() #f 2)))))
+                                (p2 (ok-of (r (lambda (tx) (nodes-page tx acct-a "active" 'any '() (node-id (cadr p1)) 2)))))
+                                (p3 (ok-of (r (lambda (tx) (nodes-page tx acct-a "active" 'any '() (node-id (car p2)) 2))))))
                            (map node-ids (list p1 p2 p3)))
-                         (ok-of (r (lambda (tx) (node-ids (nodes-page tx acct-b "active" 'any #f 10)))))
+                         (ok-of (r (lambda (tx) (node-ids (nodes-page tx acct-b "active" 'any '() #f 10)))))
                          (list (page "archived" (nid 1) 10) (page "trashed" (nid 2) 10) (page "trashed" (nid 3) 10))))))))))
 
 (test-equal "nodes-page: a page's nodes carry their state, and no body"
@@ -768,7 +769,7 @@
        (lambda (w r p)
          (w lc-set-up!)
          (map (lambda (st)
-                (let ((n (car (ok-of (r (lambda (tx) (nodes-page tx acct-a st 'any #f 1)))))))
+                (let ((n (car (ok-of (r (lambda (tx) (nodes-page tx acct-a st 'any '() #f 1)))))))
                   (list (node-state n) (node-body n))))
               '("active" "archived" "trashed")))))))
 
@@ -796,15 +797,15 @@
        (lambda (w r p)
          (w (lambda (tx)
               (set-up! tx)
-              (insert-node! tx A1 acct-a "task" "t" "b" "a/a" "{\"status\":\"DONE\",\"closed\":5}" #f 10)
-              (insert-node! tx A2 acct-a "note" "t" "b" "a/a" "{\"at\":\"2026-12-01\"}" #f 10)
-              (insert-node! tx A3 acct-a "project" "t" "b" "a/a" "{}" #f 10)
-              (insert-node! tx (nid 5) acct-a "task" "t" "b" "a/a" "{}" #f 10)
-              (write-node! tx (nid 5) acct-a 1 "t" "b" "a/a" "{\"deadline\":\"2026-12-24\"}" "update" 20)
+              (insert-node! tx A1 acct-a "task" "t" "b" "a/a" "{\"status\":\"DONE\",\"closed\":5}" #f '() 10)
+              (insert-node! tx A2 acct-a "note" "t" "b" "a/a" "{\"at\":\"2026-12-01\"}" #f '() 10)
+              (insert-node! tx A3 acct-a "project" "t" "b" "a/a" "{}" #f '() 10)
+              (insert-node! tx (nid 5) acct-a "task" "t" "b" "a/a" "{}" #f '() 10)
+              (write-node! tx (nid 5) acct-a 1 "t" "b" "a/a" "{\"deadline\":\"2026-12-24\"}" 'keep "update" 20)
               (set-node-state! tx (nid 5) acct-a 2 "archived" "archive" 30)
-              (insert-node! tx (nid 6) acct-a "contact" "t" "b" "a/a" "{\"emails\":{\"e1\":{\"address\":\"a@b\"}}}" #f 10)
+              (insert-node! tx (nid 6) acct-a "contact" "t" "b" "a/a" "{\"emails\":{\"e1\":{\"address\":\"a@b\"}}}" #f '() 10)
               (set-node-state! tx (nid 6) acct-a 1 "trashed" "trash" 30)
-              (insert-node! tx (nid 7) acct-a "journal" "t" "b" "a/a" "{}" #f 10)))
+              (insert-node! tx (nid 7) acct-a "journal" "t" "b" "a/a" "{}" #f '() 10)))
          (ok-of (r (lambda (tx) (map (lambda (n) (props-of tx acct-a (nid n))) '(1 2 3 5 6 7))))))))))
 
 (test-equal "props-of: owner-scoped: B's node, A's purged node and an id no one holds are each #f; B reads B's own"
@@ -815,7 +816,7 @@
        (lambda (w r p)
          (w (lambda (tx)
               (lc-set-up! tx)
-              (write-node! tx (nid 7) acct-b 1 "T7" "B7" "a/a" "{\"at\":\"2026-12-02\"}" "update" 40)))
+              (write-node! tx (nid 7) acct-b 1 "T7" "B7" "a/a" "{\"at\":\"2026-12-02\"}" 'keep "update" 40)))
          (ok-of (r (lambda (tx) (list (props-of tx acct-a (nid 7)) (props-of tx acct-a (nid 4))
                                       (props-of tx acct-b (nid 4)) (props-of tx acct-a (nid 99))
                                       (props-of tx acct-b (nid 7)))))))))))
@@ -873,16 +874,33 @@
        (let ((q (cadr s)))
          (and (list? q) (= (length q) 2) (eq? (car q) 'quote) (symbol? (cadr q)) (cadr q)))))
 
-(test-equal "statements: every statement (techo node-store) runs is (statement 'NAME), NAME listed, none written in place; and every one listed is run"
-  '(() ())
+;; queried-names : -> (Listof Symbol)
+;; Every name tagged-query answers: for 1 to 10 tags, under each kind of
+;; parent. tagged-page runs them through its one (statement (car q)).
+(define (queried-names)
+  (let loop ((k 10) (acc '()))
+    (if (= k 0)
+        acc
+        (let ((counted (let tags ((j k) (ts '())) (if (= j 0) ts (tags (- j 1) (cons (cons (number->string j) 1) ts))))))
+          (loop (- k 1)
+                (append (map (lambda (parent) (car (tagged-query acct-a "active" parent counted #f 5)))
+                             (list 'any #f A1))
+                        acc))))))
+
+(test-equal "statements: every statement (techo node-store) runs is (statement 'NAME), NAME listed, none written in place, but tagged-page's one (statement (car q)), each of whose names, tagged-query's, is listed; and every one listed is run"
+  '(() ((statement (car q))) 30 () ())
   (attempt
    (lambda ()
      (let* ((lib (call-with-input-file (loaded-source "techo/node-store.sls") read))
             (args (sql-arguments (list-tail lib 4)))
-            (names (map statement-name args)))
-       (list (filter (lambda (s) (not (let ((n (statement-name s))) (and n (assq n node-store-statements)))))
+            (names (map statement-name args))
+            (queried (queried-names)))
+       (list (filter (lambda (s) (let ((n (statement-name s))) (and n (not (assq n node-store-statements)))))
                      args)
-             (filter (lambda (n) (not (memq n names))) (map car node-store-statements)))))))
+             (filter (lambda (s) (not (statement-name s))) args)
+             (length queried)
+             (filter (lambda (n) (not (assq n node-store-statements))) queried)
+             (filter (lambda (n) (not (or (memq n names) (memq n queried)))) (map car node-store-statements)))))))
 
 (test-equal "statements: nodes-page's plan, with AFTER and without, reads nodes alone: each line is of n, none names revisions (H12)"
   '((#t #f) (#t #f))
@@ -987,13 +1005,14 @@
 ;; owner-exempt : (Listof (Pair Symbol String))
 ;; The statements with no owner in their WHERE, each by name and with what
 ;; its text begins with: node-in-use, the one query without (ADR-0003,
-;; amended); rows-changed, which reads no table; and the three INSERTs,
-;; which write the owner they are handed (insert-link too: an INSERT of VALUES
-;; has no WHERE to name the owner in).
+;; amended); rows-changed, which reads no table; and the INSERTs, which
+;; write the owner they are handed (insert-link and insert-tag too: an
+;; INSERT of VALUES has no WHERE to name the owner in; insert-tags-json
+;; reads a JSON text, no table).
 (define owner-exempt
   '((node-in-use . "SELECT id FROM nodes ") (rows-changed . "SELECT changes()")
     (insert-node . "INSERT ") (insert-snapshot . "INSERT ") (insert-change . "INSERT ")
-    (insert-link . "INSERT ")))
+    (insert-link . "INSERT ") (insert-tag . "INSERT ") (insert-tags-json . "INSERT ")))
 
 (test-equal "statements: each one not exempt by name names the owner in its WHERE, a snapshot's through its node (H19)"
   '()
@@ -1060,15 +1079,15 @@
 ;; top. B's node 20 at the top and B's node 21 under A's 1. Times 10 up.
 (define (tree-set-up! tx)
   (set-up! tx)
-  (insert-node! tx (nid 1) acct-a "project" "T1" "B1" "a/a" "{}" #f 10)
-  (insert-node! tx (nid 2) acct-a "note" "T2" "B2" "a/a" "{}" (nid 1) 10)
-  (insert-node! tx (nid 3) acct-a "task" "T3" "B3" "a/a" "{}" (nid 1) 10)
-  (insert-node! tx (nid 4) acct-a "note" "T4" "B4" "a/a" "{}" (nid 1) 10)
-  (insert-node! tx (nid 5) acct-a "note" "T5" "B5" "a/a" "{}" (nid 1) 10)
-  (insert-node! tx (nid 6) acct-a "note" "T6" "B6" "a/a" "{}" (nid 2) 10)
-  (insert-node! tx (nid 7) acct-a "project" "T7" "B7" "a/a" "{}" #f 10)
-  (insert-node! tx (nid 20) acct-b "project" "T20" "B20" "a/a" "{}" #f 10)
-  (insert-node! tx (nid 21) acct-b "note" "T21" "B21" "a/a" "{}" (nid 1) 10)
+  (insert-node! tx (nid 1) acct-a "project" "T1" "B1" "a/a" "{}" #f '() 10)
+  (insert-node! tx (nid 2) acct-a "note" "T2" "B2" "a/a" "{}" (nid 1) '() 10)
+  (insert-node! tx (nid 3) acct-a "task" "T3" "B3" "a/a" "{}" (nid 1) '() 10)
+  (insert-node! tx (nid 4) acct-a "note" "T4" "B4" "a/a" "{}" (nid 1) '() 10)
+  (insert-node! tx (nid 5) acct-a "note" "T5" "B5" "a/a" "{}" (nid 1) '() 10)
+  (insert-node! tx (nid 6) acct-a "note" "T6" "B6" "a/a" "{}" (nid 2) '() 10)
+  (insert-node! tx (nid 7) acct-a "project" "T7" "B7" "a/a" "{}" #f '() 10)
+  (insert-node! tx (nid 20) acct-b "project" "T20" "B20" "a/a" "{}" #f '() 10)
+  (insert-node! tx (nid 21) acct-b "note" "T21" "B21" "a/a" "{}" (nid 1) '() 10)
   (set-node-state! tx (nid 3) acct-a 1 "archived" "archive" 20)
   (set-node-state! tx (nid 4) acct-a 1 "trashed" "trash" 20))
 
@@ -1081,11 +1100,11 @@
      (with-store "parent-nodes.db"
        (lambda (w r p)
          (w tree-set-up!)
-         (let* ((made (ok-of (w (lambda (tx) (insert-node! tx (nid 30) acct-a "note" "t" "b" "a/a" "{}" (nid 1) 11)))))
-                (top (ok-of (w (lambda (tx) (insert-node! tx (nid 31) acct-a "note" "t" "b" "a/a" "{}" #f 11)))))
+         (let* ((made (ok-of (w (lambda (tx) (insert-node! tx (nid 30) acct-a "note" "t" "b" "a/a" "{}" (nid 1) '() 11)))))
+                (top (ok-of (w (lambda (tx) (insert-node! tx (nid 31) acct-a "note" "t" "b" "a/a" "{}" #f '() 11)))))
                 (read (ok-of (r (lambda (tx) (node-of-owner tx acct-a (nid 2))))))
-                (paged (ok-of (r (lambda (tx) (nodes-page tx acct-a "active" 'any #f 100)))))
-                (replaced (ok-of (w (lambda (tx) (write-node! tx (nid 2) acct-a 1 "T" "B" "a/a" "{}" "update" 50)))))
+                (paged (ok-of (r (lambda (tx) (nodes-page tx acct-a "active" 'any '() #f 100)))))
+                (replaced (ok-of (w (lambda (tx) (write-node! tx (nid 2) acct-a 1 "T" "B" "a/a" "{}" 'keep "update" 50)))))
                 (archived (ok-of (w (lambda (tx) (set-node-state! tx (nid 2) acct-a 2 "archived" "archive" 60)))))
                 (after (ok-of (r (lambda (tx) (node-of-owner tx acct-a (nid 2)))))))
            (list (node-parent made) (node-parent top) (node-parent read)
@@ -1104,7 +1123,7 @@
      (with-store "c-parent.db"
        (lambda (w r p)
          (w set-up!)
-         (list (w (lambda (tx) (insert-node! tx A1 acct-a "note" "t" "b" "a/a" "{}" (nid 99) 1)))
+         (list (w (lambda (tx) (insert-node! tx A1 acct-a "note" "t" "b" "a/a" "{}" (nid 99) '() 1)))
                (ok-of (r (lambda (tx) (list (count-of tx "nodes") (count-of tx "revisions") (count-of tx "changes")))))))))))
 
 (test-equal "insert-node!: a parent of 15 bytes is refused by the column's CHECK"
@@ -1120,7 +1139,7 @@
 ;;; nodes-page by parent
 
 (define (page-ids w-r owner state parent after n)
-  (ok-of (w-r (lambda (tx) (first-bytes (map node-id (nodes-page tx owner state parent after n)))))))
+  (ok-of (w-r (lambda (tx) (first-bytes (map node-id (nodes-page tx owner state parent '() after n)))))))
 
 (test-equal "nodes-page: 'any, #f and an id, each with a state and with AFTER; the flat page is what it was"
   '(((1 2 5 6 7) (2 5 6 7) (7) (1 7) (1) (7) (2 5) (3) (4) () (5) (2) (6) ()) #f)
@@ -1144,7 +1163,7 @@
                        (ids "active" (nid 1) #f 1)
                        (ids "active" (nid 2) #f 10)
                        (ids "active" (nid 5) #f 10))
-                 (exists node-body (ok-of (r (lambda (tx) (nodes-page tx acct-a "active" (nid 1) #f 10))))))))))))
+                 (exists node-body (ok-of (r (lambda (tx) (nodes-page tx acct-a "active" (nid 1) '() #f 10))))))))))))
 
 (test-equal "nodes-page: another owner's nodes are never in a page, whatever the parent; B sees its own"
   '((20 21) (20) (21) () ())
@@ -1167,7 +1186,7 @@
   (lambda (tx)
     (set-up! tx)
     (do ((i 1 (+ i 1))) ((> i n))
-      (insert-node! tx (nidn i) acct-a "project" "t" "b" "a/a" "{}" (and (> i 1) (nidn (- i 1))) 10))))
+      (insert-node! tx (nidn i) acct-a "project" "t" "b" "a/a" "{}" (and (> i 1) (nidn (- i 1))) '() 10))))
 
 (define (ancestor-nums r owner id n)
   (ok-of (r (lambda (tx) (map (lambda (b) (bytevector-u16-ref b 14 (endianness big))
@@ -1239,9 +1258,9 @@
          ;; B's 1; B's 2 under 1; A's 3 under B's 2 (the foreign key takes it)
          (w (lambda (tx)
               (set-up! tx)
-              (insert-node! tx (nidn 1) acct-b "project" "t" "b" "a/a" "{}" #f 10)
-              (insert-node! tx (nidn 2) acct-b "project" "t" "b" "a/a" "{}" (nidn 1) 10)
-              (insert-node! tx (nidn 3) acct-a "project" "t" "b" "a/a" "{}" (nidn 2) 10)))
+              (insert-node! tx (nidn 1) acct-b "project" "t" "b" "a/a" "{}" #f '() 10)
+              (insert-node! tx (nidn 2) acct-b "project" "t" "b" "a/a" "{}" (nidn 1) '() 10)
+              (insert-node! tx (nidn 3) acct-a "project" "t" "b" "a/a" "{}" (nidn 2) '() 10)))
          (ancestor-nums r acct-a (nidn 3) 64))))))
 
 ;;; The bulk move's statements and the pure rule
@@ -1257,10 +1276,10 @@
          (lambda (w r p)
            (w (lambda (tx)
                 (set-up! tx)
-                (insert-node! tx (nid 1) acct-a "project" "t" "b" "a/a" "{}" #f 10)
+                (insert-node! tx (nid 1) acct-a "project" "t" "b" "a/a" "{}" #f '() 10)
                 (let loop ((cs combos) (i 0))
                   (unless (null? cs)
-                    (insert-node! tx (child-id i) acct-a (cdar cs) "t" "b" "a/a" "{}" (nid 1) 10)
+                    (insert-node! tx (child-id i) acct-a (cdar cs) "t" "b" "a/a" "{}" (nid 1) '() 10)
                     (case (caar cs)
                       ((archived) (set-node-state! tx (child-id i) acct-a 1 "archived" "archive" 11))
                       ((trashed) (set-node-state! tx (child-id i) acct-a 1 "trashed" "trash" 11)))
@@ -1303,12 +1322,12 @@
        (lambda (w r p)
          (w tree-set-up!)
          ;; node 8 under 7, trashed then purged: its parent is cleared
-         (w (lambda (tx) (insert-node! tx (nid 8) acct-a "note" "t" "b" "a/a" "{}" (nid 7) 11)
+         (w (lambda (tx) (insert-node! tx (nid 8) acct-a "note" "t" "b" "a/a" "{}" (nid 7) '() 11)
                          (set-node-state! tx (nid 8) acct-a 1 "trashed" "trash" 12)
                          (purge-node! tx (nid 8) acct-a 2 13)))
          ;; node 9 at the top with only B's child
-         (w (lambda (tx) (insert-node! tx (nid 9) acct-a "project" "t" "b" "a/a" "{}" #f 11)
-                         (insert-node! tx (nid 22) acct-b "note" "t" "b" "a/a" "{}" (nid 9) 11)))
+         (w (lambda (tx) (insert-node! tx (nid 9) acct-a "project" "t" "b" "a/a" "{}" #f '() 11)
+                         (insert-node! tx (nid 22) acct-b "note" "t" "b" "a/a" "{}" (nid 9) '() 11)))
          (let ((both (lambda (owner id)
                        (ok-of (r (lambda (tx) (list (has-children? tx owner id) (count-children tx owner id))))))))
            (list (both acct-a (nid 1)) (both acct-a (nid 5)) (both acct-a (nid 2))
@@ -1374,12 +1393,12 @@
        (lambda (w r p)
          (w (lambda (tx)
               (set-up! tx)
-              (insert-node! tx (nidn 1) acct-a "project" "t" "b" "a/a" "{}" #f 10)
+              (insert-node! tx (nidn 1) acct-a "project" "t" "b" "a/a" "{}" #f '() 10)
               (do ((i 100 (+ i 1))) ((= i 1100))
-                (insert-node! tx (nidn i) acct-a "note" "t" "b" "a/a" "{}" (nidn 1) 10))
+                (insert-node! tx (nidn i) acct-a "note" "t" "b" "a/a" "{}" (nidn 1) '() 10))
               (tx-execute! tx "UPDATE nodes SET state = 'trashed' WHERE parent = ?" (nidn 1))
               (do ((i 2000 (+ i 1))) ((= i 2005))
-                (insert-node! tx (nidn i) acct-a "note" "t" "b" "a/a" "{}" (nidn 1) 10))))
+                (insert-node! tx (nidn i) acct-a "note" "t" "b" "a/a" "{}" (nidn 1) '() 10))))
          (list (length (ok-of (r (lambda (tx) (children-heads tx acct-a (nidn 1) 'any 1000)))))
                (length (ok-of (r (lambda (tx) (children-heads tx acct-a (nidn 1) "note" 1000)))))
                (length (ok-of (r (lambda (tx) (children-heads tx acct-a (nidn 1) "task" 1000)))))))))))
@@ -1397,7 +1416,7 @@
      (with-store "move.db"
        (lambda (w r p)
          (w tree-set-up!)
-         (w (lambda (tx) (write-node! tx (nid 5) acct-a 1 "T5b" "B5b" "text/plain" "{\"a\":1}" "update" 100)))
+         (w (lambda (tx) (write-node! tx (nid 5) acct-a 1 "T5b" "B5b" "text/plain" "{\"a\":1}" 'keep "update" 100)))
          (let* ((full (lambda (n) (append (node->list n) (list (node-state n) (node-parent n)))))
                 (m1 (ok-of (w (lambda (tx) (full (move-node! tx (nid 5) acct-a 2 (nid 7) 500))))))
                 (row1 (ok-of (r (lambda (tx) (let ((n (node-of-owner tx acct-a (nid 5))))
@@ -1432,7 +1451,7 @@
      (with-store "move-refused.db"
        (lambda (w r p)
          (w tree-set-up!)
-         (w (lambda (tx) (insert-node! tx (nid 8) acct-a "note" "t" "b" "a/a" "{}" (nid 7) 11)
+         (w (lambda (tx) (insert-node! tx (nid 8) acct-a "note" "t" "b" "a/a" "{}" (nid 7) '() 11)
                          (set-node-state! tx (nid 8) acct-a 1 "trashed" "trash" 12)
                          (purge-node! tx (nid 8) acct-a 2 13)))
          (map (lambda (res) (list (raised-with (car res)) (cadr res)))
@@ -1459,7 +1478,7 @@
      (with-store "purge-parent.db"
        (lambda (w r p)
          (w tree-set-up!)
-         (w (lambda (tx) (insert-node! tx (nid 8) acct-a "note" "t" "b" "a/a" "{}" (nid 7) 11)
+         (w (lambda (tx) (insert-node! tx (nid 8) acct-a "note" "t" "b" "a/a" "{}" (nid 7) '() 11)
                          (set-node-state! tx (nid 8) acct-a 1 "trashed" "trash" 12)))
          (let ((before (ok-of (r (lambda (tx) (raw-parent tx (nid 8)))))))
            (w (lambda (tx) (purge-node! tx (nid 8) acct-a 2 13)))
@@ -1475,7 +1494,7 @@
      (with-store name
        (lambda (w r p)
          (w set-up!)
-         (let ((res (w (lambda (tx) (let ((k (- (length args) 1))) (apply insert-node! tx (append (reverse (cdr (reverse args))) (list #f (car (reverse args))))))))))
+         (let ((res (w (lambda (tx) (let ((k (- (length args) 1))) (apply insert-node! tx (append (reverse (cdr (reverse args))) (list #f '() (car (reverse args))))))))))
            (list res (ok-of (r (lambda (tx) (list (count-of tx "nodes") (count-of tx "revisions") (count-of tx "changes"))))))))))))
 
 (test-equal "checks: a 15-byte id is refused, and nothing is left"
@@ -1530,10 +1549,10 @@
 (define (link-set-up! tx)
   (set-up! tx)
   (for-each (lambda (n) (insert-node! tx (nid n) acct-a "note" (string-append "T" (number->string n))
-                                      (string-append "B" (number->string n)) "a/a" "{}" #f 10))
+                                      (string-append "B" (number->string n)) "a/a" "{}" #f '() 10))
             '(1 2 3 4 5 6))
-  (insert-node! tx (nid 20) acct-b "note" "T20" "B20" "a/a" "{}" #f 10)
-  (insert-node! tx (nid 21) acct-b "note" "T21" "B21" "a/a" "{}" #f 10)
+  (insert-node! tx (nid 20) acct-b "note" "T20" "B20" "a/a" "{}" #f '() 10)
+  (insert-node! tx (nid 21) acct-b "note" "T21" "B21" "a/a" "{}" #f '() 10)
   (for-each (lambda (l) (insert-link! tx acct-a (nid (car l)) (cadr l) (nid (caddr l)) 1 (cadddr l)))
             '((1 "blocks" 2 101) (1 "mentions" 3 102) (1 "related" 2 103) (1 "related" 4 104)
               (1 "related" 5 105) (1 "mentions" 5 106)
@@ -1593,8 +1612,8 @@
      (with-store "link-insert.db"
        (lambda (w r p)
          (w (lambda (tx) (set-up! tx)
-                         (insert-node! tx A1 acct-a "note" "T1" "B1" "a/a" "{}" #f 10)
-                         (insert-node! tx A2 acct-a "note" "T2" "B2" "a/a" "{}" #f 10)))
+                         (insert-node! tx A1 acct-a "note" "T1" "B1" "a/a" "{}" #f '() 10)
+                         (insert-node! tx A2 acct-a "note" "T2" "B2" "a/a" "{}" #f '() 10)))
          (let* ((before (ok-of (r (lambda (tx) (list (raw tx "SELECT * FROM nodes ORDER BY num")
                                                       (raw tx "SELECT * FROM revisions ORDER BY node, revision"))))))
                 (cbefore (ok-of (r (lambda (tx) (length (changes-of tx acct-a))))))
@@ -1627,8 +1646,8 @@
      (with-store "link-twice.db"
        (lambda (w r p)
          (w (lambda (tx) (set-up! tx)
-                         (insert-node! tx A1 acct-a "note" "T1" "B1" "a/a" "{}" #f 10)
-                         (insert-node! tx A2 acct-a "note" "T2" "B2" "a/a" "{}" #f 10)
+                         (insert-node! tx A1 acct-a "note" "T1" "B1" "a/a" "{}" #f '() 10)
+                         (insert-node! tx A2 acct-a "note" "T2" "B2" "a/a" "{}" #f '() 10)
                          (insert-link! tx acct-a A1 "related" A2 1 50)))
          (let* ((second (w (lambda (tx) (insert-link! tx acct-a A1 "related" A2 1 60))))
                 (text (caddr (ok-of (w (lambda (tx) (caught (lambda () (insert-link! tx acct-a A1 "related" A2 1 60)))))))))
@@ -1644,8 +1663,8 @@
      (with-store "link-twins.db"
        (lambda (w r p)
          (w (lambda (tx) (set-up! tx)
-                         (insert-node! tx A1 acct-a "note" "T1" "B1" "a/a" "{}" #f 10)
-                         (insert-node! tx A2 acct-a "note" "T2" "B2" "a/a" "{}" #f 10)
+                         (insert-node! tx A1 acct-a "note" "T1" "B1" "a/a" "{}" #f '() 10)
+                         (insert-node! tx A2 acct-a "note" "T2" "B2" "a/a" "{}" #f '() 10)
                          (insert-link! tx acct-a A1 "related" A2 1 50)
                          (insert-link! tx acct-a A1 "blocks" A2 1 50)
                          (insert-link! tx acct-a A2 "related" A1 1 50)))
@@ -1725,7 +1744,7 @@
        (lambda (w r p)
          (w link-set-up!)
          (w (lambda (tx)
-              (write-node! tx (nid 2) acct-a 1 "T2 now" "B2 now" "a/a" "{}" "update" 200)
+              (write-node! tx (nid 2) acct-a 1 "T2 now" "B2 now" "a/a" "{}" 'keep "update" 200)
               (set-node-state! tx (nid 4) acct-a 2 "trashed" "trash" 210)))
          (let ((out (page-all r acct-a (nid 1) 'out "related" 100)))
            (list (car out) (cadr out)
@@ -1939,8 +1958,8 @@
      (with-store "purge-stale-out.db"
        (lambda (w r p)
          (w (lambda (tx) (set-up! tx)
-                         (insert-node! tx (nid 1) acct-a "note" "T1" "B1" "a/a" "{}" #f 10)
-                         (insert-node! tx (nid 2) acct-a "note" "T2" "B2" "a/a" "{}" #f 10)
+                         (insert-node! tx (nid 1) acct-a "note" "T1" "B1" "a/a" "{}" #f '() 10)
+                         (insert-node! tx (nid 2) acct-a "note" "T2" "B2" "a/a" "{}" #f '() 10)
                          (insert-link! tx acct-a (nid 1) "related" (nid 2) 1 50)
                          (set-node-state! tx (nid 1) acct-a 1 "trashed" "trash" 60)))
          (ok-of (w (lambda (tx)
@@ -1958,8 +1977,8 @@
      (with-store "purge-stale-in.db"
        (lambda (w r p)
          (w (lambda (tx) (set-up! tx)
-                         (insert-node! tx (nid 1) acct-a "note" "T1" "B1" "a/a" "{}" #f 10)
-                         (insert-node! tx (nid 2) acct-a "note" "T2" "B2" "a/a" "{}" #f 10)
+                         (insert-node! tx (nid 1) acct-a "note" "T1" "B1" "a/a" "{}" #f '() 10)
+                         (insert-node! tx (nid 2) acct-a "note" "T2" "B2" "a/a" "{}" #f '() 10)
                          (insert-link! tx acct-a (nid 1) "related" (nid 2) 1 50)
                          (set-node-state! tx (nid 2) acct-a 1 "trashed" "trash" 60)))
          (ok-of (w (lambda (tx)
@@ -1985,6 +2004,1099 @@
                             (c2 (caught (lambda () (purge-node! tx (nid 1) acct-b 2 70))))
                             (k2 (equal? b1 (link-rows tx))))
                        (list (raised-with c1) k1 (raised-with c2) k2)))))))))))
+
+;;; Tags (slice 7a)
+;;;
+;;; A node's present tags are its rows in node_tags; a snapshot's are a JSON
+;;; array written from those rows by the snapshot's own INSERT. The laws are
+;;; the plan's as its review restates them: L3 (a content write's snapshot
+;;; holds the rows), L4 (keep changes no row), L5 (a step), L6 (another
+;;; account), L7 (a purge), L9 (a row's owner is its node's), L11 (a restore)
+;;; and L14 (every plan of the filter and the tags list). Ids sort by their
+;;; first byte, so A's and B's nodes interleave by id: a statement that
+;;; forgot the owner meets B's rows among A's.
+
+;; tag-rows : Tx -> (Listof (List Bytevector String Bytevector))
+;; Every row of node_tags, owner, tag, node, in key order.
+(define (tag-rows tx) (raw tx "SELECT owner, tag, node FROM node_tags ORDER BY owner, tag, node"))
+
+;; rows-of : Tx Bytevector -> (Listof String)    a node's rows, whatever their owner
+(define (rows-of tx id) (map car (raw tx "SELECT tag FROM node_tags WHERE node = ? ORDER BY tag" id)))
+
+;; snap-tags : Tx Bytevector Natural -> (U String #f)     a snapshot's tags column
+(define (snap-tags tx id rev)
+  (let ((r (raw tx "SELECT tags FROM revisions WHERE node = ? AND revision = ?" id rev)))
+    (and (pair? r) (caar r))))
+
+;; newest-tags : Tx Bytevector -> (U String #f)     the newest snapshot's tags column
+(define (newest-tags tx id)
+  (let ((r (raw tx "SELECT tags FROM revisions WHERE node = ? ORDER BY revision DESC LIMIT 1" id)))
+    (and (pair? r) (caar r))))
+
+;; heads : Tx -> (Listof (List Natural Natural Natural String))
+;; Each node's first id byte, revision, updated and state, by id.
+(define (heads tx)
+  (map (lambda (r) (cons (bytevector-u8-ref (car r) 0) (cdr r)))
+       (raw tx "SELECT id, revision, updated, state FROM nodes ORDER BY id")))
+
+;; changes-after : Tx Bytevector Natural -> (List ...)
+;; The owner's change rows past SEQ: seq, first id byte, revision, op, created.
+(define (changes-after tx owner seq)
+  (map (lambda (r) (list (car r) (bytevector-u8-ref (cadr r) 0) (caddr r) (cadddr r) (car (cddddr r))))
+       (raw tx "SELECT seq, node, revision, op, created FROM changes WHERE owner = ? AND seq > ? ORDER BY seq" owner seq)))
+
+;; owner-rows : Tx Bytevector -> (List ...)    an owner's rows of nodes, node_tags and changes
+(define (owner-rows tx owner)
+  (list (raw tx "SELECT id, revision, updated, state FROM nodes WHERE owner = ? ORDER BY id" owner)
+        (raw tx "SELECT tag, node FROM node_tags WHERE owner = ? ORDER BY tag, node" owner)
+        (raw tx "SELECT seq, node, revision, op, created FROM changes WHERE owner = ? ORDER BY seq" owner)))
+
+;; misowned : Tx -> Natural     rows of node_tags whose owner is not their node's (L9)
+(define (misowned tx)
+  (vector-ref (tx-query-row tx "SELECT count(*) FROM node_tags t JOIN nodes n ON n.id = t.node WHERE n.owner <> t.owner") 0))
+
+;; tags-json : (Listof String) -> String     json->string of the list, sorted
+(define (tags-json ts) (json->string (list->vector (list-sort string<? ts))))
+
+;; with-store-on : String ((Proc Job -> A) (Proc Job -> A) -> B) -> B
+;; with-store's doorway on a file already made, at the shipped version.
+(define (with-store-on p body)
+  (let ((d (make-test-doorway p migrations 100)))
+    (dynamic-wind
+      (lambda () #f)
+      (lambda ()
+        (body (lambda (job) (in-host (lambda () (try (lambda () (db-write d job))))))
+              (lambda (job) (in-host (lambda () (try (lambda () (db-read d job))))))))
+      (lambda ()
+        (guard (e (#t #f)) (doorway-stop-readers! d))
+        (guard (e (#t #f)) (doorway-stop-writer! d))))))
+
+;; iota* : Integer Integer -> (Listof Integer)     A to B, both in
+(define (iota* a b) (if (> a b) '() (cons a (iota* (+ a 1) b))))
+
+;; rolled-back : (Proc Job -> Any) (Tx -> Any) (Tx -> B) -> (U (List Any B) #f)
+;; ACT in a write job; what it raised or answered, as `caught` has it, and
+;; what PROBE reads after it in the same job; then the job raises, so the
+;; doorway rolls it back and nothing of ACT is kept.
+(define (rolled-back w act probe)
+  (let ((seen #f))
+    (w (lambda (tx)
+         (let* ((c (caught (lambda () (act tx))))
+                (p (probe tx)))
+           (set! seen (list c p))
+           (raise 'roll-back))))
+    seen))
+
+;; note! : Tx Bytevector Bytevector (Listof String) Natural -> Node    a note with TAGS
+(define (note! tx id owner tags now)
+  (insert-node! tx id owner "note" "T" "B" "a/a" "{}" #f tags now))
+
+;;; A node's rows, and the snapshot's tags (L3, L4)
+
+(test-equal "insert-node!: tags given in any order are rows of the owner, sorted; the Node, node-of-owner, tags-of and the snapshot agree (L3)"
+  (list '("a" "b" "c") '("a" "b" "c") '("a" "b" "c") "[\"a\",\"b\",\"c\"]"
+        (list (list acct-a "a" A1) (list acct-a "b" A1) (list acct-a "c" A1)))
+  (attempt
+   (lambda ()
+     (with-store "tags-insert.db"
+       (lambda (w r p)
+         (w set-up!)
+         (let ((made (ok-of (w (lambda (tx) (node-tags (note! tx A1 acct-a '("c" "a" "b") 10)))))))
+           (list made
+                 (ok-of (r (lambda (tx) (node-tags (node-of-owner tx acct-a A1)))))
+                 (ok-of (r (lambda (tx) (tags-of tx acct-a A1))))
+                 (ok-of (r (lambda (tx) (snapshot-tags (snapshot-of tx acct-a A1 1)))))
+                 (ok-of (r tag-rows)))))))))
+
+(test-equal "insert-node!: no tags: no row, the Node's tags are (), the snapshot's []"
+  (list '() '() "[]" '())
+  (attempt
+   (lambda ()
+     (with-store "tags-insert-none.db"
+       (lambda (w r p)
+         (w set-up!)
+         (list (ok-of (w (lambda (tx) (node-tags (note! tx A1 acct-a '() 10)))))
+               (ok-of (r (lambda (tx) (node-tags (node-of-owner tx acct-a A1)))))
+               (ok-of (r (lambda (tx) (snapshot-tags (snapshot-of tx acct-a A1 1)))))
+               (ok-of (r tag-rows))))))))
+
+(test-equal "insert-node!: a tag given twice is refused by the key and the job rolls back; what is raised names no tag"
+  (list '(raised (sqlite constraint)) '(0 0 0 0) '(raised #f))
+  (attempt
+   (lambda ()
+     (with-store "tags-insert-twice.db"
+       (lambda (w r p)
+         (w set-up!)
+         (let* ((res (w (lambda (tx) (note! tx A1 acct-a '("secret-tag-q" "secret-tag-q") 10))))
+                (left (ok-of (r (lambda (tx) (map (lambda (t) (count-of tx t)) '("nodes" "revisions" "changes" "node_tags"))))))
+                (text (let ((c (car (rolled-back w (lambda (tx) (note! tx A2 acct-a '("secret-tag-q" "secret-tag-q") 10))
+                                                 (lambda (tx) #f)))))
+                        (list (car c) (contains? (caddr c) "secret-tag-q")))))
+           (list res left text)))))))
+
+(test-equal "node_tags: a tag of 65 characters and an empty one are refused by the table's CHECK; 64 is taken, astral characters counted as one each"
+  (list '(raised (sqlite constraint)) '(raised (sqlite constraint)) '(ok #t) '(raised (sqlite constraint)) '(ok #t))
+  (attempt
+   (lambda ()
+     (with-store "tags-check.db"
+       (lambda (w r p)
+         (w set-up!)
+         (list (w (lambda (tx) (note! tx A1 acct-a (list (make-string 65 #\t)) 10)))
+               (w (lambda (tx) (note! tx A1 acct-a (list "") 10)))
+               (w (lambda (tx) (note! tx A1 acct-a (list (make-string 64 #\t)) 10) #t))
+               (w (lambda (tx) (note! tx A2 acct-a (list (make-string 65 #\x1D400)) 10)))
+               (w (lambda (tx) (note! tx A2 acct-a (list (make-string 64 #\x1D400)) 10) #t))))))))
+
+(test-equal "write-node!: a list replaces the rows; each Node and each new snapshot hold the rows written; older snapshots keep theirs (L3)"
+  (list '("b" "c") '("d") '("d") (list "[\"a\",\"b\"]" "[\"b\",\"c\"]" "[\"d\"]") (list (list acct-a "d" A1)))
+  (attempt
+   (lambda ()
+     (with-store "tags-write-list.db"
+       (lambda (w r p)
+         (w set-up!)
+         (w (lambda (tx) (note! tx A1 acct-a '("a" "b") 10)))
+         (let* ((n2 (ok-of (w (lambda (tx) (node-tags (write-node! tx A1 acct-a 1 "T" "B" "a/a" "{}" '("c" "b") "update" 20))))))
+                (n3 (ok-of (w (lambda (tx) (node-tags (write-node! tx A1 acct-a 2 "T" "B" "a/a" "{}" '("d") "update" 30)))))))
+           (list n2 n3
+                 (ok-of (r (lambda (tx) (tags-of tx acct-a A1))))
+                 (ok-of (r (lambda (tx) (map (lambda (k) (snap-tags tx A1 k)) '(1 2 3)))))
+                 (ok-of (r tag-rows)))))))))
+
+(test-equal "write-node!: keep changes no row of node_tags (L4); the Node and the new snapshot hold the rows as they are (L3)"
+  (list #t '("a" "b") "[\"a\",\"b\"]" '("a" "b"))
+  (attempt
+   (lambda ()
+     (with-store "tags-write-keep.db"
+       (lambda (w r p)
+         (w set-up!)
+         (w (lambda (tx) (note! tx A1 acct-a '("a" "b") 10) (note! tx A2 acct-a '("z") 10)))
+         (let* ((before (ok-of (r tag-rows)))
+                (n2 (ok-of (w (lambda (tx) (node-tags (write-node! tx A1 acct-a 1 "T2" "B2" "a/a" "{}" 'keep "update" 20)))))))
+           (list (equal? before (ok-of (r tag-rows)))
+                 n2
+                 (ok-of (r (lambda (tx) (snap-tags tx A1 2))))
+                 (ok-of (r (lambda (tx) (node-tags (node-of-owner tx acct-a A1))))))))))))
+
+(test-equal "write-node!: () clears the rows, and the snapshot holds []; another node's rows stay"
+  (list '() "[]" '("z"))
+  (attempt
+   (lambda ()
+     (with-store "tags-write-clear.db"
+       (lambda (w r p)
+         (w set-up!)
+         (w (lambda (tx) (note! tx A1 acct-a '("a" "b") 10) (note! tx A2 acct-a '("z") 10)))
+         (list (ok-of (w (lambda (tx) (node-tags (write-node! tx A1 acct-a 1 "T" "B" "a/a" "{}" '() "update" 20)))))
+               (ok-of (r (lambda (tx) (snap-tags tx A1 2))))
+               (ok-of (r (lambda (tx) (tags-of tx acct-a A2))))))))))
+
+(test-equal "write-node!: a snapshot's tags as stored (a String) become the rows as they are, never folded; the new snapshot holds them (L11)"
+  (list '("Upper" "b") '("Upper" "b") "[\"Upper\",\"b\"]" '() "[]")
+  (attempt
+   (lambda ()
+     (with-store "tags-write-json.db"
+       (lambda (w r p)
+         (w set-up!)
+         (w (lambda (tx) (note! tx A1 acct-a '("a") 10)))
+         (let* ((n2 (ok-of (w (lambda (tx) (node-tags (write-node! tx A1 acct-a 1 "T" "B" "a/a" "{}" "[\"Upper\",\"b\"]" "restore" 20))))))
+                (rows2 (ok-of (r (lambda (tx) (tags-of tx acct-a A1)))))
+                (snap2 (ok-of (r (lambda (tx) (snap-tags tx A1 2))))))
+           (w (lambda (tx) (write-node! tx A1 acct-a 2 "T" "B" "a/a" "{}" "[]" "restore" 30)))
+           (list n2 rows2 snap2
+                 (ok-of (r (lambda (tx) (tags-of tx acct-a A1))))
+                 (ok-of (r (lambda (tx) (snap-tags tx A1 3)))))))))))
+
+(test-equal "restore: a snapshot restored through write-node! with its own tags sets the rows to them; after a rename, the newest snapshot brings the old tag back (L11)"
+  (list '(1 . 0) '("y") "[\"x\"]" 1 '("x") "[\"x\"]" 3)
+  (attempt
+   (lambda ()
+     (with-store "tags-restore.db"
+       (lambda (w r p)
+         (w set-up!)
+         (w (lambda (tx) (note! tx A1 acct-a '("x") 10)))
+         (let* ((step (ok-of (w (lambda (tx) (rename-tag! tx acct-a "x" "y" 500 20)))))
+                (rows (ok-of (r (lambda (tx) (tags-of tx acct-a A1)))))
+                (newest (ok-of (r (lambda (tx) (newest-tags tx A1)))))
+                (snaps (ok-of (r (lambda (tx) (count-of tx "revisions")))))
+                (restored (ok-of (w (lambda (tx)
+                                      (let ((s (snapshot-of tx acct-a A1 1)))
+                                        (node-tags (write-node! tx A1 acct-a 2 (snapshot-title s) (snapshot-body s)
+                                                                (snapshot-content-type s) (snapshot-props s)
+                                                                (snapshot-tags s) "restore" 30))))))))
+           (list step rows newest snaps restored
+                 (ok-of (r (lambda (tx) (snap-tags tx A1 3))))
+                 (ok-of (r (lambda (tx) (node-revision (node-of-owner tx acct-a A1))))))))))))
+
+(test-equal "write-node!: the rows are written after the revision check: a stale write, with a list, a snapshot's tags or (), changes no row within its job"
+  (list (list 'raised (list A1 7)) (list 'raised (list A1 7)) (list 'raised (list A1 7)) '("a"))
+  (attempt
+   (lambda ()
+     (with-store "tags-write-stale.db"
+       (lambda (w r p)
+         (w set-up!)
+         (w (lambda (tx) (note! tx A1 acct-a '("a") 10)))
+         (let ((one (lambda (tags)
+                      (let ((seen (rolled-back w (lambda (tx) (write-node! tx A1 acct-a 7 "T" "B" "a/a" "{}" tags "update" 20))
+                                               (lambda (tx) (rows-of tx A1)))))
+                        (list (raised-with (car seen)) (cadr seen))))))
+           (let* ((c1 (one '("zzz"))) (c2 (one "[\"zzz\"]")) (c3 (one '())))
+             (list (car c1) (car c2) (car c3)
+                   (if (equal? (cadr c1) (cadr c2)) (if (equal? (cadr c2) (cadr c3)) (cadr c1) (list (cadr c2) (cadr c3))) (list (cadr c1) (cadr c2)))))))))))
+
+(test-equal "write-node!: tags that are no list, no snapshot's text and not keep raise with no irritant, and the job rolls back"
+  (list '(raised ()) '("a") 1)
+  (attempt
+   (lambda ()
+     (with-store "tags-write-bad.db"
+       (lambda (w r p)
+         (w set-up!)
+         (w (lambda (tx) (note! tx A1 acct-a '("a") 10)))
+         (let ((c (raised-with (car (rolled-back w (lambda (tx) (write-node! tx A1 acct-a 1 "T" "B" "a/a" "{}" 'replace "update" 20))
+                                                 (lambda (tx) #f))))))
+           (w (lambda (tx) (write-node! tx A1 acct-a 1 "T" "B" "a/a" "{}" 'replace "update" 20)))
+           (list c
+                 (ok-of (r (lambda (tx) (tags-of tx acct-a A1))))
+                 (ok-of (r (lambda (tx) (node-revision (node-of-owner tx acct-a A1))))))))))))
+
+;; Quotes, a backslash, a slash, DEL, non-ASCII, CJK, an astral letter,
+;; U+FFFD, a space and U+1680: what jsonparse writes for each is what
+;; SQLite's json_group_array writes (the review's json-text.sps).
+(define json-corpus
+  (list "a\"b" "a\\b" "a/b" "\x7F;" "\xE9;" "\x65E5;\x672C;" "\x1D400;" "-x" "z" "\xFFFD;" "a b" "\x1680;"))
+
+(test-equal "snapshot: its tags are byte for byte json->string's of the sorted list, for quotes, backslashes, non-ASCII and astral tags, and the order holds for rows inserted in reverse"
+  (let ((j (tags-json json-corpus)))
+    (list j j (list-sort string<? json-corpus) (list-sort string<? json-corpus)))
+  (attempt
+   (lambda ()
+     (with-store "tags-json-text.db"
+       (lambda (w r p)
+         (let ((reversed (reverse (list-sort string<? json-corpus))))
+           (w set-up!)
+           (w (lambda (tx) (note! tx A1 acct-a reversed 10)))
+           (w (lambda (tx) (write-node! tx A1 acct-a 1 "T" "B" "a/a" "{}" reversed "update" 20)))
+           (list (ok-of (r (lambda (tx) (snap-tags tx A1 1))))
+                 (ok-of (r (lambda (tx) (snap-tags tx A1 2))))
+                 (ok-of (r (lambda (tx) (tags-of tx acct-a A1))))
+                 (ok-of (r (lambda (tx) (node-tags (node-of-owner tx acct-a A1))))))))))))
+
+(test-equal "set-node-state! and move-node!: the Node has its tags; no row changes and no snapshot is written"
+  (list '("a" "b") '("a" "b") #t 1)
+  (attempt
+   (lambda ()
+     (with-store "tags-state-move.db"
+       (lambda (w r p)
+         (w set-up!)
+         (w (lambda (tx) (note! tx A1 acct-a '("b" "a") 10) (note! tx A2 acct-a '() 10)))
+         (let* ((before (ok-of (r tag-rows)))
+                (s (ok-of (w (lambda (tx) (node-tags (set-node-state! tx A1 acct-a 1 "archived" "archive" 20))))))
+                (m (ok-of (w (lambda (tx) (node-tags (move-node! tx A1 acct-a 2 A2 30)))))))
+           (list s m (equal? before (ok-of (r tag-rows)))
+                 (ok-of (r (lambda (tx) (vector-ref (tx-query-row tx "SELECT count(*) FROM revisions WHERE node = ?" A1) 0)))))))))))
+
+(test-equal "nodes-page and links-page: each Node carries its own tags, the other end's in a link page"
+  (list '((1 ("a")) (2 ("b" "c")) (3 ())) '(("b" "c")) '(("a")))
+  (attempt
+   (lambda ()
+     (with-store "tags-pages.db"
+       (lambda (w r p)
+         (w set-up!)
+         (w (lambda (tx)
+              (note! tx A1 acct-a '("a") 10) (note! tx A2 acct-a '("c" "b") 10) (note! tx A3 acct-a '() 10)
+              (insert-link! tx acct-a A1 "related" A2 1 20)))
+         (list (ok-of (r (lambda (tx) (map (lambda (n) (list (bytevector-u8-ref (node-id n) 0) (node-tags n)))
+                                           (nodes-page tx acct-a "active" 'any '() #f 10)))))
+               (ok-of (r (lambda (tx) (map (lambda (i) (node-tags (caddr i))) (links-page tx acct-a A1 'out #f #f 10)))))
+               (ok-of (r (lambda (tx) (map (lambda (i) (node-tags (caddr i))) (links-page tx acct-a A2 'in #f #f 10)))))))))))
+
+(test-equal "tags-of: owner-scoped: A reads none of B's node, B its own; a node with none and an id no one holds are ()"
+  (list '() '("b") '() '())
+  (attempt
+   (lambda ()
+     (with-store "tags-of-owner.db"
+       (lambda (w r p)
+         (w set-up!)
+         (w (lambda (tx) (note! tx B1 acct-b '("b") 10) (note! tx A1 acct-a '() 10)))
+         (ok-of (r (lambda (tx) (list (tags-of tx acct-a B1) (tags-of tx acct-b B1)
+                                      (tags-of tx acct-a A1) (tags-of tx acct-a (nid 99)))))))))))
+
+(test-equal "snapshots-page: a page's snapshots carry no tags (#f); snapshot-of the text as stored"
+  (list '(#f #f) "[\"a\"]" "[\"b\"]")
+  (attempt
+   (lambda ()
+     (with-store "tags-snapshots.db"
+       (lambda (w r p)
+         (w set-up!)
+         (w (lambda (tx) (note! tx A1 acct-a '("a") 10)
+                 (write-node! tx A1 acct-a 1 "T" "B" "a/a" "{}" '("b") "update" 20)))
+         (list (ok-of (r (lambda (tx) (map snapshot-tags (snapshots-page tx acct-a A1 #f 10)))))
+               (ok-of (r (lambda (tx) (snapshot-tags (snapshot-of tx acct-a A1 1)))))
+               (ok-of (r (lambda (tx) (snapshot-tags (snapshot-of tx acct-a A1 2)))))))))))
+
+(test-equal "purge-node!: the node's rows go, after the check (a stale purge keeps them within its job); another node's stay (L7)"
+  (list (list 'raised (list A1 9)) '("a" "b") '() '("a") 0)
+  (attempt
+   (lambda ()
+     (with-store "tags-purge.db"
+       (lambda (w r p)
+         (w set-up!)
+         (w (lambda (tx) (note! tx A1 acct-a '("a" "b") 10) (note! tx A2 acct-a '("a") 10)
+                 (set-node-state! tx A1 acct-a 1 "trashed" "trash" 20)))
+         (let ((stale (let ((seen (rolled-back w (lambda (tx) (purge-node! tx A1 acct-a 9 30))
+                                              (lambda (tx) (rows-of tx A1)))))
+                        (list (raised-with (car seen)) (cadr seen)))))
+           (w (lambda (tx) (purge-node! tx A1 acct-a 2 40)))
+           (list (car stale) (cadr stale)
+                 (ok-of (r (lambda (tx) (rows-of tx A1))))
+                 (ok-of (r (lambda (tx) (rows-of tx A2))))
+                 (ok-of (r misowned)))))))))
+
+;;; A step: rename-tag! and remove-tag! (L5, L6, L9)
+
+;; step fixture: A's nodes 1 3 5 7 9 11 13 carry "x" (7 carries "y" too; 3
+;; is archived, 5 trashed); A's 15 carries "other". B's 2 4 6 8 10 carry
+;; "x" (4 "y" too), and 12 carries "bonly"; B then writes ten times, so its
+;; seq runs ahead of A's. After it, A's seq is 10 and B's 16.
+(define step-a '(1 3 5 7 9 11 13))
+(define (step-set-up! tx)
+  (set-up! tx)
+  (for-each (lambda (n) (note! tx (nid n) acct-a (if (= n 7) '("x" "y") '("x")) 10)) step-a)
+  (note! tx (nid 15) acct-a '("other") 10)
+  (for-each (lambda (n) (note! tx (nid n) acct-b (if (= n 4) '("x" "y") '("x")) 10)) '(2 4 6 8 10))
+  (note! tx (nid 12) acct-b '("bonly") 10)
+  (set-node-state! tx (nid 3) acct-a 1 "archived" "archive" 20)
+  (set-node-state! tx (nid 5) acct-a 1 "trashed" "trash" 20)
+  (let loop ((rev 1))
+    (when (<= rev 10)
+      (write-node! tx (nid 2) acct-b rev "t" "b" "a/a" "{}" 'keep "update" (+ 30 rev))
+      (loop (+ rev 1)))))
+
+;; bumped : (Listof (List Natural Natural Natural String)) (Listof Natural) Natural
+;;          -> (Listof ...)
+;; HEADS with each node in IDS at revision + 1 and updated NOW.
+(define (bumped hs ids now)
+  (map (lambda (h) (if (memv (car h) ids) (list (car h) (+ (cadr h) 1) now (cadddr h)) h)) hs))
+
+(test-equal "rename-tag!: every carrier when fewer than the cap: (7 . 0); each bumped once, the archived and the trashed ones too, their states kept; one change row tags each at its new revision, numbered in id order from A's next seq; no snapshot; FROM gone, TO on each; no other node changed (L5)"
+  (list '(7 . 0) #t
+        '((11 1 2 "tags" 1000) (12 3 3 "tags" 1000) (13 5 3 "tags" 1000) (14 7 2 "tags" 1000)
+          (15 9 2 "tags" 1000) (16 11 2 "tags" 1000) (17 13 2 "tags" 1000))
+        #t '() step-a '("y" "z") '("other") 0)
+  (attempt
+   (lambda ()
+     (with-store "step-all.db"
+       (lambda (w r p)
+         (w step-set-up!)
+         (let* ((hs (ok-of (r heads)))
+                (snaps (ok-of (r (lambda (tx) (count-of tx "revisions")))))
+                (res (ok-of (w (lambda (tx) (rename-tag! tx acct-a "x" "z" 10 1000))))))
+           (ok-of
+            (r (lambda (tx)
+                 (list res
+                       (equal? (heads tx) (bumped hs step-a 1000))
+                       (changes-after tx acct-a 10)
+                       (= snaps (count-of tx "revisions"))
+                       (raw tx "SELECT node FROM node_tags WHERE owner = ? AND tag = 'x'" acct-a)
+                       (map (lambda (r) (bytevector-u8-ref (car r) 0))
+                            (raw tx "SELECT node FROM node_tags WHERE owner = ? AND tag = 'z' ORDER BY node" acct-a))
+                       (rows-of tx (nid 7))
+                       (rows-of tx (nid 15))
+                       (misowned tx)))))))))))
+
+(test-equal "rename-tag!: onto a tag a carrier already has: one row of it, no duplicate; that node bumped once, with one change row (a merge)"
+  (list '(7 . 0) step-a '(7) '(2) 7)
+  (attempt
+   (lambda ()
+     (with-store "step-merge.db"
+       (lambda (w r p)
+         (w step-set-up!)
+         (let ((res (ok-of (w (lambda (tx) (rename-tag! tx acct-a "x" "y" 500 1000))))))
+           (ok-of
+            (r (lambda (tx)
+                 (list res
+                       (map (lambda (r) (bytevector-u8-ref (car r) 0))
+                            (raw tx "SELECT node FROM node_tags WHERE owner = ? AND tag = 'y' ORDER BY node" acct-a))
+                       (map (lambda (r) (bytevector-u8-ref (car r) 0))
+                            (raw tx "SELECT node FROM node_tags WHERE owner = ? AND tag = 'y' AND node = ?" acct-a (nid 7)))
+                       (map car (raw tx "SELECT revision FROM nodes WHERE id = ?" (nid 7)))
+                       (length (changes-after tx acct-a 10))))))))))))
+
+(test-equal "rename-tag!: more carriers than the cap: (3 . 4), (3 . 1), (1 . 0), then (0 . 0); each node bumped exactly once over the steps; seq 11 to 17 with no gap, in id order; B untouched (L5, L6)"
+  (list '((3 . 4) (3 . 1) (1 . 0) (0 . 0)) #t
+        '((11 1 2 "tags" 1000) (12 3 3 "tags" 1000) (13 5 3 "tags" 1000) (14 7 2 "tags" 1001)
+          (15 9 2 "tags" 1001) (16 11 2 "tags" 1001) (17 13 2 "tags" 1002))
+        #t 0)
+  (attempt
+   (lambda ()
+     (with-store "step-cap.db"
+       (lambda (w r p)
+         (w step-set-up!)
+         (let* ((hs (ok-of (r heads)))
+                (b-before (ok-of (r (lambda (tx) (owner-rows tx acct-b)))))
+                (s1 (ok-of (w (lambda (tx) (rename-tag! tx acct-a "x" "z" 3 1000)))))
+                (s2 (ok-of (w (lambda (tx) (rename-tag! tx acct-a "x" "z" 3 1001)))))
+                (s3 (ok-of (w (lambda (tx) (rename-tag! tx acct-a "x" "z" 3 1002)))))
+                (s4 (ok-of (w (lambda (tx) (rename-tag! tx acct-a "x" "z" 3 1003))))))
+           (ok-of
+            (r (lambda (tx)
+                 (list (list s1 s2 s3 s4)
+                       (equal? (map (lambda (h) (list (car h) (cadr h))) (heads tx))
+                               (map (lambda (h) (list (car h) (cadr h))) (bumped hs step-a 0)))
+                       (changes-after tx acct-a 10)
+                       (equal? b-before (owner-rows tx acct-b))
+                       (misowned tx)))))))))))
+
+(test-equal "remove-tag!: (4 . 3), then (3 . 0); the tag is gone from A, every other tag stays, B keeps its own; seven change rows tags"
+  (list '((4 . 3) (3 . 0)) '() '("y") '("other") 7 #t)
+  (attempt
+   (lambda ()
+     (with-store "step-remove.db"
+       (lambda (w r p)
+         (w step-set-up!)
+         (let* ((b-before (ok-of (r (lambda (tx) (owner-rows tx acct-b)))))
+                (s1 (ok-of (w (lambda (tx) (remove-tag! tx acct-a "x" 4 1000)))))
+                (s2 (ok-of (w (lambda (tx) (remove-tag! tx acct-a "x" 4 1001))))))
+           (ok-of
+            (r (lambda (tx)
+                 (list (list s1 s2)
+                       (raw tx "SELECT node FROM node_tags WHERE owner = ? AND tag = 'x'" acct-a)
+                       (rows-of tx (nid 7))
+                       (rows-of tx (nid 15))
+                       (length (filter (lambda (c) (equal? (cadddr c) "tags")) (changes-after tx acct-a 10)))
+                       (equal? b-before (owner-rows tx acct-b))))))))))))
+
+(test-equal "a step on a tag only another account carries, or none: (0 . 0), and no row of any table changes (L6)"
+  (list '(0 . 0) '(0 . 0) '(0 . 0) #t)
+  (attempt
+   (lambda ()
+     (with-store "step-none.db"
+       (lambda (w r p)
+         (w step-set-up!)
+         (let* ((before (ok-of (r (lambda (tx) (list (all-rows tx) (tag-rows tx))))))
+                (a (ok-of (w (lambda (tx) (rename-tag! tx acct-a "bonly" "z" 500 1000)))))
+                (b (ok-of (w (lambda (tx) (remove-tag! tx acct-a "bonly" 500 1000)))))
+                (c (ok-of (w (lambda (tx) (remove-tag! tx acct-a "nothing" 500 1000))))))
+           (list a b c (equal? before (ok-of (r (lambda (tx) (list (all-rows tx) (tag-rows tx)))))))))))))
+
+(test-equal "a step: a purged node is never picked, as purge-node! took its rows: it keeps its row and gets no change row; a row left on a purged node by hand makes the step raise with the two counts alone, naming no tag, and the job rolls back"
+  (list '(6 . 0) '((5 3 50 "purged")) '() (list (list 'raised '(7 6) #f) #t))
+  (attempt
+   (lambda ()
+     (append
+      (with-store "step-purged.db"
+        (lambda (w r p)
+          (w step-set-up!)
+          (w (lambda (tx) (purge-node! tx (nid 5) acct-a 2 50)))
+          (let ((res (ok-of (w (lambda (tx) (rename-tag! tx acct-a "x" "z" 10 1000))))))
+            (ok-of (r (lambda (tx)
+                        (list res
+                              (filter (lambda (h) (= (car h) 5)) (heads tx))
+                              (filter (lambda (c) (and (= (cadr c) 5) (equal? (cadddr c) "tags"))) (changes-after tx acct-a 0)))))))))
+      (with-store "step-purged-by-hand.db"
+        (lambda (w r p)
+          (w step-set-up!)
+          (w (lambda (tx) (rename-tag! tx acct-a "x" "secret-tag-p" 500 40)))
+          (w (lambda (tx)
+               (purge-node! tx (nid 5) acct-a 3 50)
+               (tx-execute! tx "INSERT INTO node_tags(owner, tag, node) VALUES (?, 'secret-tag-p', ?)" acct-a (nid 5))))
+          (let* ((before (ok-of (r (lambda (tx) (list (all-rows tx) (tag-rows tx))))))
+                 (c (car (rolled-back w (lambda (tx) (remove-tag! tx acct-a "secret-tag-p" 500 1000)) (lambda (tx) #f)))))
+            (list (list (list (car c) (cadr c) (contains? (caddr c) "secret-tag-p"))
+                        (equal? before (ok-of (r (lambda (tx) (list (all-rows tx) (tag-rows tx)))))))))))))))
+
+(test-equal "a step's change rows: no gap and no clash with a write made before and after it, in its job and in jobs of their own"
+  (list (iota* 11 19) (iota* 20 28))
+  (attempt
+   (lambda ()
+     (with-store "step-seq.db"
+       (lambda (w r p)
+         (w step-set-up!)
+         (w (lambda (tx)
+              (write-node! tx (nid 15) acct-a 1 "t" "b" "a/a" "{}" 'keep "update" 900)
+              (rename-tag! tx acct-a "x" "z" 500 1000)
+              (write-node! tx (nid 15) acct-a 2 "t" "b" "a/a" "{}" 'keep "update" 1100)))
+         (let ((one (ok-of (r (lambda (tx) (map car (changes-after tx acct-a 10)))))))
+           (w (lambda (tx) (write-node! tx (nid 15) acct-a 3 "t" "b" "a/a" "{}" 'keep "update" 1200)))
+           (w (lambda (tx) (rename-tag! tx acct-a "z" "x" 500 1300)))
+           (w (lambda (tx) (write-node! tx (nid 15) acct-a 4 "t" "b" "a/a" "{}" 'keep "update" 1400)))
+           (list one (ok-of (r (lambda (tx) (map car (changes-after tx acct-a 19))))))))))))
+
+(test-equal "a step writes no snapshot: the carriers' newest snapshots still hold FROM, the rows TO; they differ by exactly the step (L3, restated)"
+  (list '("[\"x\"]" "[\"x\"]") '(("z") ("z")) #t)
+  (attempt
+   (lambda ()
+     (with-store "step-no-snapshot.db"
+       (lambda (w r p)
+         (w step-set-up!)
+         (let ((before (ok-of (r (lambda (tx) (raw tx "SELECT node, revision, tags FROM revisions ORDER BY node, revision"))))))
+           (w (lambda (tx) (rename-tag! tx acct-a "x" "z" 500 1000)))
+           (ok-of (r (lambda (tx)
+                       (list (list (newest-tags tx (nid 1)) (newest-tags tx (nid 9)))
+                             (list (rows-of tx (nid 1)) (rows-of tx (nid 9)))
+                             (equal? before (raw tx "SELECT node, revision, tags FROM revisions ORDER BY node, revision"))))))))))))
+
+(test-equal "rename-tag!: FROM equal to TO raises naming no tag, and a cap of 0 raises; neither writes"
+  (list (list 'raised '() #f) (list 'raised '(0)) #t)
+  (attempt
+   (lambda ()
+     (with-store "step-refused.db"
+       (lambda (w r p)
+         (w step-set-up!)
+         (let* ((before (ok-of (r (lambda (tx) (list (all-rows tx) (tag-rows tx))))))
+                (same (let ((c (car (rolled-back w (lambda (tx) (rename-tag! tx acct-a "secret-tag-s" "secret-tag-s" 500 1000))
+                                                 (lambda (tx) #f)))))
+                        (list (car c) (cadr c) (contains? (caddr c) "secret-tag-s"))))
+                (zero (raised-with (car (rolled-back w (lambda (tx) (remove-tag! tx acct-a "x" 0 1000)) (lambda (tx) #f))))))
+           (list same zero (equal? before (ok-of (r (lambda (tx) (list (all-rows tx) (tag-rows tx)))))))))))))
+
+(test-equal "retag-store-states: every live state, and the step's UPDATE names exactly those"
+  (list '("active" "archived" "trashed") #t)
+  (attempt
+   (lambda ()
+     (list retag-store-states
+           (contains? (statement-of 'retag-bump) "state IN ('active','archived','trashed')")))))
+
+;;; The filter: nodes-page with tags
+
+;; filter fixture: A's nodes 1 to 24, B's 30 to 35.
+;; tags: a on 1..20; b on the even ones of 2..20; c on 1..5; t0..t9 on
+;; 10..14, and t0 and t1 on 15 too. B's nodes carry every tag.
+;; states: 3, 12, 16 archived; 4, 13, 17 trashed; 18 purged (and a row of a
+;; left on it by hand: a page still never shows it).
+;; parents: 21 and 22 are projects; 1..8 sit under 21, 10..15 under 22; the
+;; rest are at the top level.
+(define ten-tags '("t0" "t1" "t2" "t3" "t4" "t5" "t6" "t7" "t8" "t9"))
+(define (fx-tags n)
+  (list-sort string<?
+             (append (if (<= 1 n 20) '("a") '())
+                     (if (and (even? n) (<= 2 n 20)) '("b") '())
+                     (if (<= 1 n 5) '("c") '())
+                     (cond ((<= 10 n 14) ten-tags) ((= n 15) '("t0" "t1")) (else '())))))
+(define (fx-state n)
+  (cond ((memv n '(3 12 16)) "archived") ((memv n '(4 13 17)) "trashed") ((= n 18) "purged") (else "active")))
+(define (fx-parent n)
+  (cond ((<= 1 n 8) 21) ((<= 10 n 15) 22) (else #f)))
+(define fx-nodes (iota* 1 24))
+
+(define (filter-set-up! tx)
+  (set-up! tx)
+  (for-each (lambda (n) (insert-node! tx (nid n) acct-a "project" "P" "B" "a/a" "{}" #f '() 10)) '(21 22))
+  (for-each (lambda (n)
+              (unless (memv n '(21 22))
+                (insert-node! tx (nid n) acct-a "note" "T" "B" "a/a" "{}"
+                              (let ((pa (fx-parent n))) (and pa (nid pa))) (fx-tags n) 10)))
+            fx-nodes)
+  (for-each (lambda (n) (note! tx (nid n) acct-b (append '("a" "b" "c") ten-tags) 10)) (iota* 30 35))
+  (for-each (lambda (n) (set-node-state! tx (nid n) acct-a 1 "archived" "archive" 20)) '(3 12 16))
+  (for-each (lambda (n) (set-node-state! tx (nid n) acct-a 1 "trashed" "trash" 20)) '(4 13 17 18))
+  (purge-node! tx (nid 18) acct-a 2 30)
+  (tx-execute! tx "INSERT INTO node_tags(owner, tag, node) VALUES (?, 'a', ?)" acct-a (nid 18)))
+
+;; oracle : String (U 'any #f Natural) (Listof String) Natural -> (Listof Natural)
+;; A's nodes past AFTER in STATE under PARENT carrying every tag, by id.
+(define (oracle state parent tags after)
+  (filter (lambda (n)
+            (and (> n after)
+                 (string=? (fx-state n) state)
+                 (not (string=? state "purged"))
+                 (cond ((eq? parent 'any) #t)
+                       ((not parent) (not (fx-parent n)))
+                       (else (eqv? (fx-parent n) parent)))
+                 (for-all (lambda (t) (member t (fx-tags n))) tags)))
+          fx-nodes))
+
+;; paged : Tx String (U 'any #f Natural) (Listof String) Natural Natural -> (Listof Natural)
+;; Every page of N from AFTER (0: from the start) until a short one, joined.
+;; The fixture has 24 nodes, so a 26th page means the cursor is not
+;; followed: the answer is then marked, never a hang.
+(define (paged tx state parent tags after n)
+  (let loop ((cur (and (> after 0) (nid after))) (acc '()) (pages 0))
+    (let* ((page (nodes-page tx acct-a state (if (number? parent) (nid parent) parent) tags cur n))
+           (acc (append acc (node-ids page))))
+      (cond ((< (length page) n) acc)
+            ((> pages 25) (list 'more-pages-than-nodes acc))
+            (else (loop (node-id (car (reverse page))) acc (+ pages 1)))))))
+
+(define filter-tag-sets
+  (list '("a") '("a" "b") '("b" "a") ten-tags '("c" "t0") '("t0" "t1")))
+(define filter-states '("active" "archived" "trashed" "purged"))
+(define filter-parents (list 'any #f 21 22))
+
+;; filter-cases : (Listof (List (Listof String) String (U 'any #f Natural) Natural Natural))
+;; (tags state parent after limit): every tag set, state and parent, paged
+;; from the start by 2, after node 5 by 100, and after node 11 by 1.
+(define filter-cases
+  (apply append
+         (map (lambda (tags)
+                (apply append
+                       (map (lambda (state)
+                              (apply append
+                                     (map (lambda (parent)
+                                            (list (list tags state parent 0 2)
+                                                  (list tags state parent 5 100)
+                                                  (list tags state parent 11 1)))
+                                          filter-parents)))
+                            filter-states)))
+              filter-tag-sets)))
+
+;; filter-answers : (U (Listof (Pair Case (Listof Natural))) Any)
+;; Each case's answer, all read on one file.
+(define filter-answers
+  (attempt
+   (lambda ()
+     (with-store "tags-filter.db"
+       (lambda (w r p)
+         (let ((s (w filter-set-up!)))
+           (if (not (and (pair? s) (eq? (car s) 'ok)))
+               (list 'set-up s)
+               (ok-of (r (lambda (tx)
+                           (map (lambda (c)
+                                  (cons c (paged tx (cadr c) (caddr c) (car c) (cadddr c) (car (cddddr c)))))
+                                filter-cases)))))))))))
+
+(for-each
+ (lambda (tags)
+   (for-each
+    (lambda (state)
+      (test-equal (string-append "filter: tags " (let loop ((ts tags) (acc "")) (if (null? ts) acc (loop (cdr ts) (string-append acc " " (car ts)))))
+                                 ", " state ": under each parent ('any, the top, 21, 22), paged by 2 from the start, by 100 after node 5 and by 1 after node 11, is the oracle's")
+        (map (lambda (parent)
+               (list (oracle state parent tags 0) (oracle state parent tags 5) (oracle state parent tags 11)))
+             filter-parents)
+        (if (list? filter-answers)
+            (map (lambda (parent)
+                   (map (lambda (after n)
+                          (let ((a (assoc (list tags state parent after n) filter-answers)))
+                            (if a (cdr a) (list 'missing filter-answers))))
+                        '(0 5 11) '(2 100 1)))
+                 filter-parents)
+            filter-answers)))
+    filter-states))
+ filter-tag-sets)
+
+(test-equal "filter: the cases are not all empty: an intersection of every kind is met (a, a b, ten tags, t0 t1) and c t0 is empty"
+  '(#t #t #t #t #t)
+  (list (pair? (oracle "active" 'any '("a") 0)) (pair? (oracle "active" 21 '("a" "b") 0))
+        (pair? (oracle "active" 22 ten-tags 0)) (pair? (oracle "active" 22 '("t0" "t1") 0))
+        (null? (oracle "active" 'any '("c" "t0") 0))))
+
+(test-equal "filter: a page's Nodes carry their tags and no body; B sees only its own; a tag given twice is that tag once; a tag no node carries is the empty page; 11 tags raise, naming the count alone"
+  (list (map (lambda (n) (list n (fx-tags n) #f)) (oracle "active" 'any '("a") 0))
+        (iota* 30 35)
+        (oracle "active" 'any '("a") 0)
+        '()
+        (list 'raised '(11)))
+  (attempt
+   (lambda ()
+     (with-store "tags-filter-2.db"
+       (lambda (w r p)
+         (w filter-set-up!)
+         (ok-of (r (lambda (tx)
+                     (list (map (lambda (n) (list (bytevector-u8-ref (node-id n) 0) (node-tags n) (node-body n)))
+                                (nodes-page tx acct-a "active" 'any '("a") #f 100))
+                           (node-ids (nodes-page tx acct-b "active" 'any '("a" "t9") #f 100))
+                           (node-ids (nodes-page tx acct-a "active" 'any '("a" "a") #f 100))
+                           (nodes-page tx acct-a "active" 'any '("nothing" "a") #f 100)
+                           (raised-with (caught (lambda () (nodes-page tx acct-a "active" 'any (cons "a" ten-tags) #f 100)))))))))))))
+
+;; The rarest tag drives the scan (the review's blocker 6). Which tag
+;; drives changes no row of the answer, only its cost, and nothing SQLite
+;; answers a job shows a statement's bound values. So the choice is pure,
+;; and held here directly: tag-counts, the counts on a real file;
+;; tagged-query, the statement and its arguments for those counts, its
+;; tags in rarest-first's order; and rarest-first. tagged-page only runs
+;; tagged-query's answer for tag-counts' answer: its whole definition is
+;; held below, read from the library's source. (A test that held this by
+;; the clock, best of five with a threefold margin, was replaced: a timing
+;; test flakes on a loaded machine. So was one that read only that the
+;; statements' tags came from a call of rarest-first: a call on counts all
+;; 0 passed it, and so did tag-counts answering 1 for every tag.)
+
+(test-equal "rarest-first: tags with their counts to the tags, fewest first, equal counts by string<? (by code point): none; one; the rare before the common whatever the order given; ties; two at the cap of 1,000; ten mixed"
+  (list '() '("a") '("rare" "common") '("rare" "common") '("c" "a" "b") '("y" "z")
+        '("t5" "t0" "t3" "t9" "t1" "t2" "t8" "t4" "t6" "t7")
+        '("a" "B" "\xE9;"))
+  (attempt
+   (lambda ()
+     (list (rarest-first '())
+           (rarest-first '(("a" . 3)))
+           (rarest-first '(("common" . 1000) ("rare" . 1)))
+           (rarest-first '(("rare" . 1) ("common" . 1000)))
+           (rarest-first '(("b" . 5) ("a" . 5) ("c" . 2)))
+           (rarest-first '(("z" . 1000) ("y" . 1000)))
+           (rarest-first '(("t0" . 7) ("t1" . 50) ("t2" . 50) ("t3" . 7) ("t4" . 999) ("t5" . 1)
+                           ("t6" . 1000) ("t7" . 1000) ("t8" . 51) ("t9" . 8)))
+           (rarest-first '(("\xE9;" . 2) ("B" . 2) ("a" . 1)))))))
+
+;; counted-on : String (Tx -> A) -> (U A Any)     the filter fixture's counts, read by JOB
+(define (counted-on name job)
+  (attempt
+   (lambda ()
+     (with-store name
+       (lambda (w r p)
+         (let ((s (w filter-set-up!)))
+           (if (and (pair? s) (eq? (car s) 'ok)) (ok-of (r job)) (list 'set-up s))))))))
+
+(test-equal "tag-counts: each tag with how many of the owner's nodes carry it, in every state, in the order given: c 5, b 9 (a purged node's row gone), a 20 (one left on it by hand counted), t0 6, t9 5; B's own, 6 each; #f when one is on no node, wherever it is"
+  (list '(("c" . 5) ("b" . 9) ("a" . 20)) '(("t9" . 5) ("t0" . 6) ("t1" . 6) ("t5" . 5))
+        '(("a" . 6) ("t9" . 6)) #f #f)
+  (counted-on "tags-counts.db"
+              (lambda (tx)
+                (list (tag-counts tx acct-a '("c" "b" "a")) (tag-counts tx acct-a '("t9" "t0" "t1" "t5"))
+                      (tag-counts tx acct-b '("a" "t9")) (tag-counts tx acct-a '("nothing" "a"))
+                      (tag-counts tx acct-a '("a" "b" "nothing"))))))
+
+(test-equal "tagged-query: the statement for the number of tags and the parent, then the owner, the state, AFTER or the zero id, the parent when it is an id, the tags fewest first by their real counts (not as given, nor by string<?), and N"
+  (let ((z (bv 16 0)))
+    (list (list 'nodes-tagged-3 acct-a "active" z "c" "b" "a" 5)
+          (list 'nodes-tagged-top-3 acct-a "trashed" (nid 7) "c" "b" "a" 2)
+          (list 'nodes-tagged-of-3 acct-a "archived" z (nid 22) "c" "b" "a" 100)
+          (list 'nodes-tagged-of-2 acct-a "active" (nid 11) (nid 22) "t2" "t0" 1)
+          (list 'nodes-tagged-10 acct-a "active" z "t2" "t3" "t4" "t5" "t6" "t7" "t8" "t9" "t0" "t1" 51)
+          (list 'nodes-tagged-top-1 acct-b "active" z "a" 5)))
+  (counted-on "tags-query.db"
+              (lambda (tx)
+                (list (tagged-query acct-a "active" 'any (tag-counts tx acct-a '("a" "b" "c")) #f 5)
+                      (tagged-query acct-a "trashed" #f (tag-counts tx acct-a '("a" "c" "b")) (nid 7) 2)
+                      (tagged-query acct-a "archived" (nid 22) (tag-counts tx acct-a '("b" "a" "c")) #f 100)
+                      (tagged-query acct-a "active" (nid 22) (tag-counts tx acct-a '("t0" "t2")) (nid 11) 1)
+                      (tagged-query acct-a "active" 'any (tag-counts tx acct-a ten-tags) #f 51)
+                      (tagged-query acct-b "active" #f (tag-counts tx acct-b '("a")) #f 5)))))
+
+(test-equal "tagged-query: it names each of the thirty filter statements once, by the number of tags and the parent; 0 or 11 tags raise, naming the count alone"
+  (list (apply append
+               (map (lambda (mode)
+                      (map (lambda (k) (string->symbol (string-append "nodes-tagged-" mode (number->string k))))
+                           (iota* 1 10)))
+                    '("" "top-" "of-")))
+        (list 'raised '(0)) (list 'raised '(11)))
+  (attempt
+   (lambda ()
+     (let ((counted (lambda (k) (map (lambda (j) (cons (string-append "t" (number->string j)) 1)) (iota* 1 k)))))
+       (list (apply append
+                    (map (lambda (parent)
+                           (map (lambda (k) (car (tagged-query acct-a "active" parent (counted k) #f 5))) (iota* 1 10)))
+                         (list 'any #f A1)))
+             (raised-with (caught (lambda () (tagged-query acct-a "active" 'any '() #f 5))))
+             (raised-with (caught (lambda () (tagged-query acct-a "active" 'any (counted 11) #f 5)))))))))
+
+;; tagged-page-form : Any -> (U List #f)     the (define (tagged-page ...) ...) in the library's body
+(define (tagged-page-form lib)
+  (find (lambda (f) (and (pair? f) (eq? (car f) 'define) (pair? (cdr f)) (pair? (cadr f))
+                         (eq? (caadr f) 'tagged-page)))
+        (list-tail lib 4)))
+
+;; Held whole, as the statements' texts are: any change to it fails here,
+;; and is read again by whoever changes the text below.
+(test-equal "filter: tagged-page only runs what tagged-query answers for tag-counts' answer, after the cap's check: its whole definition, read from the library's source"
+  '(define (tagged-page tx owner state parent tags after n)
+     (let ((k (length tags)))
+       (unless (<= 1 k filter-tag-cap)
+         (assertion-violation 'nodes-page "a filter takes 1 to 10 tags" k))
+       (let ((counted (tag-counts tx owner tags)))
+         (if counted
+             (let ((q (tagged-query owner state parent counted after n)))
+               (map (lambda (r) (row->node tx r #f)) (apply tx-query tx (statement (car q)) (cdr q))))
+             '()))))
+  (attempt
+   (lambda ()
+     (tagged-page-form (call-with-input-file (loaded-source "techo/node-store.sls") read)))))
+
+;;; tags-page and tag-count-capped
+
+(define (tags-page-set-up! tx)
+  (set-up! tx)
+  (note! tx A1 acct-a '("b" "a") 10)
+  (note! tx A2 acct-a '("a" "c") 10)
+  (note! tx A3 acct-a '("a" "d") 10)
+  (note! tx (nid 5) acct-a '("e") 10)
+  (note! tx B1 acct-b '("a" "zz") 10)
+  (set-node-state! tx A3 acct-a 1 "trashed" "trash" 20)
+  (set-node-state! tx (nid 5) acct-a 1 "archived" "archive" 20))
+
+(test-equal "tags-page: each distinct tag of the owner once, in order, with its count over every state; paged by 2 from the start and from each last tag; B's own; a page of 0 is empty"
+  (list '(("a" . 3) ("b" . 1) ("c" . 1) ("d" . 1) ("e" . 1))
+        '((("a" . 3) ("b" . 1)) (("c" . 1) ("d" . 1)) (("e" . 1)) ())
+        '(("a" . 1) ("zz" . 1))
+        '()
+        '(("c" . 1) ("d" . 1) ("e" . 1)))
+  (attempt
+   (lambda ()
+     (with-store "tags-page.db"
+       (lambda (w r p)
+         (w tags-page-set-up!)
+         (ok-of (r (lambda (tx)
+                     (list (tags-page tx acct-a #f 100)
+                           (list (tags-page tx acct-a #f 2) (tags-page tx acct-a "b" 2)
+                                 (tags-page tx acct-a "d" 2) (tags-page tx acct-a "e" 2))
+                           (tags-page tx acct-b #f 100)
+                           (tags-page tx acct-a #f 0)
+                           (tags-page tx acct-a "bb" 100))))))))))
+
+;; big-id : Natural -> Bytevector     ids past 255 nodes: C0 bytes, K at the end
+(define (big-id k)
+  (let ((b (make-bytevector 16 #xC0))) (bytevector-u32-set! b 12 k (endianness big)) b))
+
+(test-equal "tags-page: a count stops at 1,000: tags on 999, 1,000 and 1,001 nodes answer 999, 1000 and 1000; tag-count-capped with a cap past it counts 1,001; tag-counts stops at 1,000 too"
+  (list '(("c1000" . 1000) ("c1001" . 1000) ("c999" . 999)) 1001 1000 999
+        '(("c1001" . 1000) ("c999" . 999) ("c1000" . 1000)))
+  (attempt
+   (lambda ()
+     (with-store "tags-page-cap.db"
+       (lambda (w r p)
+         (w (lambda (tx)
+              (set-up! tx)
+              (let loop ((k 1))
+                (when (<= k 1001)
+                  (note! tx (big-id k) acct-a
+                         (append '("c1001") (if (<= k 1000) '("c1000") '()) (if (<= k 999) '("c999") '()))
+                         10)
+                  (loop (+ k 1))))))
+         (ok-of (r (lambda (tx)
+                     (list (tags-page tx acct-a #f 100)
+                           (tag-count-capped tx acct-a "c1001" 5000)
+                           (tag-count-capped tx acct-a "c1001" 1000)
+                           (tag-count-capped tx acct-a "c999" 5000)
+                           (tag-counts tx acct-a '("c1001" "c999" "c1000")))))))))))
+
+(test-equal "tags-page and tags-of: SQLite's BINARY order is string<?'s for non-ASCII and astral tags"
+  (list (list-sort string<? json-corpus) (list-sort string<? json-corpus))
+  (attempt
+   (lambda ()
+     (with-store "tags-order.db"
+       (lambda (w r p)
+         (w set-up!)
+         (w (lambda (tx) (note! tx A1 acct-a json-corpus 10)))
+         (ok-of (r (lambda (tx)
+                     (list (map car (tags-page tx acct-a #f 100))
+                           (tags-of tx acct-a A1))))))))))
+
+(test-equal "tag-count-capped: min(count, cap) of the owner's nodes in every state, caps 1, 2 and 1,000; B's rows not counted"
+  '(1 2 3 1 0)
+  (attempt
+   (lambda ()
+     (with-store "tags-count.db"
+       (lambda (w r p)
+         (w tags-page-set-up!)
+         (ok-of (r (lambda (tx)
+                     (list (tag-count-capped tx acct-a "a" 1) (tag-count-capped tx acct-a "a" 2)
+                           (tag-count-capped tx acct-a "a" 1000) (tag-count-capped tx acct-b "a" 1000)
+                           (tag-count-capped tx acct-a "zz" 1000))))))))))
+
+;;; Migration 7 on a file that has snapshots (L11)
+
+(test-equal "migration 7: a snapshot from before it reads [], its node has no tags; a write gives it some, and restoring the old snapshot clears them"
+  (list '() "[]" '("k") '() "[]")
+  (attempt
+   (lambda ()
+     (let ((p (path "tags-v6.db")))
+       (clean! p)
+       (migrate! p (filter (lambda (m) (<= (car m) 6)) migrations))
+       (let ((db (open-techo-db p 'read-write)))
+         (dynamic-wind
+           (lambda () #f)
+           (lambda ()
+             (execute! db "INSERT INTO accounts(id, username, email, password_hash, created) VALUES (?, 'alice', 'alice@example.com', 'h', 1)" acct-a)
+             (execute! db "INSERT INTO nodes(id, owner, author, kind, title, content_type, props, revision, created, updated) VALUES (?, ?, ?, 'note', 'T', 'a/a', '{}', 1, 1, 1)" A1 acct-a acct-a)
+             (execute! db "INSERT INTO revisions(node, revision, author, title, content_type, props, created, body) VALUES (?, 1, ?, 'T', 'a/a', '{}', 1, 'old body')" A1 acct-a))
+           (lambda () (close-database! db))))
+       (migrate! p migrations)
+       (with-store-on p
+         (lambda (w r)
+           (let* ((tags0 (ok-of (r (lambda (tx) (node-tags (node-of-owner tx acct-a A1))))))
+                  (old (ok-of (r (lambda (tx) (snapshot-tags (snapshot-of tx acct-a A1 1))))))
+                  (given (ok-of (w (lambda (tx) (node-tags (write-node! tx A1 acct-a 1 "T" "B" "a/a" "{}" '("k") "update" 20))))))
+                  (restored (ok-of (w (lambda (tx)
+                                        (let ((s (snapshot-of tx acct-a A1 1)))
+                                          (node-tags (write-node! tx A1 acct-a 2 (snapshot-title s) (snapshot-body s)
+                                                                  (snapshot-content-type s) (snapshot-props s)
+                                                                  (snapshot-tags s) "restore" 30))))))))
+             (list tags0 old given restored (ok-of (r (lambda (tx) (snap-tags tx A1 3))))))))))))
+
+;;; The statements on tags, and their plans (L14)
+
+(define tagged-statement-names
+  (apply append
+         (map (lambda (mode)
+                (map (lambda (k) (string->symbol (string-append "nodes-tagged-" mode (number->string k))))
+                     (iota* 1 10)))
+              '("" "top-" "of-"))))
+
+(define tag-statement-names
+  (append '(tags-of insert-tag insert-tags-json delete-tags tag-count-capped tags-page
+            retag-pick retag-add retag-bump retag-changes retag-delete retag-left)
+          tagged-statement-names))
+
+;; searches : (Listof String) -> (Listof String)
+;; A plan's SEARCH lines, each with "COVERING " taken out: an older SQLite
+;; calls an index COVERING where 3.53 does not (traps.md), and the search
+;; and its terms are the same.
+(define (searches plan)
+  (map (lambda (line)
+         (let loop ((s line))
+           (let ((n (string-length s)) (w "COVERING "))
+             (let find ((i 0))
+               (cond ((> (+ i (string-length w)) n) s)
+                     ((string=? (substring s i (+ i (string-length w))) w)
+                      (loop (string-append (substring s 0 i) (substring s (+ i (string-length w)) n))))
+                     (else (find (+ i 1))))))))
+       (filter (lambda (d) (starts? d "SEARCH ")) plan)))
+
+;; table-scan? : String -> Boolean     a line that walks a table or one of its aliases
+(define (table-scan? d)
+  (exists (lambda (t) (or (string=? d (string-append "SCAN " t)) (starts? d (string-append "SCAN " t " "))))
+          '("node_tags" "nodes" "changes" "revisions" "t" "u" "n" "u1" "u2" "u3" "u4" "u5" "u6" "u7" "u8" "u9")))
+
+;; matches? : (Listof String) (Listof (Listof String)) -> Boolean
+;; Each line is one of its place's choices, and there are as many.
+(define (matches? lines choices)
+  (and (= (length lines) (length choices))
+       (for-all (lambda (l c) (and (member l c) #t)) lines choices)))
+
+;; A probe of one row of node_tags by its three columns, by the key or by
+;; node_tags_node (which holds the key's tag): SQLite picks either, and the
+;; cost is one search.
+(define (probe alias)
+  (list (string-append "SEARCH " alias " USING PRIMARY KEY (owner=? AND tag=? AND node=?)")
+        (string-append "SEARCH " alias " USING INDEX node_tags_node (owner=? AND node=? AND tag=?)")))
+;; A node's row by its id, through any index that leads with it.
+(define (by-id alias)
+  (list (string-append "SEARCH " alias " USING INDEX nodes_owner (owner=? AND id=?)")
+        (string-append "SEARCH " alias " USING INDEX sqlite_autoindex_nodes_1 (id=?)")
+        (string-append "SEARCH " alias " USING INDEX nodes_parent (owner=? AND parent=? AND id=?)")))
+
+(define (tagged-choices k mode)
+  (let ((others (map (lambda (j) (probe (string-append "u" (number->string j)))) (iota* 1 (- k 1)))))
+    (if (string=? mode "of-")
+        (append (list '("SEARCH n USING INDEX nodes_parent (owner=? AND parent=? AND id>?)") (probe "t")) others)
+        (append (list '("SEARCH t USING PRIMARY KEY (owner=? AND tag=? AND node>?)")) others (list (by-id "n"))))))
+
+(define tag-plan-file (attempt (lambda () (fresh "plan-tags.db"))))
+
+(for-each
+ (lambda (mode)
+   (for-each
+    (lambda (k)
+      (let ((name (string->symbol (string-append "nodes-tagged-" mode (number->string k)))))
+        (test-equal (string-append "plan: " (symbol->string name) " drives from "
+                                   (if (string=? mode "of-") "nodes_parent" "the first tag's key")
+                                   ", asks each other tag by one search, the node by its id; no scan of a table, no temp b-tree")
+          '(#t #f #f)
+          (attempt
+           (lambda ()
+             (let* ((zero (bv 16 0))
+                    (tags (map (lambda (j) (string-append "t" (number->string j))) (iota* 1 k)))
+                    (plan (apply plan-of tag-plan-file (statement-of name)
+                                 (append (list acct-a "active" zero) (if (string=? mode "of-") (list A1) '())
+                                         tags (list 51)))))
+               (list (matches? (searches plan) (tagged-choices k mode))
+                     (exists table-scan? plan)
+                     (exists (lambda (d) (contains? d "TEMP B-TREE")) plan))))))))
+    (iota* 1 10)))
+ '("" "top-" "of-"))
+
+(for-each
+ (lambda (c)
+   (test-equal (string-append "plan: " (symbol->string (car c)) " is its searches, each by the index made for it; no scan of a table"
+                              (if (cadddr c) ", no temp b-tree" ""))
+     '(#t #f #f)
+     (attempt
+      (lambda ()
+        (let ((plan (apply plan-of tag-plan-file (statement-of (car c)) (caddr c))))
+          (list (matches? (searches plan) (cadr c))
+                (exists table-scan? plan)
+                (and (cadddr c) (exists (lambda (d) (contains? d "TEMP B-TREE")) plan))))))))
+ (let ((z (bv 16 0)))
+   (list
+    (list 'tags-of '(("SEARCH node_tags USING INDEX node_tags_node (owner=? AND node=?)")) (list acct-a z) #t)
+    (list 'delete-tags '(("SEARCH node_tags USING INDEX node_tags_node (owner=? AND node=?)")) (list acct-a z) #t)
+    (list 'insert-snapshot '(("SEARCH node_tags USING INDEX node_tags_node (owner=? AND node=?)"))
+          (list z 1 acct-a "t" "c" "{}" 1 "b" acct-a z) #t)
+    (list 'tag-count-capped '(("SEARCH node_tags USING PRIMARY KEY (owner=? AND tag=?)")) (list acct-a "x" 1000) #t)
+    ;; the page's own ORDER BY sorts its rows (at most the page): no table is sorted
+    (list 'tags-page '(("SEARCH node_tags USING PRIMARY KEY (owner=? AND tag>?)")
+                       ("SEARCH node_tags USING PRIMARY KEY (owner=? AND tag>?)")
+                       ("SEARCH node_tags USING PRIMARY KEY (owner=? AND tag=?)"))
+          (list acct-a "" acct-a 51 acct-a 1000) #f)
+    (list 'retag-pick '(("SEARCH node_tags USING PRIMARY KEY (owner=? AND tag=?)")) (list acct-a "x" 499) #t)
+    (list 'retag-add (list '("SEARCH t USING PRIMARY KEY (owner=? AND tag=? AND node<?)") (probe "u"))
+          (list acct-a "y" acct-a "x" z acct-a "y") #t)
+    (list 'retag-bump (list (by-id "nodes") '("SEARCH node_tags USING PRIMARY KEY (owner=? AND tag=? AND node<?)"))
+          (list 1 acct-a acct-a "x" z) #t)
+    (list 'retag-changes (list '("SEARCH t USING PRIMARY KEY (owner=? AND tag=? AND node<?)") (by-id "n")
+                               '("SEARCH changes USING PRIMARY KEY (owner=?)"))
+          (list acct-a acct-a 1 acct-a "x" z acct-a) #t)
+    (list 'retag-delete '(("SEARCH node_tags USING PRIMARY KEY (owner=? AND tag=? AND node<?)")) (list acct-a "x" z) #t)
+    (list 'retag-left '(("SEARCH node_tags USING PRIMARY KEY (owner=? AND tag=?)")) (list acct-a "x") #t))))
+
+(test-equal "statements: a step's six, and the reads by node, have exactly the decided text: every one names the owner"
+  (list "SELECT tag FROM node_tags WHERE owner = ? AND node = ? ORDER BY tag"
+        "DELETE FROM node_tags WHERE owner = ? AND node = ?"
+        "SELECT node FROM node_tags WHERE owner = ? AND tag = ? ORDER BY node LIMIT 1 OFFSET ?"
+        "INSERT INTO node_tags(owner, tag, node) SELECT ?, ?, t.node FROM node_tags t WHERE t.owner = ? AND t.tag = ? AND t.node <= ? AND NOT EXISTS (SELECT 1 FROM node_tags u WHERE u.owner = ? AND u.tag = ? AND u.node = t.node)"
+        "UPDATE nodes SET revision = revision + 1, updated = ? WHERE owner = ? AND state IN ('active','archived','trashed') AND id IN (SELECT node FROM node_tags WHERE owner = ? AND tag = ? AND node <= ?)"
+        "INSERT INTO changes(owner, seq, node, revision, op, created) SELECT ?, (SELECT coalesce(max(seq), 0) FROM changes WHERE owner = ?) + row_number() OVER (ORDER BY t.node), t.node, n.revision, 'tags', ? FROM node_tags t CROSS JOIN nodes n WHERE t.owner = ? AND t.tag = ? AND t.node <= ? AND n.id = t.node AND n.owner = ?"
+        "DELETE FROM node_tags WHERE owner = ? AND tag = ? AND node <= ?"
+        "SELECT count(*) FROM node_tags WHERE owner = ? AND tag = ?"
+        "SELECT count(*) FROM (SELECT 1 FROM node_tags WHERE owner = ? AND tag = ? LIMIT ?)")
+  (map statement-of '(tags-of delete-tags retag-pick retag-add retag-bump retag-changes retag-delete retag-left tag-count-capped)))
+
+(test-equal "statements: the snapshot's INSERT takes its tags from the node's rows, in order, in the statement itself"
+  #t
+  (attempt
+   (lambda ()
+     (contains? (statement-of 'insert-snapshot)
+                "(SELECT json_group_array(tag) FROM (SELECT tag FROM node_tags WHERE owner = ? AND node = ? ORDER BY tag))"))))
+
+(test-equal "statements: every statement on node_tags is listed, none is INSERT OR IGNORE, OR REPLACE or ON CONFLICT, and each names the owner as often as it reads the table"
+  (list '() '() '())
+  (attempt
+   (lambda ()
+     (let* ((on-tags (filter (lambda (s) (contains? (cdr s) "node_tags")) node-store-statements))
+            (count-of-text (lambda (s sub)
+                             (let loop ((i 0) (k 0))
+                               (cond ((> (+ i (string-length sub)) (string-length s)) k)
+                                     ((string=? sub (substring s i (+ i (string-length sub)))) (loop (+ i 1) (+ k 1)))
+                                     (else (loop (+ i 1) k)))))))
+       (list (filter (lambda (n) (not (assq n on-tags)))
+                     (filter (lambda (n) (not (memq n tagged-statement-names))) tag-statement-names))
+             (map car (filter (lambda (s) (or (contains? (cdr s) " OR ") (contains? (cdr s) "ON CONFLICT"))) on-tags))
+             (map car (filter (lambda (s)
+                                (< (count-of-text (cdr s) "owner = ")
+                                   (+ (count-of-text (cdr s) "FROM node_tags") (count-of-text (cdr s) "JOIN node_tags"))))
+                              on-tags)))))))
+
+(test-equal "statements: the filter's thirty are listed, each names the owner, joins nodes by the owner, reads no body and no revisions, and leaves a purged node out"
+  '()
+  (attempt
+   (lambda ()
+     (filter (lambda (name)
+               (let ((s (statement-of name)))
+                 (not (and s (owner-scoped? s)
+                           (or (contains? s "n.owner = t.owner") (contains? s "t.owner = n.owner"))
+                           (contains? s "n.state <> 'purged'")
+                           (contains? s "n.state = ?")
+                           (not (contains? s "body"))
+                           (not (contains? s "revisions"))))))
+             tagged-statement-names))))
+
+(test-equal "imports: (techo node-store) does not import (techo tags)"
+  #f
+  (attempt
+   (lambda ()
+     (let* ((lib (call-with-input-file (loaded-source "techo/node-store.sls") read))
+            (imports (cdr (cadddr lib))))
+       (exists (lambda (spec) (and (member '(techo tags) (let flat ((x spec)) (if (pair? x) (cons x (apply append (map flat x))) '()))) #t))
+               imports)))))
+
+(for-each
+ (lambda (name)
+   (test-equal (string-append "statements: " (symbol->string name) " does not name body (H12)")
+     '(#t #f)
+     (attempt
+      (lambda ()
+        (let ((s (statement-of name)))
+          (list (string? s) (and (string? s) (contains? s "body"))))))))
+ tag-statement-names)
 
 (test-end "node-store")
 

@@ -78,7 +78,7 @@
   ;; named? : Any -> Boolean     a (String . value) pair
   (define (named? m) (and (pair? m) (string? (car m))))
 
-  ;; distinct? : (Listof String) -> Boolean     no name twice; at most six here
+  ;; distinct? : (Listof String) -> Boolean     no name twice; at most seven here
   (define (distinct? names)
     (or (null? names)
         (and (not (member (car names) (cdr names))) (distinct? (cdr names)))))
@@ -203,14 +203,15 @@
   ;;   - a replace with no props: 'absent (P11). A create with none is as {}.
   ;; 'too-large when no kind in question takes the value and one finds it
   ;; valid but over props-cap; else 'invalid. 'invalid too for what
-  ;; parse-content refuses: no object of at most six members, a create with
-  ;; no kind, a kind not of the five, props that are no object, create?
-  ;; that is no boolean. Never raises. Linear in the value's size: every
+  ;; parse-content refuses: no object of at most seven members (a create's
+  ;; kind, title, body, content_type, props, tags and parent; slice 7a), a
+  ;; create with no kind, a kind not of the five, props that are no object,
+  ;; create? that is no boolean. Never raises. Linear in the value's size: every
   ;; object's members are counted against its bound before any name is
   ;; read ((techo contact) does the same for a Contact's), and only a value
   ;; that passes is written, once.
   (define (request-props x create?)
-    (if (and (boolean? create?) (object-of? x 6))
+    (if (and (boolean? create?) (object-of? x 7))
         (let ((kind (value-of x "kind"))
               (props (value-of x "props")))
           (cond ((and (given? kind) (not (kind? kind))) 'invalid)

@@ -139,7 +139,23 @@
   created INTEGER NOT NULL,
   PRIMARY KEY (owner, source, type, target)
 ) STRICT, WITHOUT ROWID"
-                      "CREATE INDEX links_target ON links(owner, target, type, source)"))))
+                      "CREATE INDEX links_target ON links(owner, target, type, source)"))
+          ;; Slice 7a. A node's present tags are its rows here, one a tag;
+          ;; the index by node begins with the owner, and in a table WITHOUT
+          ;; ROWID it holds the key's tag too, so it gives a node's tags in
+          ;; order. A snapshot keeps its tags as a JSON array, behind the
+          ;; body: the one exception to "a large column is its table's
+          ;; last" (ADR-0004, amended 2026-11-27). A snapshot made before
+          ;; this reads '[]'.
+          (list 7 "tags"
+                (list "CREATE TABLE node_tags (
+  owner BLOB NOT NULL REFERENCES accounts(id),
+  tag   TEXT NOT NULL CHECK (length(tag) BETWEEN 1 AND 64),
+  node  BLOB NOT NULL REFERENCES nodes(id),
+  PRIMARY KEY (owner, tag, node)
+) STRICT, WITHOUT ROWID"
+                      "CREATE INDEX node_tags_node ON node_tags(owner, node)"
+                      "ALTER TABLE revisions ADD COLUMN tags TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(tags) AND json_type(tags) = 'array')"))))
 
   ;; latest-version : (Listof Migration) -> Natural
   (define (latest-version ms)

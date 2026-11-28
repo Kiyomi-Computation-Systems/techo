@@ -66,4 +66,13 @@
   created INTEGER NOT NULL,
   PRIMARY KEY (owner, source, type, target)
 ) STRICT, WITHOUT ROWID"
-     "CREATE INDEX links_target ON links(owner, target, type, source)")))
+     "CREATE INDEX links_target ON links(owner, target, type, source)"))
+ (7 "tags"
+    ("CREATE TABLE node_tags (
+  owner BLOB NOT NULL REFERENCES accounts(id),
+  tag   TEXT NOT NULL CHECK (length(tag) BETWEEN 1 AND 64),
+  node  BLOB NOT NULL REFERENCES nodes(id),
+  PRIMARY KEY (owner, tag, node)
+) STRICT, WITHOUT ROWID"
+     "CREATE INDEX node_tags_node ON node_tags(owner, node)"
+     "ALTER TABLE revisions ADD COLUMN tags TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(tags) AND json_type(tags) = 'array')")))

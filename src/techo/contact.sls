@@ -28,7 +28,8 @@
   (export parse-contact-props)
   (import (rnrs)
           (only (uri easy) uri-string?)
-          (only (techo when) real-date?))
+          (only (techo when) real-date?)
+          (only (techo chars) allowed-char? blank-char?))
 
   ;;; Answers
 
@@ -50,32 +51,8 @@
   (define (same? a b)
     (and (= (string-length a) (string-length b)) (string=? a b)))
 
-  ;; allowed-char? : Char Boolean -> Boolean
-  ;; Not U+0000, and no noncharacter: U+FDD0 to U+FDEF, and the last two
-  ;; code points of each plane. JSContact is I-JSON (RFC 7493). And no
-  ;; control character: U+0000 to U+001F, U+007F, U+0080 to U+009F; but a
-  ;; line feed (U+000A) when LINES? is true. And no line or paragraph
-  ;; separator (U+2028, U+2029): the line feed is the only line break.
-  (define (allowed-char? c lines?)
-    (let ((n (char->integer c)))
-      (not (or (and (< n #x20) (not (and lines? (= n #xA))))
-               (<= #x7F n #x9F)
-               (<= #x2028 n #x2029)
-               (<= #xFDD0 n #xFDEF)
-               (= (bitwise-and n #xFFFE) #xFFFE)))))
-
-  ;; blank-char? : Char -> Boolean
-  ;; White space, or a zero-width character: what shows nothing by itself.
-  ;; The list is written out, so that it cannot move with Chez's Unicode
-  ;; tables: a rule once shipped is never tightened (P3). It is Unicode's
-  ;; White_Space, less the control characters but the line feed, and
-  ;; U+200B to U+200D, U+2060 and U+FEFF.
-  (define (blank-char? c)
-    (let ((n (char->integer c)))
-      (or (= n #x20) (= n #xA) (= n #xA0) (= n #x1680)
-          (<= #x2000 n #x200D)
-          (<= #x2028 n #x2029)
-          (= n #x202F) (= n #x205F) (= n #x2060) (= n #x3000) (= n #xFEFF))))
+  ;; allowed-char? and blank-char? are (techo chars)': slice 6's rules,
+  ;; moved there unchanged so that a tag shares them (slice 7a).
 
   ;; text? : Any Natural Boolean -> Boolean
   ;; A string of at most LIMIT characters, each allowed-char? (with
