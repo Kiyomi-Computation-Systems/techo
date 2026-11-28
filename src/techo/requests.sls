@@ -1,11 +1,12 @@
 #!r6rs
 ;;; (techo requests): what more than one route library reads from a
 ;;; request, or answers with, before any job: a query parameter's one
-;;; value, the first N of a page, the JSON media type, and the plain 400.
+;;; value or all of them, the first N of a page, the JSON media type, and
+;;; the plain 400.
 ;;; The imperative shell's edge: each reads a request and decides nothing
 ;;; of a route's own.
 (library (techo requests)
-  (export query-one take json-type? bad-request)
+  (export query-one query-all take json-type? bad-request)
   (import (rnrs)
           (only (circuit) req-header-values)
           (only (circuit params) req-query-params param-values)
@@ -18,6 +19,13 @@
       (cond ((null? vs) #f)
             ((null? (cdr vs)) (car vs))
             (else 'invalid))))
+
+  ;; query-all : Req String -> (Listof String)
+  ;; Every value the query gives NAME, in order, a value given twice kept
+  ;; twice; '() for none. As circuit decodes them: + is a space, an escape
+  ;; its byte, bad UTF-8 U+FFFD, a name with no = an empty value.
+  (define (query-all req name)
+    (param-values (req-query-params req) name))
 
   ;; take : (Listof A) Natural -> (Listof A)     the first N
   (define (take xs n)

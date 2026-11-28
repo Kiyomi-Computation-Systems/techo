@@ -115,3 +115,38 @@ Plan: [slice 6](../2026-11-27-slice-6-kinds-and-props.md)
    JSContact processor. A country code is two capitals, not checked further.
 6. **The cap is raised when real use asks.** Past about 8 KiB the fix is a
    migration that puts `props` last in `nodes`, or in its own table.
+
+## Amendment, 2026-11-27: tags
+
+Status: accepted (owner, 2026-11-27, as slice 7a's G1, G3, G4, G5 and G7)
+Plan: [slice 7a](../2026-11-27-slice-7a-tags.md)
+
+1. **A node has a set of at most 50 tags,** kept in `node_tags`. A row's
+   owner is its node's.
+2. **The server stores one form of a tag:** NFKC, lower case, NFKC again,
+   each typographic dash made `-` (U+2010 to U+2015 and U+2212; owner,
+   2026-11-28, F5), spaces trimmed from its ends, each run of spaces inside
+   made one `-`. A space is one of 17 code points, written out: U+0020,
+   U+00A0, U+1680, U+2000 to U+200A, U+202F, U+205F, U+3000. The result is 1
+   to 64 code points. A sent tag over 256 characters is
+   refused before it is folded.
+3. **A tag holds no control character and no invisible one,** by a list
+   written out in the code. Neither is stripped: the tag is refused. A tab
+   and a line break are control characters, not spaces.
+   **Amended 2026-11-28 (owner, F1 to F4 and F6, after the build's review).**
+   Also refused: 22 more invisible or blank-looking code points, added to
+   the list (U+FFF9 to U+FFFB, U+13430 to U+1343F, U+2800, U+16FE4,
+   U+1D159); a private-use code point, by a written list; a code point
+   Unicode has not assigned, in the tag as sent; and a tag whose stored form
+   begins with a combining mark. The last two read Chez's Unicode tables
+   (17.0 today), the only tag rules that do: 253 code points assigned
+   between Unicode 13 and 17 fold to something else, so an unassigned one
+   accepted today could stop being its own stored form. An upgrade of Chez
+   can only allow more.
+   **Once shipped, the rule may only widen.** A list's cursor, a filter, a
+   rename and a removal each fold the tag they are given, so a stored tag
+   that a tightened rule refused could not be paged past, renamed or
+   removed.
+4. **Tags are not inherited.** A client works that out from the tree.
+5. **A tag is a name, not a record.** Tags with ids of their own are kept
+   ready, as a slice, if renaming by steps proves too slow.

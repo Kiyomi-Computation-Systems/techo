@@ -970,8 +970,8 @@
 (define first-only (list (car migrations)))
 
 ;; objects in the shipped schema: accounts, api_keys, the index, and the
-;; automatic indexes of the primary and unique keys, then migration 3, migration 5's index, and migration 6's two (a WITHOUT ROWID table's key has no row of its own; counted from sqlite_schema: 17).
-(define shipped-objects 17)
+;; automatic indexes of the primary and unique keys, then migration 3, migration 5's index, migration 6's two and migration 7's two (a WITHOUT ROWID table's key has no row of its own; counted from sqlite_schema: 19).
+(define shipped-objects 19)
 
 (let ((p (path "m-missing.db")))
   (clean! p)
@@ -1360,7 +1360,7 @@
 (let ((p (path "m-v3.db")))
   (clean! p)
   (test-equal "migration 4: a file at version 3 holding nodes with snapshots migrates to 4; every node is active and still reads its body"
-    (list '(applied (4 5 6) #f 6)
+    (list '(applied (4 5 6 7) #f 7)
           '((1 "active" "first v2") (2 "active" "second v1"))
           '(constraint ok))
     (attempt
@@ -1393,7 +1393,7 @@
 (let ((p (path "m-v4.db")))
   (clean! p)
   (test-equal "migration 5: a file at version 4 holding nodes with snapshots migrates to 5; every parent is NULL and every node still reads its body"
-    (list '(applied (5 6) #f 6)
+    (list '(applied (5 6 7) #f 7)
           '((1 1 "first v2") (2 1 "second v1"))
           '(constraint constraint ok))
     (attempt
@@ -1427,7 +1427,7 @@
 (let ((p (path "m-v5.db")))
   (clean! p)
   (test-equal "migration 6: a file at version 5 holding nodes migrates to 6; it has no links, the table and its index are there, and the key, the foreign keys and STRICT hold"
-    (list '(applied (6) #f 6)
+    (list '(applied (6 7) #f 7)
           0
           '(("links" "table") ("links_target" "index"))
           '(constraint constraint constraint constraint ok constraint))

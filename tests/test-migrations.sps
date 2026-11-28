@@ -862,10 +862,10 @@
 (test-equal "shipped list: the list equals its recorded copy"
   (read-datum "tests/shipped-migrations.scm")
   migrations)
-(test-equal "shipped list: the copy is one datum, a list of six migrations, versions 1, 2, 3, 4, 5 and 6"
-  '(1 2 3 4 5 6)
+(test-equal "shipped list: the copy is one datum, a list of seven migrations, versions 1 to 7"
+  '(1 2 3 4 5 6 7)
   (let ((r (read-datum "tests/shipped-migrations.scm")))
-    (if (and (list? r) (= (length r) 6)) (map car r) r)))
+    (if (and (list? r) (= (length r) 7)) (map car r) r)))
 (test-equal "shipped list: migration 1 is the one that sets the id"
   '(1 "techo's database" ("PRAGMA application_id = 1952801640"))
   (car migrations))
@@ -906,6 +906,20 @@
 ) STRICT, WITHOUT ROWID"
               "CREATE INDEX links_target ON links(owner, target, type, source)"))
   (let ((m (list-ref migrations 5))) (list (cadr m) (caddr m))))
+;; ADR-0012's rule, one statement an entry: the table, its index by node
+;; (beginning with the owner), and the snapshot's column, behind the body,
+;; whose CHECK holds a JSON array.
+(test-equal "shipped list: migration 7 is three statements, named for tags, creating node_tags, its index by owner and node, and the snapshot's tags column"
+  (list "tags"
+        (list "CREATE TABLE node_tags (
+  owner BLOB NOT NULL REFERENCES accounts(id),
+  tag   TEXT NOT NULL CHECK (length(tag) BETWEEN 1 AND 64),
+  node  BLOB NOT NULL REFERENCES nodes(id),
+  PRIMARY KEY (owner, tag, node)
+) STRICT, WITHOUT ROWID"
+              "CREATE INDEX node_tags_node ON node_tags(owner, node)"
+              "ALTER TABLE revisions ADD COLUMN tags TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(tags) AND json_type(tags) = 'array')"))
+  (let ((m (if (> (length migrations) 6) (list-ref migrations 6) '(7 "none" ())))) (list (cadr m) (caddr m))))
 (test-equal "shipped list: the id is `tech`"
   #x74656368
   techo-application-id)

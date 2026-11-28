@@ -94,3 +94,15 @@ Plan: [slice 6](../2026-11-27-slice-6-kinds-and-props.md)
 - **A third pure function, `task-command`, answers a transition.** It asks
   `node-command` as for a replace, then the kind, then this table: 404, 412,
   `wrong_state`, `not_a_task`, `wrong_status`.
+
+## Amendment, 2026-11-27: a retag in the lifecycle
+
+Status: accepted (owner, 2026-11-27, as slice 7a's G8)
+Plan: [slice 7a](../2026-11-27-slice-7a-tags.md)
+
+The lifecycle's table gains one event, `retag`: a rename or a removal of a
+tag reaching a node. It is allowed in `active`, `archived` and `trashed`, and
+leaves the state as it is. A purged node has no tags, so that cell cannot
+happen. `node-command` does not answer it, as it answers no link event. The
+store's list of states a step may touch is held equal to the table's by a
+test.

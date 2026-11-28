@@ -147,6 +147,16 @@
              (list (cons '("props") 5) #f)                 ; an improper list
              (list (append (object "task" '()) '(("a" . 1) ("b" . 2) ("c" . 3))) #t))))
 
+;; Slice 7a: a create may send seven members, tags among them (kind,
+;; title, body, content_type, props, tags, parent); a replace six.
+(test-equal "request: a create's seven members, tags among them, are taken, and a replace's six; eight are not"
+  '((("note" . "{}")) (("note" . "{}")) invalid)
+  (attempt (lambda ()
+             (list (request-props (append (object "note" '()) '(("tags" . #("a")) ("parent" . null))) #t)
+                   (request-props (append (object "note" '()) '(("tags" . #("a")))) #f)
+                   (request-props (append (object "note" '()) '(("tags" . #("a")) ("parent" . null) ("x" . 1)))
+                                  #t)))))
+
 (test-equal "request: props that are no object are invalid, for every kind and for none"
   '(invalid invalid invalid invalid invalid invalid invalid)
   (map (lambda (p) (attempt (lambda () (request-props (object #f p) #f))))

@@ -18,13 +18,13 @@ whole milliseconds since 1970, UTC; JSON as text with a `json_valid` check; a
 | 4 | a node's state | Adds `nodes.state`. Every node there is becomes `active`. |
 | 5 | a node's parent | Adds `nodes.parent` and the index `nodes_parent`. Every node there is has none. |
 | 6 | links | Creates `links` and the index `links_target`. |
+| 7 | tags | Creates `node_tags` and the index `node_tags_node`. Adds `revisions.tags`. Every snapshot there is has `[]`. |
 
 ## The tables to come
 
 | Table | Slice | State |
 |---|---|---|
-| `tags`, or a column | 7 | open |
-| `nodes_fts` | 7 | sketched, from the spike |
+| `nodes_fts` | 7b | sketched, from the spike; the tokenizer decided (`unicode61`) |
 | attachments | not in v1 | shape fixed (ADR-0010) |
 
 ### accounts (shipped in migration 2; ADR-0006)
@@ -111,8 +111,7 @@ CREATE INDEX nodes_parent ON nodes(owner, parent, id);   -- migration 5
   account's rows: 10 ms for 10 trashed among 100,000.
 - **Decided:** `num` is for a search index to point at, and never leaves the
   database. Every lookup is by `id`.
-- **To come, by `ADD COLUMN`:** tags (7, or a
-  table). The table has no large column: at worst a title of 4,000 bytes puts later
+- **Tags came as a table,** `node_tags` (slice 7a, below), not a column. The table has no large column: at worst a title of 4,000 bytes puts later
   columns on one more page, not a walk of many.
 - **Decided (slice 6):** each kind's props, checked before any write and stored in
   one canonical form of at most 4,096 bytes (ADR-0003, amended 2026-11-27). The
@@ -143,7 +142,12 @@ CREATE TABLE revisions (
 - **Decided:** a plain table. `WITHOUT ROWID` took 4,670 bytes a snapshot of a
   2,000-character body against 4,135, and was slower to read.
 - **Decided (slice 5a):** a snapshot holds no parent. A move writes none, and a
-  restore does not undo a move. **Open (slice 7):** how it holds tags.
+  restore does not undo a move.
+- **Decided (slice 7a):** `tags`, a JSON array of the stored forms, added by
+  migration 7 behind `body` (`'[]'` for a snapshot from before). It is written
+  from the node's rows in `node_tags` in the same statement, and a rename of
+  a tag writes no snapshot: so a node's newest snapshot may hold an older
+  name. `op` `tags` in `changes` marks each such change.
 
 ### changes (shipped in migration 3; slice 8 reads it; ADR-0004)
 
@@ -163,8 +167,9 @@ CREATE TABLE changes (
   the write's own transaction.
 - **Decided:** `op` has no `CHECK`: SQLite cannot change one. Today's values are
   `create`, `update`, `restore`, `archive`, `unarchive`, `trash`, `untrash`,
-  `purge`, `move`, `link`, `unlink`, `done`, `wontdo` and `reopen`; the code's list is
-  the truth. A `link` or
+  `purge`, `move`, `link`, `unlink`, `done`, `wontdo`, `reopen` and `tags`; the code's list is
+  the truth, but for `tags`, which the store writes itself and `event-op` does
+  not name. A `link` or
   `unlink` row is on the link's source, at the source's present revision: two rows
   of a node can carry one revision. A `purge` row is the node's tombstone,
   and its last row.
@@ -192,13 +197,42 @@ CREATE INDEX links_target ON links(owner, target, type, source);
 - **Decided:** a read or delete by target names `links_target`; one by source never
   does (traps.md).
 
-### tags (slice 7)
+### node_tags (migration 7, slice 7a; ADR-0003)
 
-- **Open:** a `node_tags(owner, tag, node)` table, or a JSON column on `nodes`. A
-  table makes "every node with this tag" an index read. A snapshot holds the tags as
-  JSON either way.
+```sql
+CREATE TABLE node_tags (
+  owner BLOB NOT NULL REFERENCES accounts(id),
+  tag   TEXT NOT NULL CHECK (length(tag) BETWEEN 1 AND 64),
+  node  BLOB NOT NULL REFERENCES nodes(id),
+  PRIMARY KEY (owner, tag, node)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX node_tags_node ON node_tags(owner, node);
+```
 
-### nodes_fts (slice 7)
+- **Decided:** a node's present tags are its rows here, and nowhere else. A
+  tag is in its stored form (ADR-0003, amended): the code folds it, the table
+  checks only its length.
+- **Decided:** the index begins with the owner. In a table with no rowid it
+  holds the tag too, so a node's tags are read from it in order.
+- **Not held by the file:** that a row's owner is its node's. The code keeps
+  them equal, and the model checks it after every request.
+- **A purge deletes the node's rows.** A rename or a removal of a tag changes
+  at most 500 nodes' rows in one transaction.
+- **Measured, 200,000 nodes and 660,000 rows, 4 KiB props:** a page of 51
+  nodes with their tags 7.3 ms (6.7 before); a filter of up to 10 tags 0.9 to
+  9 ms, driven from the rarest; 78 to 133 ms when every tag is on 1,000 or more
+  nodes and none in common (the count's cap hides which is rarer); 19 to 43 ms
+  for a rare tag under a parent of 20,000 children (it drives from
+  `nodes_parent`); 203 to 269 ms, the worst found, for a tag on 185,000 nodes
+  asked in a state none of them is in. Each holds a reader, never the writer.
+- **Decided (2026-11-28):** the filter's statements name their indexes,
+  `node_tags_node`, `nodes_owner` and `nodes_parent`, with `INDEXED BY`
+  (traps.md: SQLite 3.45.1 sorted two of them otherwise).
+- **Measured, the same file:** one step of a rename, 500 nodes, holds the
+  writer 18 to 48 ms with its commit. During a rename of 185,000 nodes
+  another account's write takes a median 19 ms, 35 ms at worst (2.4 ms alone).
+
+### nodes_fts (slice 7b)
 
 - **Sketched from the spike, changed by slice 4:** an external-content FTS5 table
   over a view of each node's title and its newest snapshot's body, pointing at

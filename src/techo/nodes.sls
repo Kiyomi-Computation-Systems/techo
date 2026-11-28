@@ -31,7 +31,14 @@
 ;;; on as read; (techo props) judges them. A Task's transition is write in
 ;;; the lifecycle's table, asked by task-command in (techo tasks).
 ;;;
-;;; Nothing here raises with a title, a body or props: parse-content,
+;;; Slice 7a's tags: parse-content takes tags absent or of any value and
+;;; hands them on as read; (techo tags) judges them. The lifecycle's table
+;;; gains retag, listed in tag-events: a step of a tag's rename or removal
+;;; sends it to each node the step touches. retag-states, read from the
+;;; table, are the states a step takes a node in. node-command answers it
+;;; not: a step names no one node.
+;;;
+;;; Nothing here raises with a title, a body, props or tags: parse-content,
 ;;; parse-move-body and parse-parent-param never raise, and every other
 ;;; raise carries a symbol, a number, a boolean or an id at most.
 (library (techo nodes)
@@ -39,12 +46,12 @@
           depth-cap move-children-cap move-body-cap
           parse-node-id node-id->string parse-revision etag precondition
           content? content-kind content-title content-body content-content-type content-props
-          content-parent
+          content-tags content-parent
           parse-content parse-move-body parse-parent-param
           found found-for-create write-event
           write-rows write-cant-happen write-step write-document
           node-states node-state->string string->node-state parse-state-param
-          lifecycle-events link-events event-op
+          lifecycle-events link-events tag-events retag-states event-op
           lifecycle-rows lifecycle-cant-happen lifecycle-step lifecycle-document
           may-hold? parent-verdict child-moves? child-kind-filter
           node-command)
@@ -191,13 +198,18 @@
   ;;   symbol absent when not given. For the loop's thread only: it must
   ;;   never reach a job. (techo props)' request-props judges props, from
   ;;   the request's whole object, and only its Drafts go into a job.
+  ;; content-tags : Content -> Any
+  ;;   the tags member's value as read, of any type, not judged; the symbol
+  ;;   absent when not given. For the loop's thread only, as props are:
+  ;;   (techo tags)' request-tags judges tags, from the request's whole
+  ;;   object, and only the stored forms it answers go into a job.
   ;; content-parent : Content -> (U Bytevector #f)
   ;;   a create's parent; #f for the top level, and always for a replace
   (define-record-type content
-    (fields kind title body content-type props parent))
+    (fields kind title body content-type props tags parent))
 
-  ;; A replace's five members; a create's are those and parent (T3).
-  (define member-names '("kind" "title" "body" "content_type" "props"))
+  ;; A replace's six members; a create's are those and parent (T3).
+  (define member-names '("kind" "title" "body" "content_type" "props" "tags"))
   (define create-member-names (append member-names '("parent")))
   (define content-type-cap 255)
 
@@ -213,7 +225,7 @@
   (define (known-member? m names)
     (and (pair? m) (string? (car m)) (member (car m) names) #t))
 
-  ;; distinct? : (Listof String) -> Boolean     no name twice; at most six here
+  ;; distinct? : (Listof String) -> Boolean     no name twice; at most seven here
   (define (distinct? names)
     (or (null? names)
         (and (not (member (car names) (cdr names))) (distinct? (cdr names)))))
@@ -276,24 +288,26 @@
   ;; parse-content : Any Boolean -> (U Content 'invalid 'too-large)
   ;; From req-json's value (an object is an alist of (String . value), a
   ;; name given twice kept; {} is '()), and whether this is a create. The
-  ;; members are kind, title, body, content_type and props, and on a create
-  ;; parent. title, body and content_type are required strings; kind is
-  ;; required on a create and optional otherwise, one of node-kinds; props
-  ;; is optional, and any JSON object (slice 6): it is handed on as read,
-  ;; and its members are not judged here, but by (techo props)' request-props
-  ;; for the kind; a create's parent is optional, as parent-value takes it,
-  ;; and null is as none (T3). 'invalid for what is no object, a member past
-  ;; a create's six or a replace's five, a member not of those (so parent on
-  ;; a replace), a name twice, a member missing or of the wrong type (props
-  ;; a string, a number, an array, null or a boolean), a title over
-  ;; title-cap characters, U+0000 in the title or the body, a content_type
-  ;; that content-type-ok? refuses, or a parent that parent-value refuses.
+  ;; members are kind, title, body, content_type, props and tags, and on a
+  ;; create parent. title, body and content_type are required strings; kind
+  ;; is required on a create and optional otherwise, one of node-kinds;
+  ;; props is optional, and any JSON object (slice 6): it is handed on as
+  ;; read, and its members are not judged here, but by (techo props)'
+  ;; request-props for the kind; tags is optional, and of any value (slice
+  ;; 7a): it is handed on as read, judged by (techo tags)' request-tags; a
+  ;; create's parent is optional, as parent-value takes it, and null is as
+  ;; none (T3). 'invalid for what is no object, a member past a create's
+  ;; seven or a replace's six, a member not of those (so parent on a
+  ;; replace), a name twice, a member missing or of the wrong type (props a
+  ;; string, a number, an array, null or a boolean), a title over title-cap
+  ;; characters, U+0000 in the title or the body, a content_type that
+  ;; content-type-ok? refuses, or a parent that parent-value refuses.
   ;; 'too-large only for a body over body-cap bytes of UTF-8, when all else
   ;; is right.
   ;; Never raises. Its work is bounded by its members' lengths: a list longer
-  ;; than six (five for a replace) is refused before any name is compared,
+  ;; than seven (six for a replace) is refused before any name is compared,
   ;; and a title, a content type or a parent over its limit before it is
-  ;; read. Props are not walked: a pair from the reader is an object.
+  ;; read. Props and tags are not walked: neither is looked at here.
   (define (parse-content x create?)
     (let ((names (if create? create-member-names member-names)))
       (if (and (at-most? x (length names))
@@ -304,6 +318,7 @@
                 (body (value-of x "body"))
                 (type (value-of x "content_type"))
                 (props (value-of x "props"))
+                (tags (value-of x "tags"))
                 (parent (let ((p (value-of x "parent")))
                           (if (eq? p absent) #f (parent-value p)))))
             (cond ((not (if (eq? kind absent)
@@ -322,6 +337,7 @@
                            ((<= bytes body-cap)
                             (make-content (if (eq? kind absent) #f kind) title body type
                                           (if (eq? props absent) 'absent props)
+                                          (if (eq? tags absent) 'absent tags)
                                           parent))
                            (else 'too-large))))))
           'invalid)))
@@ -555,10 +571,17 @@
   ;; each end.
   (define link-events '(link unlink))
 
-  ;; The lifecycle table's ten events: the five, write (a replace, a
-  ;; revision's restore or a Task's transition, slice 6), the two moves and
-  ;; the two links. The document's columns.
-  (define table-events (append lifecycle-events '(write) move-events link-events))
+  ;; tag-events : (Listof Symbol)
+  ;; The one a tag's rename or removal sends (slice 7a's review, blocker
+  ;; 10): retag, to each node a step touches. No request for one node sends
+  ;; it, so node-command answers it not; the store's step takes a node in
+  ;; every state of retag-states.
+  (define tag-events '(retag))
+
+  ;; The lifecycle table's eleven events: the five, write (a replace, a
+  ;; revision's restore or a Task's transition, slice 6), the two moves, the
+  ;; two links and retag. The document's columns.
+  (define table-events (append lifecycle-events '(write) move-events link-events tag-events))
 
   ;; event-op : Symbol -> String
   ;; An event's op in the change feed: a lifecycle event's own name, "move"
@@ -573,15 +596,17 @@
     (symbol->string event))
 
   ;; lifecycle-rows : (Listof Row)
-  ;; The thirty rows, three states by ten events, by state and then by
-  ;; event, as the plans' tables read. Row is (state event next command
-  ;; update), as (techo machine) takes it. write is a replace, a revision's
-  ;; restore or a Task's transition (task-command, in (techo tasks), asks
-  ;; for it as a replace). A refusal and allow leave the state; untrash always
-  ;; lands on active (L2); a purge is only from trashed (L8); a trashed node
-  ;; is not moved, but its children may be (T8, slice 5a's review); a
-  ;; trashed node takes no new link, and a link is removed in any state
-  ;; (K6). A state here has no data.
+  ;; The thirty-three rows, three states by eleven events, by state and
+  ;; then by event, as the plans' tables read. Row is (state event next
+  ;; command update), as (techo machine) takes it. write is a replace, a
+  ;; revision's restore or a Task's transition (task-command, in (techo
+  ;; tasks), asks for it as a replace). A refusal and allow leave the
+  ;; state; untrash always lands on active (L2); a purge is only from
+  ;; trashed (L8); a trashed node is not moved, but its children may be
+  ;; (T8, slice 5a's review); a trashed node takes no new link, and a link
+  ;; is removed in any state (K6); a tag's step takes a node in any state,
+  ;; else a tag left on a trashed node would never let the step end (slice
+  ;; 7a). A state here has no data.
   (define lifecycle-rows
     (list
      (list 'active 'archive 'archived 'set-state same)
@@ -594,6 +619,7 @@
      (list 'active 'move-children 'active 'allow same)
      (list 'active 'link 'active 'allow same)
      (list 'active 'unlink 'active 'allow same)
+     (list 'active 'retag 'active 'allow same)
      (list 'archived 'archive 'archived 'refuse-wrong-state same)
      (list 'archived 'unarchive 'active 'set-state same)
      (list 'archived 'trash 'trashed 'set-state same)
@@ -604,6 +630,7 @@
      (list 'archived 'move-children 'archived 'allow same)
      (list 'archived 'link 'archived 'allow same)
      (list 'archived 'unlink 'archived 'allow same)
+     (list 'archived 'retag 'archived 'allow same)
      (list 'trashed 'archive 'trashed 'refuse-wrong-state same)
      (list 'trashed 'unarchive 'trashed 'refuse-wrong-state same)
      (list 'trashed 'trash 'trashed 'refuse-wrong-state same)
@@ -613,10 +640,12 @@
      (list 'trashed 'move 'trashed 'refuse-wrong-state same)
      (list 'trashed 'move-children 'trashed 'allow same)
      (list 'trashed 'link 'trashed 'refuse-wrong-state same)
-     (list 'trashed 'unlink 'trashed 'allow same)))
+     (list 'trashed 'unlink 'trashed 'allow same)
+     (list 'trashed 'retag 'trashed 'allow same)))
 
   ;; lifecycle-cant-happen : (Listof (List StateKind EventKind String))
-  ;; purged's ten cells, each with its reason. purged is the end: it has no row.
+  ;; purged's eleven cells, each with its reason. purged is the end: it has
+  ;; no row.
   (define lifecycle-cant-happen
     '((purged archive "a purged node is found as none, so its state is never stepped")
       (purged unarchive "a purged node is found as none, so its state is never stepped")
@@ -627,15 +656,24 @@
       (purged move "a purged node is found as none, so its state is never stepped")
       (purged move-children "a purged node is found as none, so its state is never stepped")
       (purged link "a purged node is found as none, so its state is never stepped")
-      (purged unlink "a purged node is found as none, so its state is never stepped")))
+      (purged unlink "a purged node is found as none, so its state is never stepped")
+      (purged retag "a purge deletes the node's tags, so no step of a tag finds it")))
 
   (define lifecycle-machine (make-machine lifecycle-rows))
+
+  ;; retag-states : (Listof Symbol)
+  ;; The states in which the table allows retag, in its order, read from
+  ;; its rows: those a step of a tag's rename or removal takes a node in.
+  ;; The store's statement names them; a test holds the two equal.
+  (define retag-states
+    (map car (filter (lambda (r) (and (eq? (cadr r) 'retag) (eq? (cadddr r) 'allow)))
+                     lifecycle-rows)))
 
   ;; lifecycle-step : Symbol Symbol -> (values Symbol Symbol)
   ;; The state and the event to the next state and the command. Commands:
   ;; set-state purge allow refuse-wrong-state. An assertion violation, who
   ;; 'machine-step, its irritants the state and the event, for a pair with
-  ;; no row: purged's ten, and what is no state or event of the table.
+  ;; no row: purged's eleven, and what is no state or event of the table.
   (define (lifecycle-step state event)
     (let-values (((next command)
                   (machine-step lifecycle-machine (cons state #f) (cons event #f))))
@@ -799,8 +837,10 @@
   ;; new parent (parent-verdict's), and whether the node has children. The
   ;; event is one of D5's five, one of lifecycle-events, move or
   ;; move-children; never one of link-events, which link-command answers
-  ;; (slice 5b's review, blocker 5). Answers the command to perform and,
-  ;; for set-state only, the state to store; else #f. In this order
+  ;; (slice 5b's review, blocker 5), nor retag, which no request for one
+  ;; node sends (slice 7a's review, blocker 10). Answers the command to
+  ;; perform and, for set-state only, the state to store; else #f. In
+  ;; this order
   ;; (ADR-0007, amended 2026-11-26: stale, the state, the parent, the
   ;; children):
   ;;   none    create answers the verdict's answer, insert for ok; D5's
@@ -826,8 +866,8 @@
   ;; refuse-invalid-parent refuse-would-loop refuse-has-children.
   ;; An assertion violation, who 'node-command:
   ;;   - its irritants the five arguments, for a cell that cannot happen: an
-  ;;     event no request sends it, link and unlink among them, whatever was
-  ;;     found; a Found of none of the three; D5's three
+  ;;     event no request sends it, link, unlink and retag among them,
+  ;;     whatever was found; a Found of none of the three; D5's three
   ;;     (none with replace-other-kind or restore, match with create),
   ;;     whatever the state; match with a state not active, archived or
   ;;     trashed (a purged node is found as none);
@@ -900,11 +940,12 @@
      "`write` is a replace, a revision's restore or a Task's transition. `move` puts\n"
      "the node under a new parent; `move-children` moves its children and leaves the\n"
      "node as it is. `link` makes a link with the node at either end, and `unlink`\n"
-     "removes one. A refusal and `allow` leave the state.\n\n"
-     "One function, `node-command`, answers every request but a link's and a Task's\n"
-     "transition from this table and the write machine's, with two facts more: the\n"
-     "verdict on the new parent, and whether the node has children. It looks first\n"
-     "at what the job found:\n\n"
+     "removes one. `retag` is a step of a tag's rename or removal. A refusal and\n"
+     "`allow` leave the state.\n\n"
+     "One function, `node-command`, answers every request but a link's, a Task's\n"
+     "transition and a tag's step from this table and the write machine's, with two\n"
+     "facts more: the verdict on the new parent, and whether the node has children.\n"
+     "It looks first at what the job found:\n\n"
      "- `none`: the write machine's answer. A create's is the verdict's: an insert\n"
      "  when it is `ok`. A state change, a move and a bulk move are a 404.\n"
      "- `differ`: a 412, whatever the state. Stale comes before the state, and a\n"
@@ -925,6 +966,12 @@
      "`task-command` in `(techo tasks)`, which asks `node-command` for a replace, so\n"
      "they take this table's `write`: a trashed Task takes none, and an archived one\n"
      "does. Then it asks the kind, then the task's own table, [task.md](task.md).\n\n"
+     "A tag's step touches each node that carries the tag in a state that allows\n"
+     "`retag`: every live state, so that a tag left on a trashed node cannot keep\n"
+     "the steps from ending. The store's step names those states, `retag-states`,\n"
+     "read from this table. A step names no one node, so `node-command` answers no\n"
+     "`retag`: for it the cells cannot happen. A purge deletes the node's tags, so\n"
+     "no step finds a purged node.\n\n"
      "```mermaid\n"
      (machine->mermaid lifecycle-machine)
      "```\n\n"

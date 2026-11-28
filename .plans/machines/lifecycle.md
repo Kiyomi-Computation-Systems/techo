@@ -7,12 +7,13 @@ A node starts `active`, and `purged` is the one end.
 `write` is a replace, a revision's restore or a Task's transition. `move` puts
 the node under a new parent; `move-children` moves its children and leaves the
 node as it is. `link` makes a link with the node at either end, and `unlink`
-removes one. A refusal and `allow` leave the state.
+removes one. `retag` is a step of a tag's rename or removal. A refusal and
+`allow` leave the state.
 
-One function, `node-command`, answers every request but a link's and a Task's
-transition from this table and the write machine's, with two facts more: the
-verdict on the new parent, and whether the node has children. It looks first
-at what the job found:
+One function, `node-command`, answers every request but a link's, a Task's
+transition and a tag's step from this table and the write machine's, with two
+facts more: the verdict on the new parent, and whether the node has children.
+It looks first at what the job found:
 
 - `none`: the write machine's answer. A create's is the verdict's: an insert
   when it is `ok`. A state change, a move and a bulk move are a 404.
@@ -38,27 +39,34 @@ A Task's `done`, `wontdo` and `reopen` are answered by
 they take this table's `write`: a trashed Task takes none, and an archived one
 does. Then it asks the kind, then the task's own table, [task.md](task.md).
 
+A tag's step touches each node that carries the tag in a state that allows
+`retag`: every live state, so that a tag left on a trashed node cannot keep
+the steps from ending. The store's step names those states, `retag-states`,
+read from this table. A step names no one node, so `node-command` answers no
+`retag`: for it the cells cannot happen. A purge deletes the node's tags, so
+no step finds a purged node.
+
 ```mermaid
 stateDiagram-v2
     active --> archived: archive
-    active --> active: unarchive, untrash, purge, write, move, move-children, link, unlink
+    active --> active: unarchive, untrash, purge, write, move, move-children, link, unlink, retag
     active --> trashed: trash
-    archived --> archived: archive, untrash, purge, write, move, move-children, link, unlink
+    archived --> archived: archive, untrash, purge, write, move, move-children, link, unlink, retag
     archived --> active: unarchive
     archived --> trashed: trash
-    trashed --> trashed: archive, unarchive, trash, write, move, move-children, link, unlink
+    trashed --> trashed: archive, unarchive, trash, write, move, move-children, link, unlink, retag
     trashed --> active: untrash
     trashed --> purged: purge
 ```
 
 ## The answer each cell names
 
-| State | archive | unarchive | trash | untrash | purge | write | move | move-children | link | unlink |
-|---|---|---|---|---|---|---|---|---|---|---|
-| active | -> archived, set-state | refuse-wrong-state | -> trashed, set-state | refuse-wrong-state | refuse-wrong-state | allow | allow | allow | allow | allow |
-| archived | refuse-wrong-state | -> active, set-state | -> trashed, set-state | refuse-wrong-state | refuse-wrong-state | allow | allow | allow | allow | allow |
-| trashed | refuse-wrong-state | refuse-wrong-state | refuse-wrong-state | -> active, set-state | -> purged, purge | refuse-wrong-state | refuse-wrong-state | allow | refuse-wrong-state | allow |
-| purged | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen |
+| State | archive | unarchive | trash | untrash | purge | write | move | move-children | link | unlink | retag |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| active | -> archived, set-state | refuse-wrong-state | -> trashed, set-state | refuse-wrong-state | refuse-wrong-state | allow | allow | allow | allow | allow | allow |
+| archived | refuse-wrong-state | -> active, set-state | -> trashed, set-state | refuse-wrong-state | refuse-wrong-state | allow | allow | allow | allow | allow | allow |
+| trashed | refuse-wrong-state | refuse-wrong-state | refuse-wrong-state | -> active, set-state | -> purged, purge | refuse-wrong-state | refuse-wrong-state | allow | refuse-wrong-state | allow | allow |
+| purged | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen | cannot happen |
 
 ## The answer each verdict names
 
@@ -89,3 +97,4 @@ top level, then `missing`, `trashed`, `loop`, `wrong-kind` and `too-deep`; else
 | purged | move-children | a purged node is found as none, so its state is never stepped |
 | purged | link | a purged node is found as none, so its state is never stepped |
 | purged | unlink | a purged node is found as none, so its state is never stepped |
+| purged | retag | a purge deletes the node's tags, so no step of a tag finds it |

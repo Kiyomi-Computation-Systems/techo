@@ -271,10 +271,10 @@
 ;; The shipped schema, as the file's facts count it: accounts, api_keys, the
 ;; index, and the automatic indexes of the primary and unique keys, and migration 5's index.
 (define shipped-latest (latest-version migrations))
-(define shipped-objects 17)
+(define shipped-objects 19)
 ;; A version no shipped migration reaches: what "a file from a newer Techo" holds.
 (define ahead-version (+ shipped-latest 1))
-(define shipped-tables '("accounts" "api_keys" "changes" "links" "nodes" "revisions"))
+(define shipped-tables '("accounts" "api_keys" "changes" "links" "node_tags" "nodes" "revisions"))
 
 ;; applied-lines : (Listof Natural) -> (Listof String)
 ;; The lines `techo migrate` prints for the versions it applied.
@@ -2026,6 +2026,84 @@
         (call! ka "pw:l-in-s" 'get (string-append (path (pw-id 14)) "/links?direction=in") '() #f)
         (call! ka "pw:l-list" 'get "/v1/nodes?limit=100" '() #f)))))
 
+;; --- tags over the wire (slice 7a): the observing ---------------------------
+
+(define nd-tg-a "tags pw of the first")
+(define nd-tg-b "tags pw of the second")
+(define (tg-id n)
+  (string-append "0190b3a4-5c6d-7e8f-9a0b-0000000200" (if (< n 16) "0" "") (string-downcase (number->string n 16))))
+
+;; tg-doc : (U String #f) String (U String #f) -> String
+;; A note's JSON: kind (none for a replace), a title, and TAGS, JSON text, when there are any.
+(define (tg-doc kind title tags)
+  (string-append "{" (if kind (string-append "\"kind\":\"" kind "\",") "")
+                 "\"title\":\"" title "\",\"body\":\"b\",\"content_type\":\"text/plain\""
+                 (if tags (string-append ",\"tags\":" tags) "") "}"))
+
+;; tg-many : Nat -> String    N `tag=` parameters, joined into a query
+(define (tg-many n)
+  (join (map (lambda (i) (string-append "tag=t" (number->string i))) (pw-iota n)) "&"))
+
+;; observe-tags! : String -> Void
+(define (observe-tags! dir)
+  (define db (string-append dir "/tags.db"))
+  (define env (list (string-append "TECHO_DB_PATH=" db)))
+  (define (add! name pw user)
+    (id-of-added (run-cli-in dir name (string-append pw "\n") '() env
+                             (list "user" "add" "--username" user "--email" (string-append user "@example.com")))))
+  (obs-set! "tg:migrate" (car (run-cli-in dir "tgmigrate" "" '() env '("migrate"))))
+  (obs-set! "tg:a-id" (add! "tg-add-a" nd-tg-a "taga"))
+  (obs-set! "tg:b-id" (add! "tg-add-b" nd-tg-b "tagb"))
+  (with-server dir "tgsrv" db #f
+    (lambda (port)
+      (define (key-of email pw)
+        (let* ((r (hcall port 'post "/v1/login" "application/json" (login-json email pw "tags") '()))
+               (k (jget (lg-json r) "key")))
+          (if (string? k) k "techo_missing")))
+      (let* ((ka (key-of "taga@example.com" nd-tg-a))
+             (kb (key-of "tagb@example.com" nd-tg-b))
+             (path (lambda (id) (string-append "/v1/nodes/" id))))
+        (define (call! key name method target headers body)
+          (obs-set! name (attempt (lambda ()
+                                    (hcall port method target (and body "application/json") (or body "")
+                                           (append (if key (bearer key) '()) headers))))))
+        (define (g! name target) (call! ka name 'get target '() #f))
+        (define (mk! name id doc) (call! ka name 'put (path id) nd-create doc))
+        (define (rp! name id rev doc) (call! ka name 'put (path id) (nd-match rev) doc))
+        ;; --- a node's tags: made, kept, cleared
+        (mk! "tg:create" (tg-id 1) (tg-doc "note" "T1" "[\"Work\",\"home life\",\"a\"]"))
+        (g! "tg:get" (path (tg-id 1)))
+        (rp! "tg:rep-keep" (tg-id 1) 1 (tg-doc #f "T1 kept" #f))
+        (g! "tg:get-keep" (path (tg-id 1)))
+        (rp! "tg:rep-clear" (tg-id 1) 2 (tg-doc #f "T1 cleared" "[]"))
+        (g! "tg:get-clear" (path (tg-id 1)))
+        ;; --- the nodes the lists find
+        (mk! "tg:n2" (tg-id 2) (tg-doc "note" "T2" "[\"Work\",\"home life\",\"a\"]"))
+        (mk! "tg:n3" (tg-id 3) (tg-doc "note" "T3" "[\"\x65E5;\x672C;\"]"))
+        (mk! "tg:n4" (tg-id 4) (tg-doc "note" "T4" "[\"c++\"]"))
+        (g! "tg:by-work" "/v1/nodes?tag=WORK")
+        (g! "tg:by-jp" "/v1/nodes?tag=%E6%97%A5%E6%9C%AC")
+        (g! "tg:by-cpp-enc" "/v1/nodes?tag=c%2B%2B")
+        (g! "tg:by-cpp-plus" "/v1/nodes?tag=c++")
+        (g! "tg:by-eleven" (string-append "/v1/nodes?" (tg-many 11)))
+        (g! "tg:by-ten" (string-append "/v1/nodes?" (tg-many 10)))
+        (mk! "tg:tab" (tg-id 5) (tg-doc "note" "T5" "[\"a\\tb\"]"))
+        ;; --- the account's tags
+        (g! "tg:tags" "/v1/tags")
+        (g! "tg:tags-p1" "/v1/tags?limit=1")
+        (g! "tg:tags-p2" "/v1/tags?limit=1&after=a")
+        ;; --- rename, remove, restore
+        (call! ka "tg:rename" 'post "/v1/tags/rename" '() "{\"from\":\"work\",\"to\":\"job\"}")
+        (g! "tg:get-renamed" (path (tg-id 2)))
+        (call! ka "tg:rename-im" 'post "/v1/tags/rename" (nd-match 1) "{\"from\":\"job\",\"to\":\"work\"}")
+        (call! ka "tg:remove" 'post "/v1/tags/remove" '() "{\"tag\":\"job\"}")
+        (g! "tg:get-removed" (path (tg-id 2)))
+        (call! ka "tg:restore" 'post (string-append (path (tg-id 2)) "/revisions/1/restore") (nd-match 3) #f)
+        ;; --- the second account sees none of it
+        (call! kb "tg:b-tags" 'get "/v1/tags" '() #f)
+        (call! kb "tg:b-by-work" 'get "/v1/nodes?tag=work" '() #f)
+        (call! kb "tg:b-by-jp" 'get "/v1/nodes?tag=%E6%97%A5%E6%9C%AC" '() #f)))))
+
 ;; leftovers : String -> (Listof Boolean)
 ;; Whether DB's `-wal` and `-shm` exist.
 (define (leftovers db)
@@ -2072,6 +2150,7 @@
     (observe "tree-run" (observe-tree! dir))
     (observe "links-run" (observe-links! dir))
     (observe "props-run" (observe-props! dir))
+    (observe "tags-run" (observe-tags! dir))
     ;; The command line.
     (set! cli-version (attempt (lambda () (run-cli dir "version" '() '() '("version")))))
     (set! cli-none (attempt (lambda () (run-cli dir "none" '() '() '()))))
@@ -2906,7 +2985,7 @@
 
 (define (nd-j k) (if (lg-ok? k) (lg-json (obs k)) (obs k)))
 (define (nd-h k name) (if (lg-ok? k) (lg-header (obs k) name) (obs k)))
-(define node-members '("id" "kind" "state" "parent" "title" "body" "content_type" "props" "revision" "created" "updated"))
+(define node-members '("id" "kind" "state" "parent" "title" "body" "content_type" "props" "tags" "revision" "created" "updated"))
 (define nd-problem "application/problem+json")
 
 (test-equal "nodes: the run's setup worked: migrated, two accounts, the server stopped with 0 and raised nothing"
@@ -2977,7 +3056,7 @@
   (list (lg-st "nd:b-list") (jitems (nd-j "nd:b-list")) (lg-st "nd:b-create") (lg-code "nd:b-create")))
 
 (test-equal "nodes: the first account's list holds the node at revision 3, with no body member"
-  (list 200 (list nd-n1) '("id" "kind" "state" "parent" "title" "content_type" "props" "revision" "created" "updated") '(3))
+  (list 200 (list nd-n1) '("id" "kind" "state" "parent" "title" "content_type" "props" "tags" "revision" "created" "updated") '(3))
   (let ((is (jitems (nd-j "nd:a-list"))))
     (list (lg-st "nd:a-list")
           (if (list? is) (map (lambda (i) (jget i "id")) is) is)
@@ -3063,7 +3142,7 @@
 
 ;; --- the node lifecycle over the wire (slice 4b) ---------------------------
 
-(define state-less-members '("id" "kind" "state" "parent" "title" "content_type" "props" "revision" "created" "updated"))
+(define state-less-members '("id" "kind" "state" "parent" "title" "content_type" "props" "tags" "revision" "created" "updated"))
 (define (lc-ids k)
   (let ((is (jitems (nd-j k)))) (if (list? is) (map (lambda (i) (jget i "id")) is) is)))
 (define (lc-problem status code)
@@ -3497,7 +3576,7 @@
   (list (ln-items "ln:in-y-1") (ln-created "ln:in-y-1") (ln-items "ln:out-y-0") (ln-items "ln:out-x-1")))
 
 (test-equal "links: a page's node is the nodes list's item for it, byte for byte, without a body"
-  (list #t 10)
+  (list #t 11)
   (let* ((item (car (jitems (nd-j "ln:in-y-1"))))
          (node (jget item "node"))
          (listed (filter (lambda (n) (equal? (jget n "id") ln-x)) (jitems (nd-j "ln:nodes-list")))))
@@ -3694,7 +3773,7 @@
 (define (pw-prop k m) (jget (pw-props k) m))
 (define (pw-rev k) (jget (nd-j k) "revision"))
 (define (pw-etag k) (nd-h k "etag"))
-(define head-members '("id" "kind" "state" "parent" "title" "content_type" "props" "revision" "created" "updated"))
+(define head-members '("id" "kind" "state" "parent" "title" "content_type" "props" "tags" "revision" "created" "updated"))
 (define (pw-text k) (if (lg-ok? k) (lg-text (obs k)) (obs k)))
 ;; pw-norm : Json -> Json    objects' members sorted by name, to compare two texts as values
 (define (pw-norm j)
@@ -3944,6 +4023,91 @@
          (item (lambda (id) (let ((m (filter (lambda (n) (equal? (jget n "id") id)) items))) (if (pair? m) (car m) #f)))))
     (list (jget (item (pw-id 14)) "props") (jget (jget (item (pw-id 1)) "props") "status") (jget (item (pw-id 11)) "props")
           (equal? (item (pw-id 14)) (jget (cadr (jitems (nd-j "pw:l-out"))) "node")))))
+
+;; --- tags, over real HTTP (slice 7a) ----------------------------------------
+
+(define (tg-tags k) (jget (nd-j k) "tags"))
+(define (tg-ids k) (let ((is (jitems (nd-j k)))) (if (list? is) (map (lambda (i) (jget i "id")) is) is)))
+(define (tg-pairs k)
+  (let ((is (jitems (nd-j k))))
+    (if (list? is) (map (lambda (i) (list (jget i "tag") (jget i "count"))) is) is)))
+(define tg-bad (pw-problem 400 "invalid_request"))
+(define tg-n2 (tg-id 2))
+(define tg-n3 (tg-id 3))
+(define tg-n4 (tg-id 4))
+
+(test-equal "tags: the run's setup worked: migrated, two accounts, the server stopped with 0 and raised nothing"
+  '(0 #t #t 0 unobserved)
+  (list (obs "tg:migrate")
+        (and (string? (obs "tg:a-id")) (= 36 (string-length (obs "tg:a-id"))))
+        (and (string? (obs "tg:b-id")) (not (equal? (obs "tg:a-id") (obs "tg:b-id"))))
+        (obs "tgsrv:exit") (obs "tgsrv:raised")))
+
+(test-equal "tags: a create with \"Work\", \"home life\" and \"a\" is 201 and answers the tags folded and sorted"
+  (list 201 (vector "a" "home-life" "work"))
+  (list (lg-st "tg:create") (tg-tags "tg:create")))
+
+(test-equal "tags: a GET of the node shows the same tags, as the create did"
+  (list 200 (vector "a" "home-life" "work") #t)
+  (list (lg-st "tg:get") (tg-tags "tg:get") (equal? (nd-j "tg:get") (nd-j "tg:create"))))
+
+(test-equal "tags: a replace with no tags keeps them (revision 2); a replace with [] clears them (revision 3), and a GET agrees"
+  (list 200 (vector "a" "home-life" "work") (vector "a" "home-life" "work") 200 (vector) 3 (vector))
+  (list (lg-st "tg:rep-keep") (tg-tags "tg:rep-keep") (tg-tags "tg:get-keep")
+        (lg-st "tg:rep-clear") (tg-tags "tg:rep-clear") (jget (nd-j "tg:get-clear") "revision") (tg-tags "tg:get-clear")))
+
+(test-equal "tags: GET /v1/nodes?tag=WORK finds the node that has work, and not the one that was cleared"
+  (list 200 (list tg-n2))
+  (list (lg-st "tg:by-work") (tg-ids "tg:by-work")))
+
+(test-equal "tags: a percent-encoded non-ASCII tag in the query finds its node"
+  (list 200 (list tg-n3) (vector "\x65E5;\x672C;"))
+  (list (lg-st "tg:by-jp") (tg-ids "tg:by-jp") (tg-tags "tg:n3")))
+
+(test-equal "tags: ?tag=c%2B%2B finds the node tagged c++, and ?tag=c++ (a plus is a space) does not"
+  (list 200 (list tg-n4) 200 '())
+  (list (lg-st "tg:by-cpp-enc") (tg-ids "tg:by-cpp-enc") (lg-st "tg:by-cpp-plus") (tg-ids "tg:by-cpp-plus")))
+
+(test-equal "tags: ten tag= values are 200 and eleven are 400 invalid_request"
+  (list 200 tg-bad)
+  (list (lg-st "tg:by-ten") (pw-got "tg:by-eleven")))
+
+(test-equal "tags: a create with a tab in a tag is 400 invalid_request"
+  tg-bad
+  (pw-got "tg:tab"))
+
+(test-equal "tags: GET /v1/tags lists the account's tags in order with their counts"
+  '(200 (("a" 1) ("c++" 1) ("home-life" 1) ("work" 1) ("\x65E5;\x672C;" 1)))
+  (list (lg-st "tg:tags") (tg-pairs "tg:tags")))
+
+(test-equal "tags: GET /v1/tags pages with limit=1 and after"
+  '((("a" 1)) "a" (("c++" 1)) "c++")
+  (list (tg-pairs "tg:tags-p1") (jget (nd-j "tg:tags-p1") "next")
+        (tg-pairs "tg:tags-p2") (jget (nd-j "tg:tags-p2") "next")))
+
+(test-equal "tags: a rename of work to job is 200 {\"renamed\":1,\"left\":0} with no ETag; the node is at revision 2 and holds job"
+  (list 200 '(("renamed" . 1) ("left" . 0)) #f 2 (vector "a" "home-life" "job"))
+  (list (lg-st "tg:rename") (nd-j "tg:rename") (nd-h "tg:rename" "etag")
+        (jget (nd-j "tg:get-renamed") "revision") (tg-tags "tg:get-renamed")))
+
+(test-equal "tags: a rename with an If-Match header is 400 invalid_request"
+  tg-bad
+  (pw-got "tg:rename-im"))
+
+(test-equal "tags: a remove of job is 200 {\"removed\":1,\"left\":0} with no ETag; the node is at revision 3 without it"
+  (list 200 '(("removed" . 1) ("left" . 0)) #f 3 (vector "a" "home-life"))
+  (list (lg-st "tg:remove") (nd-j "tg:remove") (nd-h "tg:remove" "etag")
+        (jget (nd-j "tg:get-removed") "revision") (tg-tags "tg:get-removed")))
+
+(test-equal "tags: a restore of revision 1 brings the original tags back, as revision 4"
+  (list 200 4 (vector "a" "home-life" "work"))
+  (list (lg-st "tg:restore") (jget (nd-j "tg:restore") "revision") (tg-tags "tg:restore")))
+
+(test-equal "tags: the second account sees none of these tags in GET /v1/tags and nothing under ?tag="
+  '(200 () 200 () 200 ())
+  (list (lg-st "tg:b-tags") (tg-pairs "tg:b-tags")
+        (lg-st "tg:b-by-work") (tg-ids "tg:b-by-work") (lg-st "tg:b-by-jp") (tg-ids "tg:b-by-jp")))
+
 
 (test-end "integration")
 

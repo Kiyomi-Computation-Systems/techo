@@ -1,18 +1,19 @@
 #!r6rs
 ;;; (techo node-routes): the node routes, slice 4's (D3), slice 4b's
 ;;; lifecycle (L3, L6), slice 5a's tree (T3, T4, T7, T9), slice 5b's links
-;;; (K3), and slice 6's props and a Task's three commands (P7, P10, P11).
-;;; The imperative shell.
+;;; (K3), slice 6's props and a Task's three commands (P7, P10, P11), and
+;;; slice 7a's tags (G1 to G8). The imperative shell.
 ;;;
 ;;;   PUT    /v1/nodes/:id                       create, with If-None-Match: * (201), under
 ;;;                                              the JSON's parent when it names one;
 ;;;                                              or replace, with If-Match: "N" (200)
 ;;;   GET    /v1/nodes/:id                       the node, with its ETag
 ;;;   DELETE /v1/nodes/:id                       purge, with If-Match: "N" (204, no body)
-;;;   GET    /v1/nodes?state=&parent=            the account's nodes in one state (active
+;;;   GET    /v1/nodes?state=&parent=&tag=       the account's nodes in one state (active
 ;;;                                              unless named): all of them, a node's
-;;;                                              children, or the top level (null); paged,
-;;;                                              no bodies
+;;;                                              children, or the top level (null); with
+;;;                                              ?tag=, repeated, those that carry every
+;;;                                              tag named; paged, no bodies
 ;;;   GET    /v1/nodes/:id/revisions             its snapshots, newest first, no bodies
 ;;;   GET    /v1/nodes/:id/revisions/:n          one snapshot, whole
 ;;;   POST   /v1/nodes/:id/revisions/:n/restore  snapshot n copied as a new revision (200)
@@ -36,9 +37,17 @@
 ;;;   POST   /v1/nodes/:id/done                  a Task's status, with If-Match: "N": 200,
 ;;;   POST   /v1/nodes/:id/wontdo                the node without its body, and its ETag
 ;;;   POST   /v1/nodes/:id/reopen
+;;;   GET    /v1/tags                            the account's tags, each with its count
+;;;                                              stopped at 1,000; paged, after a tag
+;;;   POST   /v1/tags/rename                     {"from","to"}: a step of at most 500 nodes,
+;;;                                              200, {"renamed": N, "left": M}, no ETag
+;;;   POST   /v1/tags/remove                     {"tag"}: a step, 200, {"removed": N,
+;;;                                              "left": M}, no ETag
 ;;;
 ;;; Every node in an answer has its parent after its state: the id, or
-;;; null at the top level. A snapshot has none. A node's props and a
+;;; null at the top level. A snapshot has none. A node's tags follow its
+;;; props, and a whole snapshot's: an array of stored forms, sorted, []
+;;; for none; the revisions list shows none. A node's props and a
 ;;; snapshot's are as stored, with the kind's defaults filled in by
 ;;; stored-props->json: a Task's status, TODO, when none is stored (P9). A
 ;;; snapshot is shown by its node's kind, which its job reads with the
@@ -56,29 +65,34 @@
 ;;;
 ;;;   1. the key's shape (401), by (techo auth) itself, with no job;
 ;;;   2. the path's id, the path's revision, a link's type and target,
-;;;      `limit`, `after`, `state`, `parent`, `direction`, `type` (400); a
-;;;      link whose source is its own target, and a list's `after` of
-;;;      another type than its `type` (400);
+;;;      `limit`, `after`, `state`, `parent`, `tag`, `direction`, `type`
+;;;      (400); a link whose source is its own target, and a list's `after`
+;;;      of another type than its `type` (400);
 ;;;   3. the preconditions: 428 for none, 400 for a bad shape (and for
-;;;      If-None-Match on any write but a create); a link takes none, and
-;;;      If-Match or If-None-Match on its PUT or DELETE is the 400 (on the
-;;;      GET, as on every GET, they are ignored);
+;;;      If-None-Match on any write but a create); a link and a tag's
+;;;      command take none, and If-Match or If-None-Match on one is the 400,
+;;;      never 428 (on a GET, as on every GET, they are ignored);
 ;;;   4. the key of a write with a body (401), by a read job of its own;
 ;;;   5. its Content-Type (415), then its body through wrap-json-body, under
-;;;      request-cap for a PUT and move-body-cap for a move (413; 400
-;;;      invalid_json for JSON that does not parse), then for a PUT
-;;;      parse-content (400), then request-props (400: the props, for the
-;;;      kind named, or for every kind when a replace names none), then a
-;;;      body over body-cap (413 payload_too_large), then props over
-;;;      props-cap (413 props_too_large); for a move, parse-move-body (400).
-;;;      Props are judged here, before the job (the plan's review, blocker
-;;;      1): a request refused for its props makes no write job (R15);
+;;;      request-cap for a PUT and move-body-cap for a move and a tag's
+;;;      command (413; 400 invalid_json for JSON that does not parse), then
+;;;      for a PUT parse-content (400), then request-props (400: the props,
+;;;      for the kind named, or for every kind when a replace names none),
+;;;      then request-tags (400), then a body over body-cap (413
+;;;      payload_too_large), then props over props-cap (413
+;;;      props_too_large); for a move, parse-move-body (400); for a tag's
+;;;      command, parse-rename-body or parse-remove-body (400). Props and
+;;;      tags are judged here, before the job (the plans' reviews): a
+;;;      request refused for its props or its tags makes no write job (R15,
+;;;      L10);
 ;;;   6. the job: the key (401; again for a write with a body, as it may
 ;;;      have been revoked while the body came), then the work. A PUT's:
 ;;;      404, 412, wrong_state, kind_fixed, then the props' refusal
 ;;;      (invalid_request for props only another kind takes, when a replace
 ;;;      named none; props_too_large; status_fixed). A transition's: 404,
-;;;      412, wrong_state, not_a_task, wrong_status.
+;;;      412, wrong_state, not_a_task, wrong_status. A list's with a
+;;;      parent: 404 for none. A tag's command's: the step, never 404 or
+;;;      412.
 ;;;
 ;;; A write with a body reads its time once the body has come, so a slow
 ;;; upload is stamped with when it arrived; a restore, a state change, a
@@ -114,6 +128,16 @@
 ;;; children that may move under the new parent, each at its own revision,
 ;;; a revision and a change row each; the node itself is not written.
 ;;;
+;;; A node's tags (slice 7a) are judged on the loop's thread by (techo
+;;; tags), and only their stored forms enter a job. A create stores the
+;;; request's ('() for none); a replace stores the list sent, or keeps the
+;;; node's when none was sent (G2); a restore stores the snapshot's, as
+;;; stored, never folded again (L11); a Task's transition keeps them. A
+;;; filter's tags and a command's are judged the same way, before any job.
+;;; A tag's command is one step of the store's rename-tag! or remove-tag!,
+;;; of at most tag-step-cap nodes, in every state retag-states names: each
+;;; touched node is bumped with a change row, op tags, and no snapshot.
+;;;
 ;;; A link's work finds the source's head, for a PUT the target's too (a
 ;;; DELETE reads no target: a link's ends are live nodes of its owner, so
 ;;; "no such link" covers a bad one), and whether the link is there. It
@@ -131,13 +155,14 @@
 ;;;
 ;;; A job's work closes over plain data only: the id, the precondition, the
 ;;; kind, title, body and content type, the props' Drafts (request-props'
-;;; answer: a canonical text, or a Task's record of checked values), a
-;;; parent's id, the path's revision, the event, the time, a link's type,
-;;; target, direction and cursor. Never the request, never the parsed JSON,
-;;; never the props as read. Nothing waits in a job: a body is read in its
-;;; Reader, between its two jobs. Nothing raised here carries a title, a
-;;; body or props. The database is reached only through
-;;; db-read-as, db-write-as, db-write-with-body-as and (techo node-store).
+;;; answer: a canonical text, or a Task's record of checked values), the
+;;; tags' stored forms, a parent's id, the path's revision, the event, the
+;;; time, a link's type, target, direction and cursor. Never the request,
+;;; never the parsed JSON, never the props or the tags as read. Nothing
+;;; waits in a job: a body is read in its Reader, between its two jobs.
+;;; Nothing raised here carries a title, a body, props or a tag. The
+;;; database is reached only through db-read-as, db-write-as,
+;;; db-write-with-body-as and (techo node-store).
 (library (techo node-routes)
   (export node-routes)
   (import (rnrs)
@@ -148,7 +173,7 @@
           (only (techo keys) parse-limit)
           (only (techo store) account-id)
           (only (techo auth) make-plan db-read-as db-write-as db-write-with-body-as)
-          (only (techo requests) query-one take json-type? bad-request)
+          (only (techo requests) query-one query-all take json-type? bad-request)
           (only (techo nodes) request-cap parse-node-id node-id->string parse-revision etag
                 precondition parse-content content-kind content-title content-body
                 content-content-type content-parent found found-for-create
@@ -158,16 +183,19 @@
           (only (techo props) request-props draft-for props-command restore-props transition-props
                 stored-props->json)
           (only (techo tasks) task-command)
+          (only (techo tags) request-tags filter-tags normalise-tag parse-rename-body
+                parse-remove-body json->tags tag-step-cap)
           (only (techo links) parse-link-type parse-type-param parse-direction parse-link-cursor
                 link-cursor link-command)
           (only (techo node-store) node-in-use? node-head props-of node-of-owner nodes-page
                 snapshot-exists? snapshot-of snapshots-page insert-node! write-node!
                 set-node-state! purge-node! move-node! ancestors has-children? count-children
                 children-heads link-of insert-link! delete-link! links-page
+                tags-page rename-tag! remove-tag!
                 node-id node-kind node-title node-body node-content-type node-props
-                node-revision node-created node-updated node-state node-parent
+                node-revision node-created node-updated node-state node-parent node-tags
                 snapshot-revision snapshot-title snapshot-body snapshot-content-type
-                snapshot-props snapshot-created))
+                snapshot-props snapshot-created snapshot-tags))
 
   ;; Runner = ((Tx -> Any) -> Any)
   ;; Clock = (-> Integer)
@@ -178,8 +206,10 @@
   ;; id (lower case), kind, state (the stored one), parent (its id in lower
   ;; case, or null at the top level), title, body when BODY?, content_type,
   ;; props (as stored, with its kind's defaults filled in: a Task's status),
-  ;; revision, created, updated. Never num, the owner or the author. Stored
-  ;; props that are no JSON object raise, naming none of them: a 500.
+  ;; tags (its rows, sorted, as a vector: the writer writes a list as an
+  ;; object, the empty one too, traps.md), revision, created, updated.
+  ;; Never num, the owner or the author. Stored props that are no JSON
+  ;; object raise, naming none of them: a 500.
   (define (node->json n body?)
     (append (list (cons "id" (node-id->string (node-id n)))
                   (cons "kind" (node-kind n))
@@ -189,20 +219,25 @@
             (if body? (list (cons "body" (node-body n))) '())
             (list (cons "content_type" (node-content-type n))
                   (cons "props" (stored-props->json (node-kind n) (node-props n)))
+                  (cons "tags" (list->vector (node-tags n)))
                   (cons "revision" (node-revision n))
                   (cons "created" (node-created n))
                   (cons "updated" (node-updated n)))))
 
   ;; snapshot->json : String Snapshot Boolean -> Alist
   ;; revision, title, body when BODY?, content_type, props (as stored, with
-  ;; the defaults of KIND, its node's kind, filled in), created.
+  ;; the defaults of KIND, its node's kind, filled in), tags when BODY? (the
+  ;; snapshot whole: its stored text read by json->tags, as a vector; a
+  ;; list page has none), created. Stored tags that are no JSON array of
+  ;; strings raise, naming none of them: a 500.
   (define (snapshot->json kind s body?)
     (append (list (cons "revision" (snapshot-revision s))
                   (cons "title" (snapshot-title s)))
             (if body? (list (cons "body" (snapshot-body s))) '())
             (list (cons "content_type" (snapshot-content-type s))
-                  (cons "props" (stored-props->json kind (snapshot-props s)))
-                  (cons "created" (snapshot-created s)))))
+                  (cons "props" (stored-props->json kind (snapshot-props s))))
+            (if body? (list (cons "tags" (list->vector (json->tags (snapshot-tags s))))) '())
+            (list (cons "created" (snapshot-created s)))))
 
   ;; node-answer : Natural Node -> Res     STATUS, the node whole, its ETag
   (define (node-answer status n)
@@ -274,6 +309,18 @@
   ;; The next of a page ending on ROW: its type and the other node's id.
   (define (link-item-next row) (link-cursor (car row) (node-id (caddr row))))
 
+  ;; tag-item->json : (Pair String Natural) -> Alist
+  ;; A tags list's item, of tags-page's row: tag, and count, the store's
+  ;; count stopped at 1,000 (H6).
+  (define (tag-item->json row) (list (cons "tag" (car row)) (cons "count" (cdr row))))
+
+  ;; retagged : String -> ((Pair Natural Natural) -> Res)
+  ;; A tag's command's answer, of its step's (touched . left): 200,
+  ;; {WORD: touched, "left": left}, WORD renamed or removed. No ETag: a step
+  ;; names no one node.
+  (define (retagged word)
+    (lambda (step) (make-json-res 200 (list (cons word (car step)) (cons "left" (cdr step))))))
+
   ;;; The work of a write, in its job
 
   ;; refusal-codes : (Listof (Pair CommandKind Symbol))
@@ -335,7 +382,8 @@
       verdict))
 
   ;; put-work : Bytevector Precondition (U String #f) String String String
-  ;;            (U (Listof (Pair String Draft)) 'absent) (U Bytevector #f) Natural -> Work
+  ;;            (U (Listof (Pair String Draft)) 'absent) (U (Listof String) 'keep)
+  ;;            (U Bytevector #f) Natural -> Work
   ;; A PUT's work: what the job found (node-in-use? for a create, node-head
   ;; for a replace), the stored state, the event, for a create the verdict
   ;; on its PARENT (the id made kept out, its kind going in; ok for the top
@@ -347,10 +395,13 @@
   ;; stored props, which props-of reads. So the order is 404, 412,
   ;; wrong_state, kind_fixed, then the props' refusal: invalid_request for
   ;; props that suit another kind (a replace that named none),
-  ;; props_too_large, status_fixed. Answers the command and the node; a
+  ;; props_too_large, status_fixed. TAGS, request-tags' stored forms judged
+  ;; before the job, are an insert's (a list: '() for none sent) and a
+  ;; write's (a list replaces the node's, 'keep, none sent, keeps them:
+  ;; G2); they refuse nothing here. Answers the command and the node; a
   ;; refusal is raised. A command a PUT has no action for is an assertion
   ;; violation.
-  (define (put-work id pre kind title body type drafts parent now)
+  (define (put-work id pre kind title body type drafts tags parent now)
     (lambda (tx account key)
       (let* ((owner (account-id account))
              (create? (eq? pre 'create))
@@ -364,14 +415,14 @@
           (case command
             ((insert)
              (let ((props (props-text (props-command kind (draft-for drafts kind) #f #t now) owner)))
-               (cons command (insert-node! tx id owner kind title body type props parent now))))
+               (cons command (insert-node! tx id owner kind title body type props parent tags now))))
             ((write)
              (let* ((stored-kind (cadr head))
                     (stored (props-of tx owner id))
                     (props (props-text (props-command stored-kind (draft-for drafts stored-kind)
                                                       stored #f now)
                                        owner)))
-               (cons command (write-node! tx id owner pre title body type props "update" now))))
+               (cons command (write-node! tx id owner pre title body type props tags "update" now))))
             ((refuse-404 refuse-409 refuse-412 refuse-wrong-state refuse-invalid-parent
               refuse-would-loop)
              (refuse command owner))
@@ -387,7 +438,9 @@
   ;; copy reads the snapshot whole, and writes its title, body and content
   ;; type as the next revision, with the props restore-props makes of the
   ;; snapshot's and the node's stored ones: a Task keeps its status and
-  ;; closed (P10).
+  ;; closed (P10); and the snapshot's tags as stored, its JSON text, which
+  ;; the store expands, never folded again (L11): a snapshot from before
+  ;; migration 7 holds [] and clears them.
   (define (restore-work id pre n now)
     (lambda (tx account key)
       (let* ((owner (account-id account))
@@ -401,7 +454,8 @@
                     (props (restore-props (cadr head) (snapshot-props snap) (props-of tx owner id))))
                (cons command
                      (write-node! tx id owner pre (snapshot-title snap) (snapshot-body snap)
-                                  (snapshot-content-type snap) props "restore" now))))
+                                  (snapshot-content-type snap) props (snapshot-tags snap) "restore"
+                                  now))))
             ((refuse-404 refuse-412 refuse-wrong-state) (refuse command owner))
             (else (assertion-violation 'node-routes "a restore has no action for this command"
                                        command)))))))
@@ -420,7 +474,7 @@
   ;; the status and EVENT: 404, 412, wrong_state, not_a_task, wrong_status,
   ;; in that order, or close, keep or open and the next status. Only then is
   ;; the node read with its body (node-of-owner), and written as the next
-  ;; revision: the same title, body and content type, the props
+  ;; revision: the same title, body, content type and tags, the props
   ;; transition-props makes, and a change row whose op is EVENT's name. So a
   ;; refused transition reads no body (R16). Answers the command and the
   ;; node, a refusal raised; any other command is an assertion violation.
@@ -438,7 +492,7 @@
              (let ((n (node-of-owner tx owner id)))
                (cons command
                      (write-node! tx id owner pre (node-title n) (node-body n) (node-content-type n)
-                                  (transition-props stored next command now) (symbol->string event)
+                                  (transition-props stored next command now) 'keep (symbol->string event)
                                   now))))
             ((refuse-404 refuse-412 refuse-wrong-state refuse-not-a-task refuse-wrong-status)
              (refuse command owner))
@@ -562,16 +616,42 @@
       (let ((owner (account-id account)))
         (or (node-of-owner tx owner id) (missing owner)))))
 
-  ;; nodes-work : Symbol (U 'any #f Bytevector) (U Bytevector #f) Natural -> Work
+  ;; nodes-work : Symbol (U 'any #f Bytevector) (Listof String) (U Bytevector #f) Natural -> Work
   ;; STATE's page: of every node ('any), the top level (#f), or the
-  ;; children of the node PARENT names. That node first: one that is no
-  ;; node of the account, or is purged, is the 404, not an empty page.
-  (define (nodes-work state parent after limit)
+  ;; children of the node PARENT names; with TAGS (filter-tags' stored
+  ;; forms, '() for none), only those that carry every one. That node
+  ;; first: one that is no node of the account, or is purged, is the 404,
+  ;; not an empty page.
+  (define (nodes-work state parent tags after limit)
     (lambda (tx account key)
       (let ((owner (account-id account)))
         (if (and (bytevector? parent) (not (node-head tx owner parent)))
             (missing owner)
-            (nodes-page tx owner (node-state->string state) parent after (+ limit 1))))))
+            (nodes-page tx owner (node-state->string state) parent tags after (+ limit 1))))))
+
+  ;; tags-work : (U String #f) Natural -> Work
+  ;; The account's tags after AFTER, a stored form (#f: from the first),
+  ;; LIMIT + 1 of them, each with its count stopped at 1,000.
+  (define (tags-work after limit)
+    (lambda (tx account key)
+      (tags-page tx (account-id account) after (+ limit 1))))
+
+  ;; rename-work : (Pair String String) Natural -> Work
+  ;; One step of renaming FROM to TO, the pair's stored forms judged before
+  ;; the job, on at most tag-step-cap of the account's nodes, at NOW:
+  ;; (renamed . left). The store's step takes a node in each state of
+  ;; retag-states and raises only with counts.
+  (define (rename-work names now)
+    (let ((from (car names)) (to (cdr names)))
+      (lambda (tx account key)
+        (rename-tag! tx (account-id account) from to tag-step-cap now))))
+
+  ;; remove-work : String Natural -> Work
+  ;; One step of taking TAG, a stored form, off at most tag-step-cap of the
+  ;; account's nodes, at NOW: (removed . left).
+  (define (remove-work tag now)
+    (lambda (tx account key)
+      (remove-tag! tx (account-id account) tag tag-step-cap now)))
 
   ;; revisions-work : Bytevector (U Natural #f) Natural -> Work
   ;; The node first: a missing one is the 404, not an empty page. Answers
@@ -610,20 +690,23 @@
   ;;; The PUT's upload
 
   ;; Upload : what a PUT's Reader hands on, read on the loop's thread: the
-  ;; node's id, the precondition, the parsed content, and the props' Drafts
-  ;; request-props made of the request (plain data, already judged).
-  (define-record-type upload (fields id pre content drafts))
+  ;; node's id, the precondition, the parsed content, the props' Drafts
+  ;; request-props made of the request, and the tags request-tags made of
+  ;; it, their stored forms or 'absent (plain data, already judged).
+  (define-record-type upload (fields id pre content drafts tags))
 
   ;; put-plan : Upload Natural -> Plan
   ;; The PUT's plan, of what its Reader read and NOW, the time read once
   ;; the body had come: its work closed over the id, the precondition, the
-  ;; kind, title, body and content type, the Drafts, the parent and NOW
-  ;; alone. The content's props as read never reach the job.
+  ;; kind, title, body and content type, the Drafts, the tags (a list, or
+  ;; 'keep for 'absent: none sent on a replace), the parent and NOW alone.
+  ;; The content's props and tags as read never reach the job.
   (define (put-plan u now)
-    (let ((c (upload-content u)))
+    (let ((c (upload-content u))
+          (tags (upload-tags u)))
       (make-plan (put-work (upload-id u) (upload-pre u) (content-kind c) (content-title c)
                            (content-body c) (content-content-type c) (upload-drafts u)
-                           (content-parent c) now)
+                           (if (eq? tags 'absent) 'keep tags) (content-parent c) now)
                  written)))
 
   ;;; A move's body
@@ -673,13 +756,15 @@
 
     ;; put-content : Req Bytevector Precondition -> (U Res Upload)
     ;; The body wrap-json-body read, judged here on the loop's thread (the
-    ;; plan's review, blocker 1), in this order: no JSON (an empty body) or
-    ;; what parse-content refuses is 400; then what request-props refuses of
-    ;; the props, for the kind named or for every kind, 400; then a body
-    ;; over body-cap, 413 payload_too_large; then props over props-cap for
-    ;; every kind that takes them, 413 props_too_large. request-props is
-    ;; asked even of a body over its cap: its props' 400 comes first. Else
-    ;; the upload: the id, the precondition, the content and the Drafts.
+    ;; plans' reviews), in this order: no JSON (an empty body) or what
+    ;; parse-content refuses is 400; then what request-props refuses of the
+    ;; props, for the kind named or for every kind, 400; then what
+    ;; request-tags refuses of the tags, 400; then a body over body-cap,
+    ;; 413 payload_too_large; then props over props-cap for every kind
+    ;; that takes them, 413 props_too_large. request-props and request-tags
+    ;; are asked even of a body over its cap: their 400 comes first. Else
+    ;; the upload: the id, the precondition, the content, the Drafts and the
+    ;; tags.
     (define (put-content r id pre)
       (if (req-json? r)
           (let* ((json (req-json r))
@@ -688,10 +773,13 @@
             (if (eq? c 'invalid)
                 (bad-request)
                 (let ((d (request-props json create?)))
-                  (cond ((eq? d 'invalid) (bad-request))
-                        ((eq? c 'too-large) (problem-res 'payload_too_large))
-                        ((eq? d 'too-large) (problem-res 'props_too_large))
-                        (else (make-upload id pre c d))))))
+                  (if (eq? d 'invalid)
+                      (bad-request)
+                      (let ((t (request-tags json create?)))
+                        (cond ((eq? t 'invalid) (bad-request))
+                              ((eq? c 'too-large) (problem-res 'payload_too_large))
+                              ((eq? d 'too-large) (problem-res 'props_too_large))
+                              (else (make-upload id pre c d t))))))))
           (bad-request)))
 
     ;; move-content : Req Bytevector Precondition -> (U Res Shift)
@@ -818,10 +906,13 @@
                           (bad-request)
                           (make-plan (node-work id) (lambda (n) (node-answer 200 n))))))))
 
-    ;; GET /v1/nodes?limit=&after=&state=&parent=
+    ;; GET /v1/nodes?limit=&after=&state=&parent=&tag=
     ;; state is one of active, archived and trashed, active when not given;
     ;; parent is a node's id, or null for the top level, every node when not
-    ;; given.
+    ;; given; tag, repeated, names tags a node must carry, every one: at
+    ;; most tag-filter-cap as sent, each folded as a stored tag is
+    ;; (filter-tags). Each is judged in that order, on the loop's thread;
+    ;; any one refused is the 400, with no job.
     (define (list-nodes req)
       (db-read-as read clock req
                   (lambda ()
@@ -832,10 +923,13 @@
                       (if (or (eq? limit 'invalid) (eq? after 'invalid) (eq? state 'invalid)
                               (eq? parent 'invalid))
                           (bad-request)
-                          (make-plan (nodes-work state parent after limit)
-                                     (page-answer limit
-                                                  (lambda (n) (node->json n #f))
-                                                  (lambda (n) (node-id->string (node-id n))))))))))
+                          (let ((tags (filter-tags (query-all req "tag"))))
+                            (if (eq? tags 'invalid)
+                                (bad-request)
+                                (make-plan (nodes-work state parent tags after limit)
+                                           (page-answer limit
+                                                        (lambda (n) (node->json n #f))
+                                                        (lambda (n) (node-id->string (node-id n))))))))))))
 
     ;; GET /v1/nodes/:id/revisions?limit=&after=
     (define (list-revisions req)
@@ -912,6 +1006,51 @@
                             (else (make-plan (links-work id direction type after limit)
                                              (page-answer limit link-item->json link-item-next))))))))
 
+    ;; GET /v1/tags?limit=&after=
+    ;; after is a page's next, a tag, folded as a stored one is
+    ;; (normalise-tag): one refused, or given twice, is the 400, as a bad
+    ;; limit is, with no job.
+    (define (list-tags req)
+      (db-read-as read clock req
+                  (lambda ()
+                    (let ((limit (parse-limit (query-one req "limit")))
+                          (after (query-after req normalise-tag)))
+                      (if (or (eq? limit 'invalid) (eq? after 'invalid))
+                          (bad-request)
+                          (make-plan (tags-work after limit)
+                                     (page-answer limit tag-item->json car)))))))
+
+    ;; command-content : (Any -> (U A 'invalid)) -> (Req -> (U Res A))
+    ;; A tag's command's body, as wrap-json-body read it: no JSON (an empty
+    ;; body) or what PARSE refuses is 400. Else PARSE's answer, the stored
+    ;; forms.
+    (define (command-content parse)
+      (lambda (r)
+        (let ((p (if (req-json? r) (parse (req-json r)) 'invalid)))
+          (if (eq? p 'invalid) (bad-request) p))))
+
+    ;; retagger : (Any -> (U A 'invalid)) (A Natural -> Work) String -> Handler
+    ;; POST /v1/tags/rename, of parse-rename-body and rename-work, and
+    ;; /v1/tags/remove, of parse-remove-body and remove-work: a bulk move's
+    ;; checks and order, with no path and no precondition. Before any job,
+    ;; an If-Match or an If-None-Match field, of any shape, is the 400,
+    ;; never 428: a step names no one node. Then the key's read job (401);
+    ;; then its Reader: the media type (415), the body under move-body-cap
+    ;; (413; invalid_json), PARSE's judgement (400). The write job's work is
+    ;; WORK-OF's, of the stored forms and the time read once the body had
+    ;; come; its answer WORD's counts.
+    (define (retagger parse work-of word)
+      (lambda (req)
+        (db-write-with-body-as read write clock wall-clock req
+                               (lambda ()
+                                 (if (preconditioned? req)
+                                     (bad-request)
+                                     (lambda ()
+                                       (if (json-type? req)
+                                           (read-body move-json-body (command-content parse) req)
+                                           (problem-res 'unsupported_media_type)))))
+                               (lambda (data now) (make-plan (work-of data now) (retagged word))))))
+
     (list (route "/v1/nodes" (GET list-nodes))
           (route "/v1/nodes/:id" (GET get-node) (PUT put-node) (DELETE (lifecycle 'purge)))
           (route "/v1/nodes/:id/archive" (POST (lifecycle 'archive)))
@@ -928,5 +1067,8 @@
           (route "/v1/nodes/:id/revisions/:n/restore" (POST restore-node))
           (route "/v1/nodes/:id/links" (GET list-links))
           (route "/v1/nodes/:id/links/:type/:target" (PUT (link-change 'link))
-                 (DELETE (link-change 'unlink)))))
+                 (DELETE (link-change 'unlink)))
+          (route "/v1/tags" (GET list-tags))
+          (route "/v1/tags/rename" (POST (retagger parse-rename-body rename-work "renamed")))
+          (route "/v1/tags/remove" (POST (retagger parse-remove-body remove-work "removed")))))
 )

@@ -2,9 +2,9 @@
 ;;; (nodes-model): the model-based test of nodes, ADR-0007's third layer,
 ;;; for tests/test-nodes-model.sps: D5's versioned write (slice 4, task 5a),
 ;;; the node lifecycle (slice 4b, task 4a), the tree (slice 5a, task 4a),
-;;; links (slice 5b, task 4a), and props and a Task's commands (slice 6,
-;;; task 4a). Test-only: it lives in tests/, which make test puts on Chez's
-;;; library path.
+;;; links (slice 5b, task 4a), props and a Task's commands (slice 6, task
+;;; 4a), and tags (slice 7a, task 4a). Test-only: it lives in tests/, which
+;;; make test puts on Chez's library path.
 ;;;
 ;;; The model (pure)
 ;;; ----------------
@@ -92,6 +92,31 @@
 ;;; is stored (P9). A plain seed's file first holds some Tasks written
 ;;; straight into its tables, as a file from before this slice: props {}.
 ;;;
+;;; Tags (slice 7a) are the plan's rules written again here too, never
+;;; (techo tags) nor (techo chars): each node's present tags (its rows),
+;;; and each snapshot's as they were when it was written. A tag is data,
+;;; not a second fold: tag-corpus is a list of tags as a client sends
+;;; them, each with its stored form or 'invalid written out by hand; every
+;;; stored form is an entry that stores itself, so a tag read back is in
+;;; the corpus (L1), and every tag a row or an answer holds must be one of
+;;; its stored forms (L2). A PUT's tags: no member is none on a create and
+;;; keeps the node's on a replace (G2); more than 50 as sent, a refused
+;;; entry, or a value that is no array of strings, is 400 before the job,
+;;; after the props' 400 and before their 413, with no write job (L10);
+;;; else the stored forms, sorted, each once. A restore copies the
+;;; snapshot's tags as stored, so one from before migration 7 clears them
+;;; (L11); a Task's command keeps the node's; every content write's
+;;; snapshot holds the rows (L3); a purge drops them (L7). A list's ?tag=
+;;; takes at most 10 as sent, each by the corpus; a + in a query is a space
+;;; and bad UTF-8 one U+FFFD, data too (query-raw-cases). GET /v1/tags is
+;;; the account's tags by code point, each counted over every state and
+;;; stopped at 1,000 (H6). POST /v1/tags/rename and /remove: a
+;;; precondition 400, a media type 415, a body over 16 KiB 413, no JSON
+;;; invalid_json, not exactly its members 400, all before the job; else a
+;;; step: the first min(500, carriers) by id, in any live state (L13), each
+;;; at its next revision with the owner's next change row tags, in id
+;;; order, no snapshot; {WORD: n, "left": m}, no ETag, never a 404.
+;;;
 ;;; A Twist stands between the decision and its performance. The run uses
 ;;; `as-planned`, which changes nothing; the suite's teeth pass a twisted
 ;;; rule, and the model must then disagree with the handlers. A Twist sees
@@ -110,13 +135,16 @@
 ;;; The run (the shell)
 ;;; -------------------
 ;;; `run-sequence` empties one migrated file, seeds the two accounts and
-;;; their four keys through the store, generates a seeded sequence of 88 to
-;;; 127 requests (xorshift32; 82 to 119 before slice 6's commands took a
-;;; tenth of them, 60 to 87 before links took a quarter), and sends each as raw HTTP through make-app inside wrap-server,
+;;; their four keys through the store, generates a seeded sequence of 97 to
+;;; 140 requests (xorshift32; 88 to 127 before slice 7a's tags took a tenth
+;;; of them, 82 to 119 before slice 6's commands took a tenth, 60 to 87
+;;; before links took a quarter), and sends each as raw HTTP through make-app inside wrap-server,
 ;;; in a test host, with a wall clock the sequence steps. After every
 ;;; request it compares the status, the code of a refusal, the ETag,
-;;; Location and the body of a 2xx (every page of a list, for the ?state=
-;;; and ?parent= asked, and of a link list) with the model's, and the write
+;;; Location and the body of a 2xx (every page of a list, for the ?state=,
+;;; ?parent= and ?tag= asked, of a link list and of the tags list, the
+;;; tags list's first tag looked for by the filter in each state, L8) with
+;;; the model's, and the write
 ;;; jobs it made with the model's (R15: none for a refusal before the job);
 ;;; holds the answer to laws that need no model (G14, H6, H14,
 ;;; H14', H18', and P12: every refusal of one code in a sequence has one
@@ -126,8 +154,12 @@
 ;;; bulk move's, against the tables before the request; P1, P2, P3 and P8
 ;;; on every row, by its own walk; Q1, Q2 and Q8 on every link; R1, R2, R5
 ;;; and R9 on every row's and snapshot's props, by its own reading of the
-;;; text; G11', R4, R13 and R14 on an accepted write's) and to the model's
-;;; world, its links and props among it. The first request with a
+;;; text; G11', R4, R13 and R14 on an accepted write's; L2, L3, L7 and L9
+;;; on every tag row and snapshot; L3, L4 and L11 on an accepted write's,
+;;; and no other node's tags changed; L5, L6 and L13 on a step's, with
+;;; H1, H2', H3', H4 and G6' restated for many nodes and no snapshot, as
+;;; the bulk move's are) and to the model's world, its links, props and
+;;; tags among it. The first request with a
 ;;; difference ends the sequence with a report that replays from its seed.
 ;;; A plain seed (neither deep, a family nor linked) first writes the Tasks
 ;;; seed-world makes straight into the emptied file, as rows from before
@@ -145,6 +177,14 @@
 ;;; down; then its 88 to 127. One in five more (ending in 1 or 9) is
 ;;; linked: it first makes a hub of links both ways (linked-event), so that
 ;;; link lists page and a purge takes links both ways; then its 88 to 127.
+;;; One in fifty (ending in 04 or 54) is a crowd: its file first holds 501
+;;; to 560 Notes carrying crowd (1,001 to 1,060 for 04), in every state,
+;;; written straight in (crowd-world); then a script renames crowd and
+;;; removes throng, 500 a step, until left is 0, a carrier added and one
+;;; restored between steps, with the tags list and the filter between
+;;; them; then 14 to 27 requests. So a step leaves left above 0, a rename
+;;; takes several calls, and a count stops at 1,000.
+;;;
 ;;; No sequence reaches a bulk move's cap of 1,000 children: the route
 ;;; suite holds it.
 (library (nodes-model)
@@ -166,7 +206,12 @@
           verdict-aims verdict-report verdict-style deep-seed? family-seed? linked-seed?
           task-events props-corpus entry-name entry-sent entry-verdict props-entry claim
           good-whens corpus-self-breaks corpus-breaks msnap-props mprops-text mprops-status
-          mprops-closed expectation-jobs)
+          mprops-closed expectation-jobs
+          ;; slice 7a
+          make-tagged-content mnode-tags msnap-tags tag-corpus tag-named tag-entry-name tag-entry-sent
+          tag-entry-stored numbered-sent make-filter-spec make-filter-event
+          make-tags-list-spec make-command-spec make-tag-event crowd-seed? tag-corpus-self-breaks
+          tag-corpus-breaks query-raw-cases)
   (import (rnrs)
           (only (chezscheme) format)
           (only (chez-sqlite3) sql-null?)
@@ -347,11 +392,14 @@
   ;; empty-props : String -> MProps     a node of KIND's props stored {}: a Task's are TODO (P9)
   (define (empty-props kind) (if (string=? kind "task") (task-props "TODO" #f #f #f) (plain-props "{}")))
 
-  ;; MSnap: revision title body type props created author (a tag)
+  ;; MSnap: revision title body type props created author (a tag) tags
   ;; msnap-revision, msnap-created : MSnap -> Natural
   ;; msnap-title, msnap-body, msnap-type : MSnap -> String
   ;; msnap-props : MSnap -> MProps
-  (define-record-type msnap (fields revision title body type props created author))
+  ;; msnap-tags : MSnap -> (Listof String)     the node's tags as they were when it was
+  ;;   written (slice 7a), stored forms, sorted by code point; '() in a
+  ;;   snapshot from before migration 7
+  (define-record-type msnap (fields revision title body type props created author tags))
 
   ;; MNode: id tag label kind created state revision updated snaps (newest first) parent
   ;; mnode-kind : MNode -> String
@@ -359,7 +407,12 @@
   ;; mnode-created, mnode-revision, mnode-updated : MNode -> Natural
   ;; mnode-snaps : MNode -> (Listof MSnap)
   ;; mnode-parent : MNode -> (U Bytevector #f)     the node it is under; #f at the top level
-  (define-record-type mnode (fields id tag label kind created state revision updated snaps parent))
+  ;; mnode-tags : MNode -> (Listof String)
+  ;;   its present tags (slice 7a): its rows in node_tags, stored forms,
+  ;;   sorted by code point. After a content write they are its newest
+  ;;   snapshot's; a step of a tag's rename or removal changes them and
+  ;;   writes no snapshot (L3)
+  (define-record-type mnode (fields id tag label kind created state revision updated snaps parent tags))
 
   ;; MChange: seq node revision op created
   ;; mchange-seq, mchange-revision, mchange-created : MChange -> Natural
@@ -487,36 +540,45 @@
   ;; seeded? : World Bytevector -> Boolean     a Task a plain seed wrote straight into its file
   (define (seeded? w id) (and (member id (world-seeded w)) #t))
 
-  ;; with-snap : MNode String String String String Natural -> MNode
+  ;; with-snap : MNode String String String MProps (Listof String) Natural -> MNode
   ;; N at its next revision, the content given as its newest snapshot, made
-  ;; NOW, by its owner; its state kept (G12).
-  (define (with-snap n title body type props now)
+  ;; NOW, by its owner, with TAGS as its present tags and the snapshot's
+  ;; (L3); its state kept (G12).
+  (define (with-snap n title body type props tags now)
     (let ((rev (+ 1 (node-rev n))))
       (make-mnode (mnode-id n) (mnode-tag n) (mnode-label n) (mnode-kind n) (mnode-created n)
                   (mnode-state n) rev now
-                  (cons (make-msnap rev title body type props now (mnode-tag n)) (mnode-snaps n))
-                  (mnode-parent n))))
+                  (cons (make-msnap rev title body type props now (mnode-tag n) tags) (mnode-snaps n))
+                  (mnode-parent n) tags)))
 
   ;; with-state : MNode Symbol Natural -> MNode
   ;; N at its next revision in STATE, NOW, with no new snapshot (L4), under
   ;; its parent still (P15).
   (define (with-state n state now)
     (make-mnode (mnode-id n) (mnode-tag n) (mnode-label n) (mnode-kind n) (mnode-created n)
-                state (+ 1 (node-rev n)) now (mnode-snaps n) (mnode-parent n)))
+                state (+ 1 (node-rev n)) now (mnode-snaps n) (mnode-parent n) (mnode-tags n)))
 
   ;; with-parent : MNode (U Bytevector #f) Natural -> MNode
   ;; N at its next revision under PARENT (#f: the top level), NOW, with no
   ;; new snapshot, its state and content kept (T4, P4).
   (define (with-parent n parent now)
     (make-mnode (mnode-id n) (mnode-tag n) (mnode-label n) (mnode-kind n) (mnode-created n)
-                (mnode-state n) (+ 1 (node-rev n)) now (mnode-snaps n) parent))
+                (mnode-state n) (+ 1 (node-rev n)) now (mnode-snaps n) parent (mnode-tags n)))
 
   ;; emptied : MNode Natural -> MNode
-  ;; N purged (L7): its next revision, NOW, no snapshot left and no parent
-  ;; (P8).
+  ;; N purged (L7): its next revision, NOW, no snapshot left, no parent
+  ;; (P8) and no tag (the plan's L7: a purge deletes its rows).
   (define (emptied n now)
     (make-mnode (mnode-id n) (mnode-tag n) (mnode-label n) (mnode-kind n) (mnode-created n)
-                'purged (+ 1 (node-rev n)) now '() #f))
+                'purged (+ 1 (node-rev n)) now '() #f '()))
+
+  ;; with-retag : MNode (Listof String) Natural -> MNode
+  ;; N touched by a step of a tag's rename or removal (G8, L5): its next
+  ;; revision, NOW, TAGS its present tags; no new snapshot, its state,
+  ;; parent and content kept.
+  (define (with-retag n tags now)
+    (make-mnode (mnode-id n) (mnode-tag n) (mnode-label n) (mnode-kind n) (mnode-created n)
+                (mnode-state n) (+ 1 (node-rev n)) now (mnode-snaps n) (mnode-parent n) tags))
 
   ;;; The tree's rules, in the model's own words (slice 5a: T2, T5, T7, T8)
 
@@ -1047,6 +1109,338 @@
              '()
              (list "corpus: R17's two orderings are not one text sent two ways"))))))
 
+  ;;; Tags, as data (slice 7a)
+  ;;;
+  ;;; The rule is G3 as the review and the owner fixed it, and his rulings
+  ;;; F1 to F6: a string over 256 characters, or holding an unassigned code
+  ;;; point, refused as sent; NFKC, lower case, NFKC again; each dash `-`;
+  ;;; spaces trimmed from both ends and each run inside one `-`; the
+  ;;; result 1 to 64 characters, not beginning with a combining mark, with
+  ;;; no control character, line break, noncharacter, invisible, private
+  ;;; use or unassigned character. Unicode's tables are not restated here:
+  ;;; each entry is a tag as a client sends it and its stored form written
+  ;;; out by hand, or 'invalid. Never computed by (techo tags), nor by a
+  ;;; fold of the model's own. Every stored form is also an entry that
+  ;;; stores itself, so a tag read back and sent again is in the corpus
+  ;;; (L1, by the corpus), and every tag an answer or a row may hold is one
+  ;;; of the corpus's stored forms (L2, by the corpus).
+
+  ;; The plan's numbers, written here, not imported: G5's 50 a node, G6's
+  ;; 10 a filter, G8's 500 a step, H6's count stopped at 1,000, and the 64
+  ;; characters of a stored tag.
+  (define tag-most 50)
+  (define filter-most 10)
+  (define step-most 500)
+  (define count-most 1000)
+  (define tag-chars-most 64)
+
+  ;; TagEntry: name sent stored
+  ;;   name    for reports and counts
+  ;;   sent    the tag as a request sends it
+  ;;   stored  its stored form, or 'invalid: the 400
+  ;; tag-entry-name : TagEntry -> Symbol
+  ;; tag-entry-sent : TagEntry -> String
+  ;; tag-entry-stored : TagEntry -> (U String 'invalid)
+  (define-record-type tag-entry (fields name sent stored))
+  (define (te name sent stored) (make-tag-entry name sent stored))
+  (define (tag-ok? e) (string? (tag-entry-stored e)))
+
+  ;; U+FDFA, as NFKC writes it out, its three spaces each a `-`: 18 characters
+  (define fdfa-folded "\x635;\x644;\x649;-\x627;\x644;\x644;\x647;-\x639;\x644;\x64a;\x647;-\x648;\x633;\x644;\x645;")
+
+  (define (repeat-string s n) (if (= n 0) "" (string-append s (repeat-string s (- n 1)))))
+
+  (define tag-corpus-written
+    (list
+     ;; The owner's examples (G3) and the tags most requests send
+     (te 'work "work" "work") (te 'work-capital "Work" "work") (te 'work-upper "WORK" "work")
+     (te 'work-full-width "\xff37;\xff2f;\xff32;\xff2b;" "work")
+     (te 'home "home" "home") (te 'home-capital "Home" "home")
+     (te 'errands "errands" "errands") (te 'errands-capital "Errands" "errands")
+     (te 'home-life "home-life" "home-life") (te 'home-life-words "Home Life" "home-life")
+     (te 'work-space "work-space" "work-space") (te 'work-space-words "Work Space" "work-space")
+     (te 'work-space-padded " work  space " "work-space")
+     (te 'nihon "\x65e5;\x672c;" "\x65e5;\x672c;")
+     (te 'crowd "crowd" "crowd") (te 'crowd-capital "Crowd" "crowd") (te 'crowd-upper "CROWD" "crowd")
+     (te 'throng "throng" "throng") (te 'throng-capital "Throng" "throng") (te 'throng-upper "THRONG" "throng")
+     (te 'c-plus-plus "c++" "c++") (te 'c-plus-plus-upper "C++" "c++")
+     (te 'slash "a/b" "a/b") (te 'ampersand "a&b" "a&b")
+     (te 'party "\x1f389;" "\x1f389;")
+     (te 'e-acute "\xe9;" "\xe9;") (te 'e-acute-upper "\xc9;" "\xe9;") (te 'e-combining "E\x301;" "\xe9;")
+     (te 'a-b "a-b" "a-b") (te 'a-b-nbsp "a\xa0;b" "a-b") (te 'a-b-space "a b" "a-b")
+     ;; Spaces: NFKC makes most of them U+0020; U+1680 is left, and is a space too (H2)
+     (te 'a-b-ideographic "a\x3000;b" "a-b") (te 'a-b-ogham "a\x1680;b" "a-b") (te 'a-b-thin "a\x2009;b" "a-b")
+     (te 'a-b-en-quad "a\x2000;b" "a-b") (te 'a-b-spaced "  a   b  " "a-b")
+     ;; Hyphens sent are left; every dash, U+2010 to U+2015 and U+2212, and
+     ;; what NFKC makes one, is `-` (F5): never trimmed, a run of them never one
+     (te 'hyphen-u2010 "a\x2010;b" "a-b") (te 'hyphen-non-breaking "a\x2011;b" "a-b")
+     (te 'minus "a\x2212;b" "a-b") (te 'trailing-hyphen "a-" "a-") (te 'hyphen "-" "-")
+     (te 'spaced-hyphen "a - b" "a---b") (te 'three-hyphens "a---b" "a---b")
+     (te 'en-dash "a\x2013;b" "a-b") (te 'em-dash "a\x2014;b" "a-b") (te 'small-em-dash "a\xfe58;b" "a-b")
+     (te 'full-width-hyphen "a\xff0d;b" "a-b") (te 'en-dash-alone "\x2013;" "-")
+     (te 'en-dashes "a\x2013;\x2013;b" "a--b") (te 'two-hyphens "a--b" "a--b")
+     (te 'wave-dash "\x301c;" "\x301c;") (te 'long-vowel-mark "\x30fc;" "\x30fc;")
+     ;; What a query must percent-encode (H8)
+     (te 'percent "100%" "100%") (te 'hash "#tag" "#tag") (te 'question "a?b" "a?b") (te 'equals "a=b" "a=b")
+     (te 'quotes "say \"hi\"" "say-\"hi\"") (te 'quotes-stored "say-\"hi\"" "say-\"hi\"")
+     (te 'backslash "a\\b" "a\\b") (te 'plus "a+b" "a+b") (te 'punctuation "a,b;c" "a,b;c")
+     ;; Case, and what folding keeps apart: STRASSE and Strasse, hiragana and katakana
+     (te 'strasse-sharp "Stra\xdf;e" "stra\xdf;e") (te 'strasse-sharp-stored "stra\xdf;e" "stra\xdf;e")
+     (te 'strasse-upper "STRASSE" "strasse") (te 'strasse "strasse" "strasse")
+     (te 'capital-sharp-s "\x1e9e;" "\xdf;") (te 'sharp-s "\xdf;" "\xdf;")
+     (te 'strasse-capital-sharp "STRA\x1e9e;E" "stra\xdf;e")
+     (te 'hiragana "\x3072;\x3089;\x304c;\x306a;" "\x3072;\x3089;\x304c;\x306a;")
+     (te 'katakana "\x30d2;\x30e9;\x30ac;\x30ca;" "\x30d2;\x30e9;\x30ac;\x30ca;")
+     (te 'half-width "\xff92;\xff93;" "\x30e1;\x30e2;") (te 'memo "\x30e1;\x30e2;" "\x30e1;\x30e2;")
+     ;; The second NFKC: W and a ring above lowercase to w and the ring, which compose (traps.md)
+     (te 'w-ring "W\x30a;" "\x1e98;") (te 'w-ring-stored "\x1e98;" "\x1e98;")
+     (te 'kabushiki "\x3231;" "(\x682a;)") (te 'kabushiki-stored "(\x682a;)" "(\x682a;)")
+     (te 'circled-a "\x24b6;" "a") (te 'a "a" "a") (te 'math-bold-a "\x1d400;" "a")
+     (te 'ligature-fi "\xfb01;" "fi") (te 'fi "fi" "fi")
+     (te 'roman-twelve "\x216b;" "xii") (te 'xii "xii" "xii")
+     (te 'superscript-two "x\xb2;" "x2") (te 'x2 "x2" "x2")
+     (te 'heart "\x2764;" "\x2764;") (te 'treble-clef "\x1d11e;" "\x1d11e;") (te 'cjk-extension-b "\x20000;" "\x20000;")
+     (te 'arabic "\x633;\x644;\x627;\x645;" "\x633;\x644;\x627;\x645;")
+     (te 'fdfa-three "\xfdfa;\xfdfa;\xfdfa;" (repeat-string fdfa-folded 3))
+     (te 'fdfa-three-stored (repeat-string fdfa-folded 3) (repeat-string fdfa-folded 3))
+     (te 'greek-upper "\x39f;\x394;\x39f;\x3a3;" "\x3bf;\x3b4;\x3bf;\x3c2;")
+     (te 'greek "\x3bf;\x3b4;\x3bf;\x3c2;" "\x3bf;\x3b4;\x3bf;\x3c2;")
+     (te 'dotted-capital-i "\x130;" "i\x307;") (te 'dotted-i "i\x307;" "i\x307;")
+     (te 'replacement "\xfffd;" "\xfffd;")
+     (te 'kelvin "\x212a;" "k") (te 'k "k" "k") (te 'angstrom "\x212b;" "\xe5;") (te 'a-ring "\xe5;" "\xe5;")
+     (te 'jamo "\x1100;\x1161;" "\xac00;") (te 'hangul "\xac00;" "\xac00;")
+     (te 'ohm "\x2126;" "\x3c9;") (te 'omega "\x3c9;" "\x3c9;")
+     (te 'one-half "\xbd;" "1\x2044;2") (te 'one-half-stored "1\x2044;2" "1\x2044;2")
+     (te 'circled-one "\x2460;" "1") (te 'one "1" "1") (te 'c "c" "c")
+     ;; What Unicode 17 assigned is taken (F1); a mark after a letter is kept (F4)
+     (te 'unicode-17-capital "\xa7ce;" "\xa7cf;") (te 'unicode-17-small "\xa7cf;" "\xa7cf;")
+     (te 'e-and-acute "e\x301;" "\xe9;") (te 'acute-after "a\xb4;b" "a-\x301;b")
+     (te 'acute-after-stored "a-\x301;b" "a-\x301;b")
+     ;; Both caps: 64 characters stored, 256 sent
+     (te 'sixty-four (make-string 64 #\a) (make-string 64 #\a))
+     (te 'sixty-four-upper (make-string 64 #\A) (make-string 64 #\a))
+     (te 'sixty-four-full-width (make-string 64 #\xff21) (make-string 64 #\a))
+     (te 'fi-thirty-two (make-string 32 #\xfb01) (repeat-string "fi" 32))
+     (te 'fi-thirty-two-stored (repeat-string "fi" 32) (repeat-string "fi" 32))
+     (te 'sent-256 (string-append (make-string 255 #\space) "a") "a")
+     (te 'sixty-five (make-string 65 #\a) 'invalid)
+     (te 'fdfa-four "\xfdfa;\xfdfa;\xfdfa;\xfdfa;" 'invalid)
+     (te 'fi-thirty-three (make-string 33 #\xfb01) 'invalid)
+     (te 'sent-257 (string-append (make-string 256 #\space) "a") 'invalid)
+     ;; Refused: empty, blank, a control or line break (H2), a noncharacter,
+     ;; an invisible character (H3), an emoji with its variation selector or a joiner
+     (te 'empty "" 'invalid) (te 'blank "   " 'invalid) (te 'tab "a\tb" 'invalid) (te 'leading-tab "\ta" 'invalid)
+     (te 'line-feed "a\nb" 'invalid) (te 'carriage-return "a\rb" 'invalid) (te 'nul "a\x0;b" 'invalid)
+     (te 'delete "a\x7f;b" 'invalid) (te 'next-line "a\x85;b" 'invalid)
+     (te 'line-separator "a\x2028;b" 'invalid) (te 'paragraph-separator "a\x2029;b" 'invalid)
+     (te 'zero-width-space "a\x200b;b" 'invalid) (te 'zero-width-alone "\x200b;" 'invalid)
+     (te 'zero-width-joiner "a\x200d;b" 'invalid) (te 'zero-width-non-joiner "a\x200c;b" 'invalid)
+     (te 'soft-hyphen "a\xad;b" 'invalid) (te 'left-to-right-mark "a\x200e;b" 'invalid)
+     (te 'right-to-left-override "a\x202e;b" 'invalid) (te 'byte-order-mark "a\xfeff;b" 'invalid)
+     (te 'word-joiner "a\x2060;b" 'invalid) (te 'mongolian-vowel-separator "a\x180e;b" 'invalid)
+     (te 'hangul-filler "\x3164;" 'invalid) (te 'tag-character "a\xe0041;" 'invalid)
+     (te 'grapheme-joiner "a\x34f;b" 'invalid)
+     (te 'heart-variation-selector "\x2764;\xfe0f;" 'invalid)
+     (te 'family "\x1f468;\x200d;\x1f469;\x200d;\x1f467;" 'invalid)
+     (te 'noncharacter "a\xfffe;b" 'invalid) (te 'noncharacter-fdd0 "\xfdd0;" 'invalid)
+     (te 'noncharacter-astral "\x1fffe;" 'invalid)
+     ;; The owner's rulings: unassigned (F1), format (F2), blank-looking
+     ;; (F3), a mark first (F4), private use (F6)
+     (te 'unassigned "a\x378;b" 'invalid) (te 'unassigned-alone "\x378;" 'invalid)
+     (te 'interlinear-anchor "a\xfff9;b" 'invalid) (te 'hieroglyph-format "a\x13430;" 'invalid)
+     (te 'braille-blank "\x2800;" 'invalid) (te 'khitan-filler "a\x16fe4;" 'invalid)
+     (te 'acute-alone "\x301;" 'invalid) (te 'spacing-acute "\xb4;" 'invalid)
+     (te 'private-use "\xe000;" 'invalid) (te 'private-use-astral "a\x10fffd;" 'invalid)))
+
+  ;; two-digits : Natural -> String     01 to 99
+  (define (two-digits k) (string-append (if (< k 10) "0" "") (number->string k)))
+
+  ;; numbered-tags : (Listof TagEntry)
+  ;; T01 to T50, stored t01 to t50, and t01 to t50 themselves: fifty tags
+  ;; for G5's cap. The one rule stated here: an ASCII capital T folds to t.
+  (define numbered-tags
+    (apply append
+           (map (lambda (k)
+                  (let ((stored (string-append "t" (two-digits k))))
+                    (list (te (sym "numbered-" (two-digits k)) (string-append "T" (two-digits k)) stored)
+                          (te (sym "numbered-" (two-digits k) "-stored") stored stored))))
+                (from-to 1 50))))
+
+  ;; tag-corpus : (Listof TagEntry)
+  (define tag-corpus (append tag-corpus-written numbered-tags))
+
+  (define (tag-named name) (find (lambda (e) (eq? (tag-entry-name e) name)) tag-corpus))
+
+  ;; good-tags, bad-tags : (Listof TagEntry)     the entries the rule takes, and refuses
+  (define good-tags (filter tag-ok? tag-corpus))
+  (define bad-tags (filter (lambda (e) (not (tag-ok? e))) tag-corpus))
+
+  ;; stored-tag-table : Hashtable     every stored form of the corpus (L2's set)
+  (define stored-tag-table
+    (let ((t (make-hashtable string-hash string=?)))
+      (for-each (lambda (e) (hashtable-set! t (tag-entry-stored e) #t)) good-tags)
+      t))
+  (define (stored-tag? s) (and (string? s) (hashtable-ref stored-tag-table s #f)))
+
+  ;; fixed-point-of : String -> (U TagEntry #f)     the entry that sends the stored form T itself
+  (define fixed-point-table
+    (let ((t (make-hashtable string-hash string=?)))
+      (for-each (lambda (e) (when (equal? (tag-entry-sent e) (tag-entry-stored e))
+                              (hashtable-set! t (tag-entry-sent e) e)))
+                good-tags)
+      t))
+  (define (fixed-point-of t) (hashtable-ref fixed-point-table t #f))
+
+  ;; forms-of : String -> (Listof TagEntry)     every entry whose stored form is T
+  (define forms-table
+    (let ((t (make-hashtable string-hash string=?)))
+      (for-each (lambda (e) (hashtable-update! t (tag-entry-stored e) (lambda (l) (cons e l)) '())) good-tags)
+      t))
+  (define (forms-of t) (reverse (hashtable-ref forms-table t '())))
+
+  ;; common-tags : (Listof TagEntry)
+  ;; The tags most requests send, by both accounts alike, so that a
+  ;; filter, a count and a step meet carriers, and the other account's.
+  (define common-tags
+    (map tag-named '(work work-capital work-upper work-full-width home home-capital errands errands-capital
+                     home-life home-life-words work-space work-space-words nihon c-plus-plus c-plus-plus-upper
+                     slash ampersand party e-acute e-combining a-b a-b-nbsp quotes)))
+
+  ;; tag-set : (Listof String) -> (Listof String)     sorted by code point, each once
+  (define (tag-set ts)
+    (let loop ((l (list-sort string<? ts)) (acc '()))
+      (cond ((null? l) (reverse acc))
+            ((and (pair? acc) (string=? (car acc) (car l))) (loop (cdr l) acc))
+            (else (loop (cdr l) (cons (car l) acc))))))
+
+  ;; json-string : String -> String
+  ;; S as a JSON string, in the model's own writing: " and \ escaped, a
+  ;; character below U+0020 as \u00XX, every other character as it is.
+  (define (json-string s)
+    (string-append
+     "\""
+     (apply string-append
+            (map (lambda (c)
+                   (let ((n (char->integer c)))
+                     (cond ((char=? c #\") "\\\"")
+                           ((char=? c #\\) "\\\\")
+                           ((< n #x20) (string-append "\\u00" (string (string-ref hex-digits (div n 16)))
+                                                      (string (string-ref hex-digits (mod n 16)))))
+                           (else (string c)))))
+                 (string->list s)))
+     "\""))
+
+  ;; tags-text : (Listof String) -> String
+  ;; A snapshot's tags as SQLite's json_group_array writes them: [] for
+  ;; none, else each a JSON string, no space: the model's writing, held
+  ;; against the stored text byte for byte.
+  (define (tags-text ts) (string-append "[" (join (map json-string ts) ",") "]"))
+
+  ;; TagsSent: a PUT's tags member as the request sends it
+  ;;   'absent                          no tags member
+  ;;   (List 'entries (Listof TagEntry)) a JSON array of the entries' tags, in that order
+  ;;   (List 'raw String Symbol)        a value that is no array of strings: its JSON text, its name
+  ;; sent-tags : TagsSent Boolean -> (U (Listof String) 'absent 'invalid)
+  ;; What a PUT stores of its tags (G1, G2, G5, the review), CREATE? for a
+  ;; create: no member is none on a create and keeps the node's on a
+  ;; replace; more than 50 entries, counted as sent, before any is folded,
+  ;; is the 400, so 51 that fold to one are; an entry the rule refuses is
+  ;; the 400; any value but an array of strings is the 400; else the
+  ;; entries' stored forms, sorted by code point, each once.
+  (define (sent-tags ts create?)
+    (cond ((eq? ts 'absent) (if create? '() 'absent))
+          ((eq? (car ts) 'entries)
+           (let ((es (cadr ts)))
+             (cond ((> (length es) tag-most) 'invalid)
+                   ((exists (lambda (e) (not (tag-ok? e))) es) 'invalid)
+                   (else (tag-set (map tag-entry-stored es))))))
+          (else 'invalid)))
+
+  ;; tags-member-text : TagsSent -> (U String #f)     the member's JSON value, #f for none
+  (define (tags-member-text ts)
+    (cond ((eq? ts 'absent) #f)
+          ((eq? (car ts) 'entries) (string-append "[" (join (map (lambda (e) (json-string (tag-entry-sent e))) (cadr ts)) ",") "]"))
+          (else (cadr ts))))
+
+  ;; raw-tags-values : (Listof TagsSent)     tags members that are no array of strings: each the 400
+  (define raw-tags-values
+    (list '(raw "null" null) '(raw "\"work\"" string) '(raw "{}" object) '(raw "[1]" number-in-list)
+          '(raw "[null]" null-in-list) '(raw "[[\"work\"]]" list-in-list) '(raw "true" true)
+          '(raw "{\"work\":true}" object-of-tags)))
+
+  ;; QueryTag: a ?tag= value as a request sends it (H8, the review)
+  ;;   (List 'entry TagEntry Symbol)   the entry's tag percent-encoded: a space as %20 ('strict) or as + ('plus)
+  ;;   (List 'raw String Symbol)       a value written into the query as it stands, and its name
+  ;;   'bare                           the field with no =: an empty value
+  ;; query-raw-cases : (Listof (List String Symbol (U String 'invalid)))
+  ;; Values written into the query as they stand, each with what the
+  ;; model says it stores, written by hand: a + is a space in a query, so
+  ;; c++ is c and two spaces, which is c; %2B is a +; bad UTF-8, %FF or a
+  ;; sequence cut off, is one U+FFFD, a tag the rule takes; an empty
+  ;; value, or %20 alone, is the 400.
+  (define query-raw-cases
+    (list (list "c++" 'raw-c-plus-plus "c") (list "a+b" 'raw-a-plus-b "a-b") (list "a%2Bb" 'raw-a-escaped-plus "a+b")
+          (list "Work+Space" 'raw-plus-spaces "work-space") (list "+work+" 'raw-plus-ends "work")
+          (list "%FF" 'raw-bad-utf8 "\xfffd;") (list "%E6%97" 'raw-cut-off "\xfffd;")
+          (list "%20" 'raw-blank 'invalid) (list "" 'raw-empty 'invalid)))
+
+  ;; query-tag-stored : QueryTag -> (U String 'invalid)     what the server is to make of it
+  (define (query-tag-stored q)
+    (cond ((eq? q 'bare) 'invalid)
+          ((eq? (car q) 'entry) (tag-entry-stored (cadr q)))
+          (else (caddr (assoc (cadr q) query-raw-cases)))))
+
+  ;; filter-tags-of : (Listof QueryTag) -> (U (Listof String) 'invalid)
+  ;; A list's ?tag= values by the plan's rules (G6, the review): more than
+  ;; 10, counted as sent, is the 400, so ?tag=Work&tag=work is two toward
+  ;; ten and one tag; one refused, an empty one too, is the 400; else
+  ;; their stored forms, each once.
+  (define (filter-tags-of qs)
+    (if (> (length qs) filter-most)
+        'invalid
+        (let ((ts (map query-tag-stored qs)))
+          (if (memq 'invalid ts) 'invalid (tag-set ts)))))
+
+  ;; tag-corpus-self-breaks : -> (Listof String)
+  ;; The tags corpus held to what it says of itself, with no server: names
+  ;; once each; every stored form 1 to 64 characters, and an entry of its
+  ;; own that stores itself (L1, by the corpus); every common tag and the
+  ;; raw cases' stored forms among them; both caps met from both sides.
+  (define (tag-corpus-self-breaks)
+    (let ((names (map tag-entry-name tag-corpus)))
+      (append
+       (let loop ((ns names) (acc '()))
+         (cond ((null? ns) (reverse acc))
+               ((memq (car ns) (cdr ns)) (loop (cdr ns) (cons (format "tag corpus: ~a is named twice" (car ns)) acc)))
+               (else (loop (cdr ns) acc))))
+       (apply append
+              (map (lambda (e)
+                     (let ((s (tag-entry-stored e)))
+                       (cond ((eq? s 'invalid) '())
+                             ((not (string? s)) (list (format "tag corpus: ~a's stored form is ~s" (tag-entry-name e) s)))
+                             ((not (<= 1 (string-length s) tag-chars-most))
+                              (list (format "tag corpus: ~a's stored form is ~a characters" (tag-entry-name e) (string-length s))))
+                             ((not (fixed-point-of s))
+                              (list (format "tag corpus: ~a's stored form ~s is no entry that stores itself" (tag-entry-name e) s)))
+                             (else '()))))
+                   tag-corpus))
+       (if (for-all (lambda (e) (and e (tag-ok? e))) common-tags) '()
+           (list "tag corpus: a common tag is missing or refused"))
+       (filter (lambda (x) x)
+               (map (lambda (c) (and (string? (caddr c)) (not (stored-tag? (caddr c)))
+                                     (format "tag corpus: the raw case ~a stores ~s, no stored form of the corpus"
+                                             (cadr c) (caddr c))))
+                    query-raw-cases))
+       (if (and (= (string-length (tag-entry-sent (tag-named 'sent-256))) 256)
+                (= (string-length (tag-entry-sent (tag-named 'sent-257))) 257)
+                (= (string-length (tag-entry-stored (tag-named 'sixty-four))) 64)
+                (= (string-length (tag-entry-sent (tag-named 'sixty-five))) 65)
+                (= (string-length (tag-entry-stored (tag-named 'fdfa-three))) 54)
+                (= (length (filter (lambda (e) (memq (tag-entry-name e) (map tag-entry-name numbered-tags))) good-tags))
+                   (* 2 tag-most)))
+           '()
+           (list "tag corpus: the caps' entries are not 256 and 257 sent, 64 and 65 stored, 54 for three U+FDFA, fifty numbered")))))
+
   ;;; Requests
 
   ;; ParentRef: a parent as a request names it.
@@ -1072,10 +1466,14 @@
           (else "null")))
 
   ;; Content: kind (U String #f), title, body, type, the props sent (an
-  ;; Entry of the corpus, or #f for no props member), and a create's parent
-  ;; (a ParentRef, 'absent for none).
+  ;; Entry of the corpus, or #f for no props member), a create's parent
+  ;; (a ParentRef, 'absent for none), and the tags sent (a TagsSent).
   ;; make-content : (U String #f) String String String (U Entry #f) ParentRef -> Content
-  (define-record-type content (fields kind title body type props parent))
+  ;;   one with no tags member
+  ;; make-tagged-content : (U String #f) String String String (U Entry #f) ParentRef TagsSent -> Content
+  (define-record-type (content make-tagged-content content?) (fields kind title body type props parent tags))
+  (define (make-content kind title body type props parent)
+    (make-tagged-content kind title body type props parent 'absent))
 
   ;; Event: kind now tag key id pre headers content snap limit query upper? aims parent
   ;;   kind      put, restore, archive, unarchive, trash, untrash, purge,
@@ -1098,14 +1496,52 @@
   ;;             list's ?parent=; 'absent for every other request
   ;;   link      a link's request (link, unlink, list-links): its LinkSpec;
   ;;             #f for every other
+  ;;   tagq      slice 7a's: a list's FilterSpec (#f for no ?tag=), the
+  ;;             tags list's TagsListSpec, a command's CommandSpec; #f for
+  ;;             every other
   ;; make-event : Symbol Natural Tag Bytevector (U Bytevector #f) Any (Listof Header)
   ;;              (U Content #f) (U Natural #f) (U Natural #f) (U String 'twice #f)
   ;;              Boolean (Listof Symbol) ParentRef -> Event
   (define-record-type (event make-event* event?)
-    (fields kind now tag key id pre headers content snap limit query upper? aims parent link))
+    (fields kind now tag key id pre headers content snap limit query upper? aims parent link tagq))
 
   (define (make-event kind now tag key id pre headers content snap limit query upper? aims parent)
-    (make-event* kind now tag key id pre headers content snap limit query upper? aims parent #f))
+    (make-event* kind now tag key id pre headers content snap limit query upper? aims parent #f #f))
+
+  ;; FilterSpec: a list's ?tag= values, in the order sent, and its first
+  ;; page's after, a node's id or #f (slice 7a)
+  ;; make-filter-spec : (Listof QueryTag) (U Bytevector #f) -> FilterSpec
+  (define-record-type filter-spec (fields values after))
+
+  ;; make-filter-event : Natural Tag Bytevector (U Natural #f) (U String 'twice #f) ParentRef
+  ;;                     (Listof Symbol) FilterSpec -> Event
+  ;; GET /v1/nodes with ?tag=: a list's request, LIMIT, ?state= QUERY,
+  ;; ?parent= PARENT, and the FilterSpec.
+  (define (make-filter-event now tag key limit query parent aims spec)
+    (make-event* 'list-nodes now tag key #f #f '() #f #f limit query #f aims parent #f spec))
+
+  ;; TagsListSpec: GET /v1/tags's first after: #f, (List 'entry TagEntry
+  ;; Symbol), percent-encoded as a QueryTag is, or 'twice (the field twice)
+  ;; make-tags-list-spec : (U (List 'entry TagEntry Symbol) 'twice #f) -> TagsListSpec
+  (define-record-type tags-list-spec (fields after))
+
+  ;; CommandSpec: a rename's or a removal's body and media type (slice 7a)
+  ;;   body    (List 'members (Listof (Pair String Value))): an object of
+  ;;           these members, in order, each Value a TagEntry (its tag, a
+  ;;           JSON string) or (List 'json String), a value written as it
+  ;;           is; (List 'padded Members Natural): that object padded with
+  ;;           spaces to N bytes; (List 'text String Symbol): a body sent as
+  ;;           it is, and what the model says of it: 'not-json (invalid_json)
+  ;;           or 'invalid (invalid_request)
+  ;;   json?   whether the Content-Type is application/json
+  ;; make-command-spec : Body Boolean -> CommandSpec
+  (define-record-type command-spec (fields body json?))
+
+  ;; make-tag-event : Symbol Natural Tag Bytevector (Listof Header) (U Natural #f) (Listof Symbol)
+  ;;                  (U TagsListSpec CommandSpec) -> Event
+  ;; KIND list-tags (with LIMIT), rename-tag or remove-tag, with HEADERS.
+  (define (make-tag-event kind now tag key headers limit aims spec)
+    (make-event* kind now tag key #f #f headers #f #f limit #f #f aims 'absent #f spec))
 
   ;; LinkSpec: what a link's request names beside its node (slice 5b)
   ;;   type       a PUT's or a DELETE's path type, a String sent as it is; a
@@ -1125,7 +1561,7 @@
   ;; A link's request: KIND link (its PUT), unlink (its DELETE) or
   ;; list-links (the GET), of node ID, with HEADERS, a list's LIMIT.
   (define (make-link-event kind now tag key id headers limit upper? aims spec)
-    (make-event* kind now tag key id #f headers #f #f limit #f upper? aims 'absent spec))
+    (make-event* kind now tag key id #f headers #f #f limit #f upper? aims 'absent spec #f))
 
   ;; link-kinds : (Listof Symbol)     a link's two writes; a list is a read
   (define link-kinds '(link unlink))
@@ -1241,7 +1677,8 @@
   ;; A live node as the plan shows it: its title, content type, props and
   ;; body its newest snapshot's (H2'), the body only when BODY?; its
   ;; revision, updated, state and parent its own: the parent's id in lower
-  ;; case, or null at the top level.
+  ;; case, or null at the top level; its tags its own present ones, sorted,
+  ;; an array (slice 7a), [] for none.
   (define (node-json n body?)
     (let ((s (node-top n)))
       (sorted (append (list (cons "id" (id-text (mnode-id n))) (cons "kind" (mnode-kind n))
@@ -1250,15 +1687,18 @@
                             (cons "title" (msnap-title s)))
                       (if body? (list (cons "body" (msnap-body s))) '())
                       (list (cons "content_type" (msnap-type s)) (cons "props" (props-shown (mnode-kind n) (msnap-props s)))
+                            (cons "tags" (list->vector (mnode-tags n)))
                             (cons "revision" (node-rev n)) (cons "created" (mnode-created n))
                             (cons "updated" (mnode-updated n)))))))
 
   ;; snap-json : String MSnap Boolean -> Alist
   ;; A snapshot of a KIND's node: its props shown by its node's kind (a
-  ;; Task's stored {} is TODO in every snapshot too: R8).
+  ;; Task's stored {} is TODO in every snapshot too: R8); its tags as they
+  ;; were, only when BODY?: a snapshot whole shows them, the revisions list
+  ;; does not (the review's blocker 7).
   (define (snap-json kind s body?)
     (sorted (append (list (cons "revision" (msnap-revision s)) (cons "title" (msnap-title s)))
-                    (if body? (list (cons "body" (msnap-body s))) '())
+                    (if body? (list (cons "body" (msnap-body s)) (cons "tags" (list->vector (msnap-tags s)))) '())
                     (list (cons "content_type" (msnap-type s)) (cons "props" (props-shown kind (msnap-props s)))
                           (cons "created" (msnap-created s))))))
 
@@ -1375,6 +1815,19 @@
                 ((memq 'too-large vs)
                  (list 413 "props_too_large" "props no kind takes, that one takes but over the cap, are 413, before the job"))
                 (else (list 400 "invalid_request" "props no kind takes are 400, before the job, whatever the node"))))))))
+
+  ;; put-refusal : Event -> (U (List Natural String String) #f)
+  ;; A PUT's content refused before its job, in the routes' order (the
+  ;; review's): the props' 400; then the tags' 400 (sent-tags); then the
+  ;; props' 413. A request refused for its tags makes no write job (L10).
+  (define (put-refusal e)
+    (let ((p (props-refusal e))
+          (t (sent-tags (content-tags (event-content e)) (eq? (event-pre e) 'create))))
+      (cond ((and p (= (car p) 400)) p)
+            ((eq? t 'invalid)
+             (list 400 "invalid_request"
+                   "tags that are no array of at most 50 tags the rule takes are 400, before the job, after the props' 400 and before any 413"))
+            (else p))))
 
   ;; claim-differs? : Claim MProps -> (U Symbol #f)
   ;; Whether a replace's CLAIM of a Task's status or closed is not what is
@@ -1533,7 +1986,7 @@
         (values #f (refusal 400 "invalid_request")
                 "a precondition of any other shape, If-None-Match on any route but a PUT among them, is 400"
                 no-situation))
-       ((and (eq? (event-kind e) 'put) (props-refusal e))
+       ((and (eq? (event-kind e) 'put) (put-refusal e))
         => (lambda (r) (values #f (refusal (car r) (cadr r)) (caddr r) no-situation)))
        ((eq? pre 'create)
         (if (world-node w id)
@@ -1603,7 +2056,109 @@
           ((link-kind? (event-kind e))
            (let-values (((cell decision clause) (decide-link w e)))
              (perform-link w e cell (twist cell decision no-situation) clause)))
+          ((step-kind? (event-kind e)) (expect-step w e))
           (else (expect-read w e))))
+
+  ;;; The oracle of a tag's rename and removal (slice 7a)
+
+  ;; step-kinds : (Listof Symbol)     the two commands, each its own route
+  (define step-kinds '(rename-tag remove-tag))
+  (define (step-kind? k) (and (memq k step-kinds) #t))
+
+  ;; step-word : Symbol -> String     the count a command answers: renamed or removed
+  (define (step-word kind) (if (eq? kind 'rename-tag) "renamed" "removed"))
+
+  ;; members-verdict : Symbol (Listof (Pair String Value)) -> (U (List 'rename String String) (List 'remove String) 'invalid)
+  ;; A command's object by the plan's rules: exactly the members it takes,
+  ;; from and to for a rename, tag for a removal, by those names, in any
+  ;; order, none twice, none other; each a tag the rule takes, as a JSON
+  ;; string; for a rename, from and to two tags once stored. Else 'invalid.
+  (define (members-verdict kind members)
+    (let ((names (map car members))
+          (want (if (eq? kind 'rename-tag) '("from" "to") '("tag"))))
+      (if (and (= (length names) (length want))
+               (for-all (lambda (n) (member n names)) want)
+               (for-all (lambda (m) (and (tag-entry? (cdr m)) (tag-ok? (cdr m)))) members))
+          (let ((stored (lambda (n) (tag-entry-stored (cdr (assoc n members))))))
+            (cond ((eq? kind 'remove-tag) (list 'remove (stored "tag")))
+                  ((string=? (stored "from") (stored "to")) 'invalid)
+                  (else (list 'rename (stored "from") (stored "to")))))
+          'invalid)))
+
+  ;; command-cap : Natural     16 KiB: a command's body, as a move's (the plan's)
+  (define command-cap 16384)
+
+  ;; command-verdict : Event -> (values (U (List 'rename String String) (List 'remove String) Decision) String)
+  ;; A tag's command by the review's order, the first that applies: an
+  ;; If-Match or an If-None-Match, of any shape, 400, never 428 (it names no
+  ;; one node); a media type that is not JSON 415; a body over 16 KiB 413
+  ;; payload_too_large; one that is no JSON 400 invalid_json; one that is
+  ;; not exactly what the command takes (members-verdict), or no object, or
+  ;; empty, 400 invalid_request. Every one of these before the job. Else
+  ;; the step; never 404, never 412.
+  (define (command-verdict e)
+    (let* ((spec (event-tagq e)) (body (command-spec-body spec)))
+      (cond
+       ((pair? (event-headers e))
+        (values (refusal 400 "invalid_request") "If-Match or If-None-Match on a tag's command is 400, never 428, before any job"))
+       ((not (command-spec-json? spec))
+        (values (refusal 415 "unsupported_media_type") "a tag's command with a media type that is not JSON is 415, before the job"))
+       ((and (eq? (car body) 'padded) (> (caddr body) command-cap))
+        (values (refusal 413 "payload_too_large") "a tag's command's body over 16 KiB is 413, before the job"))
+       ((and (eq? (car body) 'text) (eq? (caddr body) 'not-json))
+        (values (refusal 400 "invalid_json") "a tag's command's body that is no JSON is 400 invalid_json, before the job"))
+       ((eq? (car body) 'text)
+        (values (refusal 400 "invalid_request") "a tag's command's body that is no object, or none, is 400, before the job"))
+       (else
+        (let ((v (members-verdict (event-kind e) (cadr body))))
+          (if (eq? v 'invalid)
+              (values (refusal 400 "invalid_request")
+                      "a tag's command's object that is not exactly its members, each a tag the rule takes, from and to two tags, is 400, before the job")
+              (values v (format "a step of ~a takes the first min(500, carriers) by id, in every live state, each bumped with a change row tags, no snapshot"
+                                (event-kind e)))))))))
+
+  ;; retagged-set : (Listof String) String (U String #f) -> (Listof String)
+  ;; A carrier's tags after a step: FROM taken off, TO put on (a rename;
+  ;; #f for a removal), each once: a rename onto a tag the node has is a
+  ;; merge.
+  (define (retagged-set tags from to)
+    (tag-set (append (filter (lambda (t) (not (string=? t from))) tags) (if to (list to) '()))))
+
+  ;; take* : (Listof A) Natural -> (Listof A)     the first N
+  (define (take* xs n) (if (or (null? xs) (= n 0)) '() (cons (car xs) (take* (cdr xs) (- n 1)))))
+
+  ;; carriers-of : World Tag String -> (Listof MNode)
+  ;; TAG's live nodes that carry T, by id: every live state (L13); a
+  ;; purged node carries none.
+  (define (carriers-of w tag t) (by-id (filter (lambda (n) (member t (mnode-tags n))) (nodes-of w tag))))
+
+  ;; expect-step : World Event -> Expectation
+  ;; A command's answer, and the step done to the world (G8, L5): the
+  ;; first min(500, carriers) of FROM's by id, in any live state, each at
+  ;; its next revision, updated now, with the owner's next change row tags
+  ;; at it, in id order; their tags retagged; no snapshot. A tag no node of
+  ;; the account carries touches none: {WORD: 0, "left": 0}, never a 404.
+  ;; 200, {WORD: touched, "left": the carriers after}, no ETag, and the
+  ;; asking key's last_used set when due. A refusal changes nothing and
+  ;; makes no write job.
+  (define (expect-step w e)
+    (let-values (((v clause) (command-verdict e)))
+      (if (eq? (car v) 'refuse)
+          (refused w '() (cadr v) (caddr v) clause no-situation)
+          (let* ((tag (event-tag e)) (now (event-now e))
+                 (from (cadr v)) (to (and (eq? (car v) 'rename) (caddr v)))
+                 (carriers (carriers-of w tag from))
+                 (touched (take* carriers step-most))
+                 (w1 (fold-left (lambda (w n)
+                                  (let ((m (with-retag n (retagged-set (mnode-tags n) from to) now)))
+                                    (world-with-change (world-with-node w m) tag (mnode-id m) (node-rev m) "tags" now)))
+                                w touched))
+                 (due (touch-due? (world-key-last-used w (event-key e)) now))
+                 (w2 (if due (world-touched w1 (event-key e) now) w1)))
+            (make-expectation 200 #f #f #f
+                              (sorted (list (cons (step-word (event-kind e)) (length touched))
+                                            (cons "left" (- (length carriers) (length touched)))))
+                              #f w2 '() #f due clause no-situation 1)))))
 
   ;;; The oracle of a link's PUT and DELETE (slice 5b)
 
@@ -1741,32 +2296,39 @@
                 (cannot w cells (string-append at ", which only a create performs")))
                ((world-node w id) (cannot w cells (string-append at " on an id in use")))
                (else
-                (let ((c (event-content e)))
-                  (accepted w e (make-mnode id tag (next-label w) (content-kind c) now 'active 1 now
-                                            (list (make-msnap 1 (content-title c) (content-body c)
-                                                              (content-type c)
-                                                              (create-props (content-kind c) (content-props c) now)
-                                                              now tag))
-                                            (event-parent-id e))
-                            "create" 201 #t cells clause s)))))
+                (let* ((c (event-content e)) (tags (sent-tags (content-tags c) #t)))
+                  (if (eq? tags 'invalid)
+                      (cannot w cells (string-append at ", whose tags the rule refuses"))
+                      (accepted w e (make-mnode id tag (next-label w) (content-kind c) now 'active 1 now
+                                                (list (make-msnap 1 (content-title c) (content-body c)
+                                                                  (content-type c)
+                                                                  (create-props (content-kind c) (content-props c) now)
+                                                                  now tag tags))
+                                                (event-parent-id e) tags)
+                                "create" 201 #t cells clause s))))))
         ((write)
          (cond ((not (eq? kind 'put)) (cannot w cells (string-append at ", which only a PUT performs")))
                ((not at-pre?) (cannot w cells off-pre))
                (else
-                (let ((c (event-content e)))
-                  (accepted w e (with-snap own (content-title c) (content-body c) (content-type c)
-                                           (replace-props own c) now)
-                            "update" 200 #t cells clause s)))))
+                (let* ((c (event-content e)) (tags (sent-tags (content-tags c) #f)))
+                  (if (eq? tags 'invalid)
+                      (cannot w cells (string-append at ", whose tags the rule refuses"))
+                      ;; G2: no tags member keeps the node's present tags
+                      (accepted w e (with-snap own (content-title c) (content-body c) (content-type c)
+                                               (replace-props own c) (if (eq? tags 'absent) (mnode-tags own) tags) now)
+                                "update" 200 #t cells clause s))))))
         ((copy)
          (let ((snap (and own (eq? kind 'restore) (snap-of own (event-snap e)))))
            (cond ((not (eq? kind 'restore)) (cannot w cells (string-append at ", which only a restore performs")))
                  ((not at-pre?) (cannot w cells off-pre))
                  ((not snap) (cannot w cells (string-append at " of a snapshot the node does not have")))
                  (else
+                  ;; L11: the snapshot's tags as stored, never folded again; one from
+                  ;; before migration 7 holds none, and clears them
                   (accepted w e (with-snap own (msnap-title snap) (msnap-body snap) (msnap-type snap)
                                            (restore-props (mnode-kind own) (msnap-props snap)
                                                           (msnap-props (node-top own)))
-                                           now)
+                                           (msnap-tags snap) now)
                             "restore" 200 #t cells clause s)))))
         ((transition)
          (cond ((not (task-kind? kind)) (cannot w cells (string-append at ", which only a Task's command performs")))
@@ -1777,9 +2339,10 @@
                (else
                 (let* ((top (node-top own)) (p (msnap-props top))
                        (closed (case (caddr decision) ((close) now) ((keep) (mprops-closed p)) (else #f))))
+                  ;; the node's present tags, kept, into the new snapshot (L3)
                   (accepted w e (with-snap own (msnap-title top) (msnap-body top) (msnap-type top)
                                            (task-props (cadr decision) closed (mprops-deadline p) (mprops-scheduled p))
-                                           now)
+                                           (mnode-tags own) now)
                             (symbol->string kind) 200 #f cells clause s)))))
         ((set-state)
          (cond ((not (and (life-kind? kind) (not (eq? kind 'purge))))
@@ -1870,13 +2433,20 @@
                           "the account's own node is shown, with its newest snapshot's body")
              (refused w '() 404 "not_found" gone no-situation)))
         ((list-nodes)
-         (let ((s (list-state (event-query e)))
-               (p (ref-meaning (event-parent e))))
+         (let* ((s (list-state (event-query e)))
+                (p (ref-meaning (event-parent e)))
+                (f (event-tagq e))
+                (tags (if f (filter-tags-of (filter-spec-values f)) '()))
+                (after (and f (filter-spec-after f))))
            (cond
             ((or (eq? s 'invalid) (eq? p 'invalid))
              (refused w '() 400 "invalid_request"
                       (string-append "a ?state= that names no live state, or a ?parent= that is neither null"
                                      " nor one v7 id, is 400")
+                      no-situation))
+            ((eq? tags 'invalid)
+             (refused w '() 400 "invalid_request"
+                      "more than 10 ?tag= as sent, or one the rule refuses, an empty one too, is 400, after limit, after, state and parent, before the job"
                       no-situation))
             ((and (bytevector? p) (not (own-node w (event-tag e) p)))
              (refused w '() 404 "not_found"
@@ -1885,10 +2455,14 @@
             (else
              (read-answer w #f
                           (map (lambda (n) (node-json n #f))
-                               (by-id (filter (lambda (n) (and (eq? (mnode-state n) s) (under? n p)))
+                               (by-id (filter (lambda (n) (and (eq? (mnode-state n) s) (under? n p)
+                                                               (for-all (lambda (t) (member t (mnode-tags n))) tags)
+                                                               (or (not after) (bytevector<? after (mnode-id n)))))
                                               (nodes-of w (event-tag e)))))
-                          #f (format "a list is the account's own ~a nodes~a, by id, with no bodies" s
-                                     (cond ((eq? p 'any) "") ((not p) " at the top level") (else " under the parent"))))))))
+                          #f (format "a list is the account's own ~a nodes~a~a, by id, with no bodies" s
+                                     (cond ((eq? p 'any) "") ((not p) " at the top level") (else " under the parent"))
+                                     (if (pair? tags) (format " that carry each of ~s" tags) "")))))))
+        ((list-tags) (expect-tags-list w e))
         ((list-revisions)
          (if own
              (read-answer w #f (map (lambda (s) (snap-json (mnode-kind own) s #f)) (mnode-snaps own)) #f
@@ -1902,6 +2476,36 @@
                         "a snapshot no live node of the account's has, a gap's among them, is 404" no-situation))))
         ((list-links) (expect-links w e own))
         (else (cannot w '() (format "no such request: ~a" (event-kind e)))))))
+
+  ;; tag-counts : World Tag -> (Listof (Pair String Natural))
+  ;; TAG's tags, each once, sorted by code point, each with how many of
+  ;; its live nodes carry it, in any state, stopped at 1,000 (G6, H6).
+  (define (tag-counts w tag)
+    (let ((t (make-hashtable string-hash string=?)))
+      (for-each (lambda (n) (for-each (lambda (x) (hashtable-update! t x (lambda (c) (+ c 1)) 0)) (mnode-tags n)))
+                (nodes-of w tag))
+      (map (lambda (x) (cons x (min count-most (hashtable-ref t x 0))))
+           (list-sort string<? (vector->list (hashtable-keys t))))))
+
+  ;; tag-item-json : (Pair String Natural) -> Alist     {"tag", "count"}
+  (define (tag-item-json p) (sorted (list (cons "tag" (car p)) (cons "count" (cdr p)))))
+
+  ;; expect-tags-list : World Event -> Expectation
+  ;; GET /v1/tags (G6, the review's blocker 5), the first that applies: an
+  ;; after given twice, or one the rule refuses, is 400, before the job;
+  ;; else the account's tags after the after's stored form, in order, each
+  ;; with its count (tag-counts), paged by limit and after; none is an
+  ;; empty page.
+  (define (expect-tags-list w e)
+    (let ((a (tags-list-spec-after (event-tagq e))))
+      (if (or (eq? a 'twice) (and (pair? a) (not (tag-ok? (cadr a)))))
+          (refused w '() 400 "invalid_request" "a tags list's after given twice, or one the rule refuses, is 400, before the job"
+                   no-situation)
+          (let ((after (and (pair? a) (tag-entry-stored (cadr a)))))
+            (read-answer w #f
+                         (map tag-item-json
+                              (filter (lambda (p) (or (not after) (string<? after (car p)))) (tag-counts w (event-tag e))))
+                         #f "the tags list is the account's tags, by code point, each with its count of nodes in any state, stopped at 1,000")))))
 
   ;; link-direction : (U String 'twice #f) -> (U 'out 'in 'invalid)
   ;; K3 and the review: none is out; out and in, exactly; anything else,
@@ -2010,11 +2614,36 @@
 
   (define (content-text w c)
     (if c
-        (format " ~a~s ~s ~s~a~a" (if (content-kind c) (string-append (content-kind c) " ") "")
+        (format " ~a~s ~s ~s~a~a~a" (if (content-kind c) (string-append (content-kind c) " ") "")
                 (content-title c) (content-body c) (content-type c)
                 (let ((p (content-props c))) (if p (format " props ~a ~a" (entry-name p) (entry-sent p)) ""))
-                (if (eq? (content-parent c) 'absent) "" (string-append ", parent " (ref-label w (content-parent c)))))
+                (if (eq? (content-parent c) 'absent) "" (string-append ", parent " (ref-label w (content-parent c))))
+                (let ((ts (content-tags c)))
+                  (cond ((eq? ts 'absent) "")
+                        ((eq? (car ts) 'entries)
+                         (format ", tags [~a]" (join (map (lambda (e) (format "~a" (tag-entry-name e))) (cadr ts)) " ")))
+                        (else (format ", tags ~a" (cadr ts))))))
         ""))
+
+  ;; query-tag-label : QueryTag -> String
+  (define (query-tag-label q)
+    (cond ((eq? q 'bare) "tag (no =)")
+          ((eq? (car q) 'entry) (format "~a~s~a" (tag-entry-name (cadr q)) (tag-entry-sent (cadr q))
+                                        (if (eq? (caddr q) 'plus) " (spaces as +)" "")))
+          (else (format "~a ~s" (caddr q) (cadr q)))))
+
+  ;; command-body-label : Body -> String
+  (define (command-body-label b)
+    (case (car b)
+      ((members) (string-append "{" (join (map (lambda (m) (format "~s: ~a" (car m)
+                                                                 (if (tag-entry? (cdr m))
+                                                                     (format "~a~s" (tag-entry-name (cdr m)) (tag-entry-sent (cdr m)))
+                                                                     (cadr (cdr m)))))
+                                               (cadr b))
+                                          ", ")
+                                "}"))
+      ((padded) (format "~a padded to ~a bytes" (command-body-label (list 'members (cadr b))) (caddr b)))
+      (else (format "the text ~s" (cadr b)))))
 
   (define (headers-text hs)
     (if (null? hs) "(no precondition)" (join (map (lambda (h) (format "~a: ~a" (car h) (cdr h))) hs) ", ")))
@@ -2034,8 +2663,22 @@
         ((move move-children)
          (format "~a POST ~a /~a to ~a, ~a" at target (event-kind e) (ref-label w (event-parent e))
                  (headers-text (event-headers e))))
-        ((list-nodes) (format "~a GET /v1/nodes state=~a parent=~a limit=~a" at (event-query e)
-                              (ref-label w (event-parent e)) (event-limit e)))
+        ((list-nodes) (format "~a GET /v1/nodes state=~a parent=~a limit=~a~a" at (event-query e)
+                              (ref-label w (event-parent e)) (event-limit e)
+                              (let ((f (event-tagq e)))
+                                (if f
+                                    (format " tags ~a after=~a" (join (map query-tag-label (filter-spec-values f)) " ")
+                                            (let ((a (filter-spec-after f))) (if a (node-label w a) "none")))
+                                    ""))))
+        ((list-tags) (format "~a GET /v1/tags limit=~a after=~a" at (event-limit e)
+                             (let ((a (tags-list-spec-after (event-tagq e))))
+                               (cond ((not a) "none") ((eq? a 'twice) "twice") (else (query-tag-label a))))))
+        ((rename-tag remove-tag)
+         (let ((spec (event-tagq e)))
+           (format "~a POST /v1/tags/~a ~a~a~a" at (if (eq? (event-kind e) 'rename-tag) "rename" "remove")
+                   (command-body-label (command-spec-body spec))
+                   (if (command-spec-json? spec) "" ", text/plain")
+                   (if (pair? (event-headers e)) (string-append ", " (headers-text (event-headers e))) ""))))
         ((list-revisions) (format "~a GET revisions of ~a limit=~a" at target (event-limit e)))
         ((get-snapshot) (format "~a GET ~a snapshot ~a" at target (event-snap e)))
         ((link unlink)
@@ -2095,12 +2738,15 @@
             ((< r 94) (values (+ now day-ms 1) 'wait-a-day-and-a-ms))
             (else (values (+ now (* 2 day-ms) long) 'wait-days)))))
 
-  ;; random-content : Rng (U String #f) ParentRef (U Entry #f) -> Content
-  (define (random-content rng kind parent props)
+  ;; random-content : Rng (U String #f) ParentRef (U Entry #f) -> Content     with no tags member
+  (define (random-content rng kind parent props) (random-tagged-content rng kind parent props 'absent))
+
+  ;; random-tagged-content : Rng (U String #f) ParentRef (U Entry #f) TagsSent -> Content
+  (define (random-tagged-content rng kind parent props tags)
     (let* ((title (rng-pick! rng title-pool))
            (body (rng-pick! rng body-pool))
            (type (rng-pick! rng type-pool)))
-      (make-content kind title body type props parent)))
+      (make-tagged-content kind title body type props parent tags)))
 
   ;; Forest: the world's tree as the generator walks it, built once a request.
   ;;   depth   Bytevector -> Natural          how many ancestors
@@ -2505,7 +3151,8 @@
   (define (create-of rng w now tag key kind parent aims)
     (let* ((id (fresh-node-id rng w))
            (props (safe-props rng kind))
-           (c (random-content rng kind parent props)))
+           (tags (safe-tags rng))
+           (c (random-tagged-content rng kind parent props tags)))
       (make-event 'put now tag key id 'create (list (cons "If-None-Match" "*")) c #f #f #f #f aims 'absent)))
 
   ;; chore-options : World Forest Tag -> (Listof (Pair Symbol (Listof MNode)))
@@ -2984,8 +3631,12 @@
                                               (if (pair? chores) '((8 . chore)) '())
                                               '((36 . link) (12 . unlink) (18 . list-links))
                                               (if (pair? link-chores) '((6 . link-chore)) '())
-                                              '((34 . task))))))
+                                              '((34 . task))
+                                              '((16 . tag-filter) (7 . list-tags) (9 . rename-tag) (5 . remove-tag))))))
         (case kind
+          ((tag-filter) (filter-list-event rng w f now tag key wait))
+          ((list-tags) (tags-list-event rng w now tag key wait))
+          ((rename-tag remove-tag) (command-event rng w now tag key wait kind))
           ((link unlink) (link-write-event rng w now tag key kind wait upper? degree))
           ((list-links) (links-list-event rng w now tag key wait upper? degree))
           ((link-chore) (link-chore-event rng now tag key (rng-pick! rng link-chores) wait degree))
@@ -3008,10 +3659,11 @@
                   (k0 (rng-pick! rng kinds)))
              (let*-values (((parent p-aim) (choose-create-parent rng w f tag id))
                            ((k) (create-kind rng w tag parent k0))
-                           ((props props-aim) (choose-create-props rng k)))
-               (let ((c (random-content rng k parent props)))
+                           ((props props-aim) (choose-create-props rng k))
+                           ((tags tags-aim) (choose-create-tags rng)))
+               (let ((c (random-tagged-content rng k parent props tags)))
                  (make-event 'put now tag key id 'create (list (cons "If-None-Match" "*")) c #f #f #f upper?
-                             (list aim p-aim props-aim wait) 'absent)))))
+                             (list aim p-aim props-aim tags-aim wait) 'absent)))))
           ((replace)
            (let*-values (((r) (rng-below! rng 100))
                          ((task) (cond ((< r 25) (own-task-target rng w tag))
@@ -3028,10 +3680,11 @@
                          ((k kind-aim) (if (and (eq? props-aim 'props-too-large) k (not (equal? k "contact"))
                                                 (= 0 (rng-below! rng 2)))
                                            (values "contact" (if (and n (equal? (mnode-kind n) "contact")) 'kind-same 'kind-other))
-                                           (values k kind-aim))))
-             (let ((c (random-content rng k 'absent props)))
+                                           (values k kind-aim)))
+                         ((tags tags-aim) (choose-replace-tags rng (and (eq? where 'own) n))))
+             (let ((c (random-tagged-content rng k 'absent props tags)))
                (make-event 'put now tag key id rev (list (cons "If-Match" (etag-of rev))) c #f #f #f upper?
-                           (append (list (sym "replace-" where "-" rev-aim) kind-aim props-aim wait)
+                           (append (list (sym "replace-" where "-" rev-aim) kind-aim props-aim tags-aim wait)
                                    (if (eq? where 'own) (list (sym "replace-own-" (mnode-state n))) '()))
                            'absent))))
           ((restore)
@@ -3105,7 +3758,7 @@
              (make-event 'get-node now tag key id #f '() #f #f #f #f upper? (list (sym "get-node-" where) wait)
                          'absent)))
           ((list-nodes)
-           (let*-values (((limit) (rng-pick! rng '(1 2 3 #f)))
+           (let*-values (((limit) (rng-pick! rng (list-limits w tag)))
                          ((q) (rng-weighted! rng '((28 . none) (18 . "active") (21 . "archived") (21 . "trashed")
                                                    (3 . "purged") (3 . "ARCHIVED") (3 . "deleted") (3 . twice))))
                          ((parent p-aim) (choose-list-parent rng w f tag)))
@@ -3131,6 +3784,346 @@
                          ((k snap-aim) (choose-snapshot rng n)))
              (make-event 'get-snapshot now tag key id #f '() #f k #f #f upper?
                          (list (sym "get-snapshot-" where) (sym "get-" snap-aim) wait) 'absent)))))))
+
+  ;;; The generator's tags (slice 7a)
+
+  ;; pick-tags! : Rng (Listof TagEntry) Natural Natural -> (Listof TagEntry)
+  ;; LO to HI entries of POOL, each drawn alone: one may come twice.
+  (define (pick-tags! rng pool lo hi)
+    (let loop ((k (+ lo (rng-below! rng (+ 1 (- hi lo))))) (acc '()))
+      (if (= k 0) acc (loop (- k 1) (cons (rng-pick! rng pool) acc)))))
+
+  ;; numbered-sent : (Listof TagEntry)     T01 to T50, as sent: fifty tags, G5's cap
+  (define numbered-sent
+    (filter (lambda (e) (char=? (string-ref (tag-entry-sent e) 0) #\T)) numbered-tags))
+
+  (define (list-of n x) (if (= n 0) '() (cons x (list-of (- n 1) x))))
+
+  ;; over-cap-tags! : Rng -> (Listof TagEntry)     51 entries: one tag 51 times, or 51 tags
+  (define (over-cap-tags! rng)
+    (if (= 0 (rng-below! rng 2))
+        (list-of (+ tag-most 1) (tag-named 'work-capital))
+        (cons (tag-named 'work) numbered-sent)))
+
+  ;; folded-to-one! : Rng -> (Listof TagEntry)     every form the corpus has of one tag: one tag stored
+  (define (folded-to-one! rng)
+    (forms-of (rng-pick! rng '("work" "work-space" "c++" "\xe9;" "home-life" "a-b" "a" "stra\xdf;e"))))
+
+  ;; with-refused! : Rng (Listof TagEntry) -> (Listof TagEntry)     a refused entry put among ES
+  (define (with-refused! rng es)
+    (let ((bad (rng-pick! rng bad-tags)) (k (rng-below! rng (+ 1 (length es)))))
+      (append (take* es k) (list bad) (list-tail es k))))
+
+  ;; safe-tags : Rng -> TagsSent
+  ;; A scripted create's tags (the chain's, a family's, a hub's): none
+  ;; half the time, else one or two common ones, so its nodes are made.
+  (define (safe-tags rng)
+    (if (= 0 (rng-below! rng 2)) 'absent (list 'entries (pick-tags! rng common-tags 1 2))))
+
+  ;; choose-create-tags : Rng -> (values TagsSent Symbol)
+  ;; A create's tags: none (so none); one to three common ones; [];
+  ;; any tag the rule takes; one tag in every form (one stored); a refused
+  ;; entry among common ones (400); a value that is no array of strings
+  ;; (400); fifty tags (G5's cap); 51 entries (400, as sent); one to four of
+  ;; any.
+  (define (choose-create-tags rng)
+    (let ((r (rng-below! rng 100)))
+      (cond ((< r 30) (values 'absent 'tags-create-none))
+            ((< r 60) (values (list 'entries (pick-tags! rng common-tags 1 3)) 'tags-create-common))
+            ((< r 64) (values '(entries ()) 'tags-create-empty))
+            ((< r 72) (values (list 'entries (cons (rng-pick! rng good-tags) (pick-tags! rng common-tags 0 2))) 'tags-create-any))
+            ((< r 76) (values (list 'entries (folded-to-one! rng)) 'tags-create-folded-to-one))
+            ((< r 84) (values (list 'entries (with-refused! rng (pick-tags! rng common-tags 0 2))) 'tags-create-refused-entry))
+            ((< r 88) (let ((v (rng-pick! rng raw-tags-values))) (values v (sym "tags-create-raw-" (caddr v)))))
+            ((< r 91) (values (list 'entries numbered-sent) 'tags-create-at-cap))
+            ((< r 94) (values (list 'entries (over-cap-tags! rng)) 'tags-create-over-cap))
+            (else (values (list 'entries (pick-tags! rng good-tags 1 4)) 'tags-create-many-kinds)))))
+
+  ;; choose-replace-tags : Rng (U MNode #f) -> (values TagsSent Symbol)
+  ;; A replace's tags for N, the account's live node (#f for none): none
+  ;; (G2: kept) most often; N's own sent back as read; in other forms; [];
+  ;; one to three common ones; N's own and one more; N's own with a refused
+  ;; entry (400); a value that is no array (400); fifty; 51 (400); any.
+  (define (choose-replace-tags rng n)
+    (let* ((r (rng-below! rng 100)) (own (map fixed-point-of (if n (mnode-tags n) '())))
+           (new (lambda () (values (list 'entries (pick-tags! rng common-tags 1 3)) 'tags-replace-new))))
+      (cond ((< r 40) (values 'absent 'tags-replace-none))
+            ((< r 50) (if (pair? own) (values (list 'entries own) 'tags-replace-sent-back) (new)))
+            ((< r 55)
+             (if (pair? own)
+                 (values (list 'entries (map (lambda (e) (rng-pick! rng (forms-of (tag-entry-stored e)))) own))
+                         'tags-replace-other-forms)
+                 (new)))
+            ((< r 63) (if (pair? own) (values '(entries ()) 'tags-replace-cleared) (new)))
+            ((< r 66) (values '(entries ()) 'tags-replace-cleared))
+            ((< r 78) (new))
+            ((< r 83) (values (list 'entries (append own (pick-tags! rng common-tags 1 1))) 'tags-replace-added))
+            ((< r 87) (values (list 'entries (with-refused! rng own)) 'tags-replace-refused-entry))
+            ((< r 89) (let ((v (rng-pick! rng raw-tags-values))) (values v (sym "tags-replace-raw-" (caddr v)))))
+            ((< r 91) (values (list 'entries numbered-sent) 'tags-replace-at-cap))
+            ((< r 92) (values (list 'entries (over-cap-tags! rng)) 'tags-replace-over-cap))
+            (else (values (list 'entries (pick-tags! rng good-tags 1 3)) 'tags-replace-many-kinds)))))
+
+  ;; account-tags : World Tag -> (Listof String)     every tag TAG's live nodes carry, each once
+  (define (account-tags w tag) (tag-set (apply append (map mnode-tags (nodes-of w tag)))))
+
+  ;; list-limits : World Tag -> (Listof (U Natural #f))
+  ;; A list's page sizes: 1, 2, 3 or none; 100 or none when the account has
+  ;; over 200 live nodes (a crowd's), so a walk ends in its 250 pages.
+  (define (list-limits w tag) (if (> (length (nodes-of w tag)) 200) '(100 #f) '(1 2 3 #f)))
+
+  ;; query-tag-of! : Rng String -> QueryTag     one of the stored form T's entries, spaces as + a time in five
+  (define (query-tag-of! rng t)
+    (list 'entry (rng-pick! rng (forms-of t)) (if (= 0 (rng-below! rng 5)) 'plus 'strict)))
+
+  ;; filter-values! : Rng World Tag Natural (U Symbol 'invalid) -> (values (Listof QueryTag) Symbol)
+  ;; N ?tag= values: three times in four, when the account has a tagged
+  ;; node in STATE (any state for 'invalid), that node's tags first (so
+  ;; every tag is found together), then any of the account's or the common
+  ;; ones; else any of those. Then, one time in eight, one of them made a
+  ;; raw value (a + for a space, bad UTF-8); one in twelve a refused one,
+  ;; an empty one or the field with no = (each the 400).
+  (define (filter-values! rng w tag n state)
+    (let* ((tagged (filter (lambda (m) (and (pair? (mnode-tags m)) (or (eq? state 'invalid) (eq? (mnode-state m) state))))
+                           (nodes-of w tag)))
+           (pool (tag-set (append (account-tags w tag) (map tag-entry-stored common-tags))))
+           (base (if (and (pair? tagged) (< (rng-below! rng 4) 3)) (mnode-tags (rng-pick! rng tagged)) '()))
+           (stored (let loop ((k 0) (acc '()))
+                     (cond ((= k n) (reverse acc))
+                           ((< k (length base)) (loop (+ k 1) (cons (list-ref base k) acc)))
+                           ((and (pair? base) (< (rng-below! rng 3) 2)) (loop (+ k 1) (cons (rng-pick! rng base) acc)))
+                           (else (loop (+ k 1) (cons (rng-pick! rng pool) acc))))))
+           (qs (map (lambda (t) (query-tag-of! rng t)) stored))
+           (r (rng-below! rng 24))
+           (at (rng-below! rng n)))
+      (cond ((< r 3)
+             (let ((c (rng-pick! rng (filter (lambda (c) (string? (caddr c))) query-raw-cases))))
+               (values (append (take* qs at) (list (list 'raw (car c) (cadr c))) (list-tail qs (+ at 1))) 'tag-filter-raw)))
+            ((= r 3) (values (append (take* qs at) (list (list 'entry (rng-pick! rng bad-tags) 'strict)) (list-tail qs (+ at 1)))
+                             'tag-filter-refused))
+            ((= r 4) (values (append (take* qs at) (list (list 'raw "" 'raw-empty)) (list-tail qs (+ at 1))) 'tag-filter-empty))
+            ((= r 5) (values (append (take* qs at) (list 'bare) (list-tail qs (+ at 1))) 'tag-filter-bare))
+            (else (values qs (if (pair? base) 'tag-filter-from-a-node 'tag-filter-any))))))
+
+  ;; filter-list-event : Rng World Forest Natural Tag Bytevector Symbol -> Event
+  ;; GET /v1/nodes?tag=: one tag most often, then two, three, six, ten
+  ;; (counted as sent, each value toward the ten) and eleven (the 400);
+  ;; ?state= none, a live state, or one refused; a quarter of the time a
+  ;; ?parent= as choose-list-parent draws it; a page size by list-limits;
+  ;; one time in eight a first page after a place.
+  (define (filter-list-event rng w f now tag key wait)
+    (let*-values (((limit) (rng-pick! rng (list-limits w tag)))
+                  ((q) (rng-weighted! rng '((40 . none) (22 . "active") (15 . "archived") (15 . "trashed") (2 . "ARCHIVED")
+                                            (2 . twice))))
+                  ((parent p-aim) (if (< (rng-below! rng 100) 25) (choose-list-parent rng w f tag) (values 'absent 'flat)))
+                  ((n) (rng-weighted! rng '((55 . 1) (20 . 2) (8 . 3) (7 . 6) (5 . 10) (5 . 11))))
+                  ((vals v-aim) (filter-values! rng w tag n (list-state (if (eq? q 'none) #f q))))
+                  ((own) (nodes-of w tag))
+                  ((after) (if (= 0 (rng-below! rng 8))
+                               (if (and (pair? own) (< (rng-below! rng 4) 3)) (mnode-id (rng-pick! rng own)) (fresh-node-id rng w))
+                               #f)))
+      (make-filter-event now tag key limit (if (eq? q 'none) #f q) parent
+                         (list (sym "tag-filter-" (number->string n)) v-aim (sym "tag-filter-parent-" p-aim) wait)
+                         (make-filter-spec vals after))))
+
+  ;; tags-list-event : Rng World Natural Tag Bytevector Symbol -> Event
+  ;; GET /v1/tags: a page of 1, 2, 3, none (50) or 100; a first page after
+  ;; one of the account's tags in any form, after any tag the rule takes,
+  ;; after a refused one (400), or after given twice (400).
+  (define (tags-list-event rng w now tag key wait)
+    (let* ((limit (rng-weighted! rng '((25 . 1) (20 . 2) (15 . 3) (25 . #f) (15 . 100))))
+           (mine (account-tags w tag))
+           (r (rng-below! rng 100))
+           (after (cond ((and (pair? mine) (< r 12)) (query-tag-of! rng (rng-pick! rng mine)))
+                        ((< r 16) (list 'entry (rng-pick! rng good-tags) (if (= 0 (rng-below! rng 3)) 'plus 'strict)))
+                        ((< r 19) (list 'entry (rng-pick! rng bad-tags) 'strict))
+                        ((< r 21) 'twice)
+                        (else #f))))
+      (make-tag-event 'list-tags now tag key '() limit
+                      (list (cond ((not after) 'list-tags-from-the-start) ((eq? after 'twice) 'list-tags-after-twice)
+                                  ((tag-ok? (cadr after)) 'list-tags-after-a-tag) (else 'list-tags-after-refused))
+                            wait)
+                      (make-tags-list-spec after))))
+
+  ;; precondition-headers : (Listof (Listof Header))     what a tag's command takes none of: each the 400
+  (define precondition-headers
+    (list (list (cons "If-Match" "\"1\"")) (list (cons "If-None-Match" "*")) (list (cons "If-Match" "*"))
+          (list (cons "If-Match" "W/\"1\""))))
+
+  (define (capitalised s) (string-append (string (char-upcase (string-ref s 0))) (substring s 1 (string-length s))))
+
+  ;; malformed! : Rng (Listof (Pair String Value)) -> (values Body Symbol)
+  ;; A command's body that is no request it takes: a member missing,
+  ;; another beside them, one twice, a number, null, a name in another
+  ;; case; or a text that is no object, or none, or no JSON.
+  (define (malformed! rng members)
+    (let* ((one (car members))
+           (choice (rng-pick! rng
+                              (list (list 'member-missing 'members (cdr members))
+                                    (list 'member-extra 'members (append members (list (cons "x" '(json "1")))))
+                                    (list 'member-twice 'members (cons one members))
+                                    (list 'member-number 'members (cons (cons (car one) '(json "1")) (cdr members)))
+                                    (list 'member-null 'members (cons (cons (car one) '(json "null")) (cdr members)))
+                                    (list 'member-capitalised 'members (cons (cons (capitalised (car one)) (cdr one)) (cdr members)))
+                                    (list 'text-empty 'text "" 'invalid) (list 'text-array 'text "[]" 'invalid)
+                                    (list 'text-null 'text "null" 'invalid) (list 'text-string 'text "\"work\"" 'invalid)
+                                    (list 'text-cut 'text "{" 'not-json) (list 'text-no-value 'text "{\"tag\":}" 'not-json)))))
+      (values (cdr choice) (car choice))))
+
+  ;; command-event : Rng World Natural Tag Bytevector Symbol Symbol -> Event
+  ;; POST /v1/tags/rename (KIND rename-tag) or /remove: from (or tag) most
+  ;; often a tag the account carries, in any form; a tag only the other
+  ;; account carries (none of its own: 0 and 0); a common one; any; a
+  ;; refused one (400). A rename's to a common tag (often a merge),
+  ;; another of its own (a merge), the same once stored (400), any, a
+  ;; refused one. One time in seven a malformed body, one in 25 a body
+  ;; over 16 KiB (413), one in 25 text/plain (415), one in 20 a
+  ;; precondition (400).
+  (define (command-event rng w now tag key wait kind)
+    (let*-values (((mine) (account-tags w tag))
+                  ((theirs-only) (filter (lambda (t) (not (member t mine))) (account-tags w (other-tag tag))))
+                  ((from-aim) (rng-weighted! rng (append (if (pair? mine) '((55 . own)) '())
+                                                         (if (pair? theirs-only) '((12 . theirs-only)) '())
+                                                         '((15 . common) (5 . refused) (8 . any)))))
+                  ((from) (case from-aim
+                            ((own) (rng-pick! rng (forms-of (rng-pick! rng mine))))
+                            ((theirs-only) (rng-pick! rng (forms-of (rng-pick! rng theirs-only))))
+                            ((common) (rng-pick! rng common-tags))
+                            ((refused) (rng-pick! rng bad-tags))
+                            (else (rng-pick! rng good-tags))))
+                  ((to-aim) (rng-weighted! rng (append '((45 . common)) (if (pair? mine) '((25 . own)) '())
+                                                       '((10 . same) (10 . any) (5 . refused)))))
+                  ((to) (case to-aim
+                          ((common) (rng-pick! rng common-tags))
+                          ((own) (rng-pick! rng (forms-of (rng-pick! rng mine))))
+                          ((same) (if (tag-ok? from) (rng-pick! rng (forms-of (tag-entry-stored from))) from))
+                          ((refused) (rng-pick! rng bad-tags))
+                          (else (rng-pick! rng good-tags))))
+                  ((members) (if (eq? kind 'rename-tag)
+                                 (if (= 0 (rng-below! rng 2))
+                                     (list (cons "from" from) (cons "to" to))
+                                     (list (cons "to" to) (cons "from" from)))
+                                 (list (cons "tag" from))))
+                  ((r) (rng-below! rng 100))
+                  ((body body-aim) (cond ((< r 86) (values (list 'members members) 'body-exact))
+                                         ((< r 96) (malformed! rng members))
+                                         (else (values (list 'padded members 20000) 'body-over-cap))))
+                  ((json?) (< 0 (rng-below! rng 25)))
+                  ((headers) (if (= 0 (rng-below! rng 20)) (rng-pick! rng precondition-headers) '())))
+      (make-tag-event kind now tag key headers #f
+                      (append (list (sym kind "-from-" from-aim) (sym kind "-" body-aim) wait)
+                              (if (eq? kind 'rename-tag) (list (sym kind "-to-" to-aim)) '()))
+                      (make-command-spec body json?))))
+
+  ;;; A crowd sequence: over 500 carriers of a tag (slice 7a)
+
+  ;; crowd-seed? : Natural -> Boolean
+  ;; One in fifty: a seed ending in 04 or 54, so never deep (no multiple
+  ;; of fifteen ends in 4), a family nor linked.
+  (define (crowd-seed? seed) (= 4 (mod seed 50)))
+
+  ;; crowd-world : Rng Natural Natural Tag -> World
+  ;; A crowd seed's start, written straight into its file as a client
+  ;; filled it: TAG's 501 to 560 Notes (1,001 to 1,060 when the seed ends
+  ;; in 04), each made before T0 at the top level carrying crowd, every
+  ;; fourth throng too and every seventh work; one in ten archived and one
+  ;; in ten trashed, each at revision 2 by its change row; and the other
+  ;; account's three Notes carrying crowd and throng. So a step of crowd
+  ;; takes 500 and leaves more, in every state, merges into throng where
+  ;; it is, and leaves the other account's alone; and a count stops at
+  ;; 1,000.
+  (define (crowd-world rng t0 seed tag)
+    (let* ((n (+ (if (= 4 (mod seed 100)) 1001 501) (rng-below! rng 60)))
+           (seen (make-id-table))
+           (fresh! (lambda ()
+                     (let loop ()
+                       (let ((bv (rng-bytes! rng 16)))
+                         (bytevector-u8-set! bv 6 (bitwise-ior #x70 (bitwise-and (bytevector-u8-ref bv 6) #x0f)))
+                         (bytevector-u8-set! bv 8 (bitwise-ior #x80 (bitwise-and (bytevector-u8-ref bv 8) #x3f)))
+                         (if (hashtable-ref seen bv #f) (loop) (begin (hashtable-set! seen bv #t) bv))))))
+           (other (other-tag tag)))
+      (let loop ((i 1) (nodes '()) (changes '((a) (b))))
+        (if (> i (+ n 3))
+            (make-world (reverse nodes) start-keys
+                        (map (lambda (p) (cons (car p) (reverse (cdr p)))) changes)
+                        '() '() '())
+            (let* ((owner (if (> i n) other tag))
+                   (id (fresh!))
+                   (created (- t0 (* 10 (- (+ n 4) i))))
+                   (label (string-append "c" (number->string i)))
+                   (tags (if (> i n)
+                             '("crowd" "throng")
+                             (tag-set (append '("crowd") (if (= 0 (mod i 4)) '("throng") '())
+                                              (if (= 0 (mod i 7)) '("work") '())))))
+                   (state (if (> i n) 'active (case (mod i 10) ((3) 'archived) ((7) 'trashed) (else 'active))))
+                   (rev (if (eq? state 'active) 1 2))
+                   (node (make-mnode id owner label "note" created state rev (if (= rev 1) created (+ created 1))
+                                     (list (make-msnap 1 label "" "text/plain" (plain-props "{}") created owner tags))
+                                     #f tags))
+                   (old (cdr (assq owner changes)))
+                   (rows (append (if (= rev 2)
+                                     (list (make-mchange (+ 2 (length old)) id 2 (if (eq? state 'archived) "archive" "trash")
+                                                         (+ created 1)))
+                                     '())
+                                 (list (make-mchange (+ 1 (length old)) id 1 "create" created)))))
+              (loop (+ i 1) (cons node nodes)
+                    (map (lambda (p) (if (eq? (car p) owner) (cons owner (append rows old)) p)) changes)))))))
+
+  ;; crowd-steps : Natural
+  (define crowd-steps 15)
+
+  ;; crowd-event : Rng World Natural Tag Natural -> (U Event #f)
+  ;; Step K of the script a crowd seed's TAG runs first, each by TAG:
+  ;;    1 the tags list, two a page: crowd's count stopped at 1,000 when it has more
+  ;;    2 the archived nodes that carry crowd, 100 a page
+  ;;    3 rename Crowd to throng: 500 renamed, a merge where throng is, the rest left
+  ;;    4 a Note made with Crowd: left rises by one
+  ;;    5 a restore of a renamed node's first snapshot: crowd comes back
+  ;;    6 to 8 rename CROWD to THRONG, crowd to throng, and again: until left is 0, then 0 and 0
+  ;;    9 the tags list
+  ;;   10 the nodes that carry throng and work, any state, 100 a page
+  ;;   11 to 14 remove Throng, throng, THRONG, throng: 500 a step, then 0 and 0
+  ;;   15 the tags list
+  ;; #f when a node it names is not there.
+  (define (crowd-event rng w now0 tag k)
+    (let*-values (((key) (rng-pick! rng (key-ids-of tag)))
+                  ((now wait) (next-time rng now0 (world-key-last-used w key))))
+      (let* ((aims (list (sym "crowd-" (number->string k)) wait))
+             (tags-list (lambda (limit) (make-tag-event 'list-tags now tag key '() limit aims (make-tags-list-spec #f))))
+             (command (lambda (kind members)
+                        (make-tag-event kind now tag key '() #f aims
+                                        (make-command-spec (list 'members (map (lambda (m) (cons (car m) (tag-named (cdr m))))
+                                                                               members))
+                                                           #t))))
+             (rename (lambda (from to) (command 'rename-tag (list (cons "from" from) (cons "to" to)))))
+             (remove (lambda (t) (command 'remove-tag (list (cons "tag" t)))))
+             (filter-of (lambda (state names)
+                          (make-filter-event now tag key 100 state 'absent aims
+                                             (make-filter-spec (map (lambda (n) (list 'entry (tag-named n) 'strict)) names) #f)))))
+        (case k
+          ((1) (tags-list 2))
+          ((2) (filter-of "archived" '(crowd)))
+          ((3) (rename 'crowd-capital 'throng))
+          ((4) (make-event 'put now tag key (fresh-node-id rng w) 'create (list (cons "If-None-Match" "*"))
+                           (make-tagged-content "note" "joined" "" "text/plain" #f 'absent
+                                                (list 'entries (list (tag-named 'crowd-capital))))
+                           #f #f #f #f aims 'absent))
+          ((5) (let ((back (find (lambda (n) (and (memq (mnode-state n) '(active archived))
+                                                  (not (member "crowd" (mnode-tags n)))
+                                                  (let ((s (snap-of n 1))) (and s (member "crowd" (msnap-tags s))))))
+                                 (by-id (nodes-of w tag)))))
+                 (and back (make-event 'restore now tag key (mnode-id back) (node-rev back)
+                                       (list (cons "If-Match" (etag-of (node-rev back)))) #f 1 #f #f #f aims 'absent))))
+          ((6) (rename 'crowd-upper 'throng-upper))
+          ((7 8) (rename 'crowd 'throng))
+          ((9 15) (tags-list #f))
+          ((10) (make-filter-event now tag key 100 #f 'absent aims
+                                   (make-filter-spec (list (list 'entry (tag-named 'throng) 'strict)
+                                                           (list 'entry (tag-named 'work-capital) 'plus))
+                                                     #f)))
+          ((11) (remove 'throng-capital))
+          ((12 14) (remove 'throng))
+          (else (remove 'throng-upper))))))
 
   ;;; A deep sequence: the chain, then the script
 
@@ -3389,18 +4382,61 @@
 
   ;; content->text : Content -> String
   ;; The PUT's JSON, with the props entry's text, when there is one, spliced
-  ;; in last exactly as the corpus writes it: so a name twice, a flonum and
-  ;; an escape reach the server as sent.
+  ;; in exactly as the corpus writes it: so a name twice, a flonum and an
+  ;; escape reach the server as sent; then the tags member, when there is
+  ;; one, in the model's own writing (tags-member-text).
   (define (content->text c)
-    (let ((base (json->string (append (if (content-kind c) (list (cons "kind" (content-kind c))) '())
-                                      (list (cons "title" (content-title c)) (cons "body" (content-body c))
-                                            (cons "content_type" (content-type c)))
-                                      (if (eq? (content-parent c) 'absent) '()
-                                          (list (cons "parent" (ref-text (content-parent c)))))))))
-      (if (content-props c)
-          (string-append (substring base 0 (- (string-length base) 1))
-                         ",\"props\":" (entry-sent (content-props c)) "}")
-          base)))
+    (let* ((base (json->string (append (if (content-kind c) (list (cons "kind" (content-kind c))) '())
+                                       (list (cons "title" (content-title c)) (cons "body" (content-body c))
+                                             (cons "content_type" (content-type c)))
+                                       (if (eq? (content-parent c) 'absent) '()
+                                           (list (cons "parent" (ref-text (content-parent c))))))))
+           (tags (tags-member-text (content-tags c)))
+           (extra (append (if (content-props c) (list (string-append "\"props\":" (entry-sent (content-props c)))) '())
+                          (if tags (list (string-append "\"tags\":" tags)) '()))))
+      (if (null? extra)
+          base
+          (string-append (substring base 0 (- (string-length base) 1)) "," (join extra ",") "}"))))
+
+  (define upper-hex "0123456789ABCDEF")
+
+  ;; query-escape : String Symbol -> String
+  ;; S as a query's value, in the model's own writing: its UTF-8 bytes,
+  ;; each ASCII letter and digit and - . _ ~ as it is, a space as %20
+  ;; (MODE 'strict) or + ('plus), every other byte %XX: so a + is %2B, as
+  ;; the guide tells a client (H8).
+  (define (query-escape s mode)
+    (apply string-append
+           (map (lambda (b)
+                  (cond ((or (<= 48 b 57) (<= 65 b 90) (<= 97 b 122) (memv b '(45 46 95 126))) (string (integer->char b)))
+                        ((and (= b 32) (eq? mode 'plus)) "+")
+                        (else (string #\% (string-ref upper-hex (div b 16)) (string-ref upper-hex (mod b 16))))))
+                (bytevector->u8-list (string->utf8 s)))))
+
+  ;; tag-query-field : QueryTag -> String     a ?tag= field as the request writes it
+  (define (tag-query-field q)
+    (cond ((eq? q 'bare) "tag")
+          ((eq? (car q) 'entry) (string-append "tag=" (query-escape (tag-entry-sent (cadr q)) (caddr q))))
+          (else (string-append "tag=" (cadr q)))))
+
+  ;; members-text : (Listof (Pair String Value)) -> String     a command's object, in the model's writing
+  (define (members-text members)
+    (string-append "{" (join (map (lambda (m) (string-append (json-string (car m)) ":"
+                                                             (if (tag-entry? (cdr m)) (json-string (tag-entry-sent (cdr m))) (cadr (cdr m)))))
+                                  members)
+                             ",")
+                   "}"))
+
+  ;; command-body-text : Body -> String
+  ;; A command's body: its object; that object with spaces after its { to
+  ;; N bytes of UTF-8; or the text as it is.
+  (define (command-body-text b)
+    (case (car b)
+      ((members) (members-text (cadr b)))
+      ((padded) (let ((t (members-text (cadr b))))
+                  (string-append "{" (make-string (- (caddr b) (bytevector-length (string->utf8 t))) #\space)
+                                 (substring t 1 (string-length t)))))
+      (else (cadr b))))
 
   (define (cursor-text x) (if (number? x) (number->string x) (format "~a" x)))
 
@@ -3428,11 +4464,18 @@
   ;; walk's, with HEADERS on every page and the first page after FIRST
   ;; (#f: from the start).
   (define (walk* h headers base extra limit last-of first)
+    (walk** h headers base extra limit last-of first cursor-text))
+
+  ;; walk** : Handler (Listof Header) String (Listof String) (U Natural #f) (Alist -> Any) (U String #f)
+  ;;          (Any -> String) -> Obs
+  ;; walk*'s, each `next` written as `after` by ENCODE (a tag is
+  ;; percent-encoded), FIRST as it is.
+  (define (walk** h headers base extra limit last-of first encode)
     (let ((cap (or limit 50)))
       (let loop ((after first) (n 1) (items '()) (problems '()))
         (let* ((q (append extra
                           (if limit (list (string-append "limit=" (number->string limit))) '())
-                          (if after (list (string-append "after=" (cursor-text after))) '())))
+                          (if after (list (string-append "after=" after)) '())))
                (target (if (null? q) base (string-append base "?" (join q "&"))))
                (a (exchange h 'GET target headers)))
           (if (not (= (answer-status a) 200))
@@ -3456,7 +4499,37 @@
                      (items (append items page)))
                 (cond ((eq? next 'null) (make-obs 200 #f (answer-header a "etag") #f j items problems n))
                       ((>= n 250) (make-obs 200 #f #f #f j items (cons "the walk did not end in 250 pages" problems) n))
-                      (else (loop next (+ n 1) items problems)))))))))
+                      (else (loop (encode next) (+ n 1) items problems)))))))))
+
+  ;; counted : Handler Header Obs -> Obs
+  ;; L8 held on the handlers alone: a tags list's first tag is looked for
+  ;; by the filter in each of the three states, 100 a page, and its count
+  ;; must be min(1,000, the nodes found). The walks' pages are counted as
+  ;; the list's requests; a difference, or a walk that is no 200, is the
+  ;; list's problem.
+  (define (counted h auth o)
+    (if (and (eqv? (obs-status o) 200) (pair? (obs-items o)))
+        (let* ((item (car (obs-items o)))
+               (t (guard (c (#t #f)) (field item "tag")))
+               (c (guard (c (#t #f)) (field item "count"))))
+          (if (not (and (string? t) (natural? c)))
+              o
+              (let loop ((states '("active" "archived" "trashed")) (found 0) (requests 0) (problems '()))
+                (if (null? states)
+                    (make-obs 200 #f (obs-etag o) #f (obs-json o) (obs-items o)
+                              (append (obs-problems o) problems
+                                      (if (= c (min count-most found)) '()
+                                          (list (format "L8: the tags list counts ~s on ~a nodes; the filter finds ~a in the three states"
+                                                        t c found))))
+                              (+ (obs-requests o) requests))
+                    (let ((x (walk h auth "/v1/nodes" (list (string-append "state=" (car states))
+                                                            (string-append "tag=" (query-escape t 'strict)))
+                                   100 (lambda (i) (field i "id")))))
+                      (loop (cdr states) (+ found (length (or (obs-items x) '()))) (+ requests (obs-requests x))
+                            (append problems (obs-problems x)
+                                    (if (eqv? (obs-status x) 200) '()
+                                        (list (format "L8: the filter for the tag ~s answered ~a" t (obs-status x)))))))))))
+        o))
 
   ;; observe : Handler Event -> Obs
   (define (observe h e)
@@ -3485,8 +4558,26 @@
         ((get-snapshot)
          (single (exchange h 'GET (string-append (node-path e) "/revisions/" (number->string (event-snap e)))
                            (list auth))))
-        ((list-nodes) (walk h auth "/v1/nodes" (append (state-query (event-query e)) (parent-query (event-parent e)))
-                            (event-limit e) (lambda (item) (field item "id"))))
+        ((list-nodes)
+         (let ((f (event-tagq e)))
+           (walk* h (list auth) "/v1/nodes"
+                  (append (state-query (event-query e)) (parent-query (event-parent e))
+                          (if f (map tag-query-field (filter-spec-values f)) '()))
+                  (event-limit e) (lambda (item) (field item "id"))
+                  (and f (filter-spec-after f) (id-text (filter-spec-after f))))))
+        ((list-tags)
+         (let ((a (tags-list-spec-after (event-tagq e))))
+           (counted h auth
+                    (walk** h (list auth) "/v1/tags" (if (eq? a 'twice) '("after=work" "after=work") '())
+                            (event-limit e) (lambda (item) (field item "tag"))
+                            (and (pair? a) (query-escape (tag-entry-sent (cadr a)) (caddr a)))
+                            (lambda (next) (query-escape next 'strict))))))
+        ((rename-tag remove-tag)
+         (let ((spec (event-tagq e)))
+           (single (exchange h 'POST (if (eq? (event-kind e) 'rename-tag) "/v1/tags/rename" "/v1/tags/remove")
+                             (append (list auth (cons "Content-Type" (if (command-spec-json? spec) "application/json" "text/plain")))
+                                     (event-headers e))
+                             (command-body-text (command-spec-body spec))))))
         ((link unlink)
          (single (exchange h (if (eq? (event-kind e) 'link) 'PUT 'DELETE) (link-path e) (cons auth (event-headers e)))))
         ((list-links)
@@ -3604,7 +4695,73 @@
                 (if (or (eq? want 'any) (for-all (lambda (x) (equal? x want)) parents)) '()
                     (list (format "H18': the list for the parent ~s shows the parents ~s" want parents))))))
            '())
-       (if (or (link-kind? kind) (eq? kind 'list-links)) (link-law-breaks w e o) '()))))
+       (if (or (link-kind? kind) (eq? kind 'list-links)) (link-law-breaks w e o) '())
+       (tag-answer-breaks e o))))
+
+  ;; answer-tags-breaks : String Any -> (Listof String)
+  ;; L2 on an answer's node or snapshot, WHAT naming it: it has tags, an
+  ;; array, held by tag-list-breaks.
+  (define (answer-tags-breaks what j)
+    (let ((p (and (list? j) (assoc "tags" j))))
+      (cond ((not p) (list (format "L2: ~a has no tags" what)))
+            ((not (vector? (cdr p))) (list (format "L2: ~a's tags are ~s, no array" what (cdr p))))
+            (else (tag-list-breaks what (vector->list (cdr p)))))))
+
+  ;; tag-answer-breaks : Event Obs -> (Listof String)
+  ;; An answer held to the tags' laws that need no model: every node in
+  ;; it, alone, a list's item or a link list's other end, and a snapshot
+  ;; whole, has tags by L2; the revisions list shows none (the review's
+  ;; blocker 7); a filtered list's every item carries every tag asked (G6);
+  ;; a command's 200 has no ETag and is {WORD: N, "left": M} alone, N at
+  ;; most 500 (G8); a tags list's every item is {"tag", "count"} alone, its
+  ;; tags rising by code point, each counted 1 to 1,000 (H6).
+  (define (tag-answer-breaks e o)
+    (let ((status (obs-status o)) (kind (event-kind e)) (j (obs-json o)))
+      (append
+       (if (and (memv status '(200 201)) (memq kind (cons 'get-node write-kinds)) (not (eq? kind 'move-children)) (list? j))
+           (answer-tags-breaks (format "a ~a's answer" kind) j)
+           '())
+       (if (and (eqv? status 200) (eq? kind 'get-snapshot)) (answer-tags-breaks "a snapshot's answer" j) '())
+       (if (and (eqv? status 200) (eq? kind 'list-revisions)
+                (exists (lambda (i) (and (list? i) (assoc "tags" i))) (or (obs-items o) '())))
+           (list "the review's blocker 7: the revisions list shows tags")
+           '())
+       (if (and (eqv? status 200) (eq? kind 'list-nodes))
+           (let ((tags (let ((f (event-tagq e))) (if f (filter-tags-of (filter-spec-values f)) '()))))
+             (apply append
+                    (map (lambda (i)
+                           (append (answer-tags-breaks "a list's item" i)
+                                   (let ((p (and (list? i) (assoc "tags" i))))
+                                     (if (and (list? tags) p (vector? (cdr p))
+                                              (for-all (lambda (t) (member t (vector->list (cdr p)))) tags))
+                                         '()
+                                         (list (format "G6: a list for the tags ~s shows an item whose tags are ~s" tags (and p (cdr p))))))))
+                         (or (obs-items o) '()))))
+           '())
+       (if (and (eqv? status 200) (eq? kind 'list-links))
+           (apply append (map (lambda (i) (answer-tags-breaks "a link list's node" (and (list? i) (assoc "node" i) (cdr (assoc "node" i)))))
+                              (or (obs-items o) '())))
+           '())
+       (if (and (step-kind? kind) (eqv? status 200))
+           (let ((word (step-word kind)))
+             (append (if (obs-etag o) (list (format "G8: a step's answer has the ETag ~s" (obs-etag o))) '())
+                     (if (and (list? j) (= (length j) 2)
+                              (let ((n (assoc word j)) (l (assoc "left" j)))
+                                (and n l (natural? (cdr n)) (natural? (cdr l)) (<= (cdr n) step-most))))
+                         '()
+                         (list (format "G8: a step answers {~s: N, \"left\": M} alone, N at most 500, not ~s" word j)))))
+           '())
+       (if (and (eqv? status 200) (eq? kind 'list-tags))
+           (let ((items (or (obs-items o) '())))
+             (append
+              (if (for-all (lambda (i) (and (list? i) (= (length i) 2) (assoc "tag" i) (assoc "count" i)
+                                            (string? (cdr (assoc "tag" i))) (natural? (cdr (assoc "count" i)))
+                                            (<= 1 (cdr (assoc "count" i)) count-most)))
+                           items)
+                  (if (ids-rising? (map (lambda (i) (cdr (assoc "tag" i))) items)) '()
+                      (list "H6: a tags list's tags are not rising by code point, each once"))
+                  (list (format "H6: a tags list's item is not {\"tag\", \"count\"} alone, counted 1 to 1,000: ~s" items)))))
+           '()))))
 
   ;; link-law-breaks : World Event Obs -> (Listof String)
   ;; A link's answer held to laws that need no model: none has an ETag
@@ -3660,12 +4817,13 @@
 
   ;;; The database
 
-  ;; Db = (List Nodes Snaps Changes Keys Links), each a list of rows, each row a list:
+  ;; Db = (List Nodes Snaps Changes Keys Links Tags), each a list of rows, each row a list:
   ;;   node     (id owner author kind title content_type props revision created updated state parent)
-  ;;   snapshot (node revision author title content_type props created body)
+  ;;   snapshot (node revision author title content_type props created body tags)
   ;;   change   (owner seq node revision op created)
   ;;   key      (id account last_used)
   ;;   link     (owner source type target created), by owner, source, type, target
+  ;;   tag      (owner tag node), node_tags by owner, node, tag (slice 7a)
   (define (n-id r) (list-ref r 0))
   (define (n-owner r) (list-ref r 1))
   (define (n-author r) (list-ref r 2))
@@ -3686,6 +4844,7 @@
   (define (s-props r) (list-ref r 5))
   (define (s-created r) (list-ref r 6))
   (define (s-body r) (list-ref r 7))
+  (define (s-tags r) (list-ref r 8))
   (define (c-owner r) (list-ref r 0))
   (define (c-seq r) (list-ref r 1))
   (define (c-node r) (list-ref r 2))
@@ -3698,10 +4857,15 @@
   (define (l-type r) (list-ref r 2))
   (define (l-target r) (list-ref r 3))
   (define (db-links db) (list-ref db 4))
+  (define (t-owner r) (list-ref r 0))
+  (define (t-tag r) (list-ref r 1))
+  (define (t-node r) (list-ref r 2))
+  (define (db-tag-rows db) (list-ref db 5))
 
   (define (row->list v) (map (lambda (c) (if (sql-null? c) #f c)) (vector->list v)))
 
-  ;; db-now : Store -> Db     the four tables and every key's last_used, whole
+  ;; db-now : Store -> Db     the tables and every key's last_used, whole: node_tags and
+  ;; a snapshot's tags among them (the review's blocker 8)
   (define (db-now store)
     (run-read store
               (lambda (tx)
@@ -3709,15 +4873,16 @@
                                                           " props, revision, created, updated, state, parent"
                                                           " FROM nodes ORDER BY id")))
                        (snaps (tx-query tx (string-append "SELECT node, revision, author, title, content_type,"
-                                                          " props, created, body FROM revisions"
+                                                          " props, created, body, tags FROM revisions"
                                                           " ORDER BY node, revision")))
                        (changes (tx-query tx (string-append "SELECT owner, seq, node, revision, op, created"
                                                             " FROM changes ORDER BY owner, seq")))
                        (keys (tx-query tx "SELECT id, account, last_used FROM api_keys ORDER BY id"))
                        (links (tx-query tx (string-append "SELECT owner, source, type, target, created FROM links"
-                                                          " ORDER BY owner, source, type, target"))))
+                                                          " ORDER BY owner, source, type, target")))
+                       (tags (tx-query tx "SELECT owner, tag, node FROM node_tags ORDER BY owner, node, tag")))
                   (list (map row->list nodes) (map row->list snaps) (map row->list changes) (map row->list keys)
-                        (map row->list links))))))
+                        (map row->list links) (map row->list tags))))))
 
   ;;; The laws, with no model: the tables after a request, and before it
 
@@ -3737,14 +4902,15 @@
 
   ;; feed-state : (Listof String) -> (U String #f)
   ;; The state a node's change rows leave it in, oldest first: a create
-  ;; makes it active, an update, a restore, a move, a link, an unlink and
-  ;; a Task's done, wontdo and reopen keep it (G3'), a change of state
-  ;; lands where lifecycle-moves says. #f for an op none of these is.
+  ;; makes it active, an update, a restore, a move, a link, an unlink, a
+  ;; Task's done, wontdo and reopen and a step's tags keep it (G3'), a
+  ;; change of state lands where lifecycle-moves says. #f for an op none of
+  ;; these is.
   (define (feed-state ops)
     (fold-left (lambda (state op)
                  (cond ((not state) #f)
                        ((string=? op "create") "active")
-                       ((member op '("update" "restore" "move" "link" "unlink" "done" "wontdo" "reopen")) state)
+                       ((member op '("update" "restore" "move" "link" "unlink" "done" "wontdo" "reopen" "tags")) state)
                        ((find (lambda (m) (string=? (symbol->string (car m)) op)) lifecycle-moves)
                         => (lambda (m) (symbol->string (caddr m))))
                        (else #f)))
@@ -3952,19 +5118,150 @@
        (props-table-breaks nodes snaps)
        (forest-breaks nodes)
        (link-table-breaks nodes (db-links db))
+       (tag-table-breaks nodes snaps changes (db-tag-rows db))
        (fold-right (lambda (r acc)
                      (append (node-law-breaks r (snaps-of (n-id r)) (changes-of (n-id r))) acc))
                    '() nodes)
-       (if (for-all (lambda (s) (find-node nodes (s-node s))) snaps) '()
-           (list "H3': a snapshot whose node has no row"))
-       (if (for-all (lambda (c) (find-node nodes (c-node c))) changes) '()
-           (list "H4: a change row whose node has no row"))
+       (let ((ids (make-id-table)))
+         (for-each (lambda (r) (hashtable-set! ids (n-id r) #t)) nodes)
+         (append
+          (if (for-all (lambda (s) (hashtable-ref ids (s-node s) #f)) snaps) '()
+              (list "H3': a snapshot whose node has no row"))
+          (if (for-all (lambda (c) (hashtable-ref ids (c-node c) #f)) changes) '()
+              (list "H4: a change row whose node has no row"))))
        (fold-right (lambda (a acc)
                      (let ((seqs (map c-seq (filter (lambda (c) (bytevector=? (c-owner c) (macct-id a))) changes))))
                        (if (equal? seqs (from-to 1 (length seqs))) acc
                            (cons (format "H4: ~a's change numbers are ~a, not 1 to ~a" (macct-tag a) seqs (length seqs))
                                  acc))))
                    '() model-accounts))))
+
+  ;; tags-of-text : String -> (U (Listof String) #f)
+  ;; A snapshot's stored tags as the JSON reader reads them, never (techo
+  ;; tags): the array's strings in order; #f for what is no array of
+  ;; strings. Remembered: the texts repeat.
+  (define tags-memo (make-hashtable string-hash string=?))
+  (define (tags-of-text text)
+    (let ((hit (hashtable-ref tags-memo text 'none)))
+      (if (not (eq? hit 'none))
+          hit
+          (let* ((v (guard (c (#t #f)) (string->json text)))
+                 (r (and (vector? v) (for-all string? (vector->list v)) (vector->list v))))
+            (hashtable-set! tags-memo text r)
+            r))))
+
+  ;; tag-list-breaks : String (Listof String) -> (Listof String)
+  ;; L2 on one node's or one snapshot's tags, WHAT naming it: at most 50,
+  ;; each a stored form of the corpus (so 1 to 64 characters, and a fixed
+  ;; point by the corpus: L1), each greater than the one before (sorted by
+  ;; code point, none twice).
+  (define (tag-list-breaks what ts)
+    (append (if (<= (length ts) tag-most) '() (list (format "L2: ~a has ~a tags" what (length ts))))
+            (if (for-all stored-tag? ts) '()
+                (list (format "L2: ~a's tags ~s hold one that is no stored form of the corpus" what ts)))
+            (if (ids-rising? ts) '() (list (format "L2: ~a's tags ~s are not sorted by code point, each once" what ts)))))
+
+  ;; snapshot-tag-memo : Hashtable     tag-list-breaks of a snapshot's text, remembered
+  (define snapshot-tag-memo (make-hashtable string-hash string=?))
+  (define (snapshot-text-breaks text)
+    (or (hashtable-ref snapshot-tag-memo text #f)
+        (let* ((ts (tags-of-text text))
+               (b (if ts (tag-list-breaks "a snapshot" ts) (list (format "L2: a snapshot's tags ~s are no array of strings" text)))))
+          (hashtable-set! snapshot-tag-memo text b)
+          b)))
+
+  ;; tag-table-breaks : (Listof Row) (Listof Row) (Listof Row) (Listof Row) -> (Listof String)
+  ;; Every row of node_tags and every snapshot's tags, by the rows of
+  ;; nodes: L9, a tag row's owner is its node's; L7, no tag row's node is
+  ;; purged, or no row; L2 on each node's rows and each snapshot's tags;
+  ;; L3, a live node whose newest snapshot no step has followed (no change
+  ;; row tags at a later revision) carries exactly that snapshot's tags.
+  (define (tag-table-breaks nodes snaps changes rows)
+    (let ((by (make-id-table)) (tags-of (grouped rows t-node)) (snaps-of (grouped snaps s-node))
+          (changes-of (grouped changes c-node)))
+      (for-each (lambda (r) (hashtable-set! by (n-id r) r)) nodes)
+      (append
+       (fold-right (lambda (t acc)
+                     (let ((r (hashtable-ref by (t-node t) #f)))
+                       (cond ((not r) (cons (format "L7, L9: a tag row ~s's node ~a is no row" (t-tag t) (id-text (t-node t))) acc))
+                             ((not (bytevector=? (n-owner r) (t-owner t)))
+                              (cons (format "L9: node ~a of ~a has a tag row ~s of ~a" (id-text (t-node t)) (account-label (n-owner r))
+                                            (t-tag t) (account-label (t-owner t)))
+                                    acc))
+                             ((equal? (n-state r) "purged")
+                              (cons (format "L7: purged node ~a carries ~s" (id-text (t-node t)) (t-tag t)) acc))
+                             (else acc))))
+                   '() rows)
+       (fold-right
+        (lambda (r acc)
+          (let* ((id (n-id r)) (name (id-text id))
+                 (ts (map t-tag (tags-of id)))
+                 (ss (snaps-of id))
+                 (top (and (pair? ss) (car (reverse ss)))))
+            (append
+             (if (null? ts) '() (tag-list-breaks (string-append "node " name) ts))
+             (if (and top (not (equal? (n-state r) "purged"))
+                      (not (exists (lambda (c) (and (equal? (c-op c) "tags") (> (c-rev c) (s-rev top)))) (changes-of id)))
+                      (not (equal? (tags-of-text (s-tags top)) ts)))
+                 (list (format "L3: node ~a carries ~s; its newest snapshot, ~a, no step since, holds ~a" name ts (s-rev top)
+                               (s-tags top)))
+                 '())
+             acc)))
+        '() nodes)
+       (fold-right (lambda (s acc)
+                     (append (map (lambda (b) (format "node ~a's snapshot ~a: ~a" (id-text (s-node s)) (s-rev s) b))
+                                  (snapshot-text-breaks (s-tags s)))
+                             acc))
+                   '() snaps))))
+
+  ;; tags-in : Db Bytevector -> (Listof String)     the node ID's rows, in tag order
+  (define (tags-in db id) (map t-tag (filter (lambda (t) (bytevector=? (t-node t) id)) (db-tag-rows db))))
+
+  ;; tag-write-breaks : Event String String Bytevector Db Db (Listof Row) Natural -> (Listof String)
+  ;; An accepted write of one node, on node_tags: no other node's rows
+  ;; change (G6'); a content write's new snapshot holds the node's rows
+  ;; after it (L3); a replace with no tags changes none of its rows (L4); a
+  ;; restore sets them to the restored snapshot's tags as stored, so one
+  ;; from before migration 7 clears them (L11); a Task's command, a change
+  ;; of state and a move change none (G11'); a purge leaves none (L7).
+  (define (tag-write-breaks e op name id db0 db1 mine1 rev)
+    (let* ((others (lambda (db) (filter (lambda (t) (not (bytevector=? (t-node t) id))) (db-tag-rows db))))
+           (t0 (tags-in db0 id)) (t1 (tags-in db1 id)))
+      (append
+       (if (equal? (others db0) (others db1)) '()
+           (list (format "G6': an accepted ~a of ~a changed another node's tag rows" op name)))
+       (if (member op content-ops)
+           (let ((added (find (lambda (s) (= (s-rev s) rev)) mine1)))
+             (if (and added (equal? (tags-of-text (s-tags added)) t1)) '()
+                 (list (format "L3: an accepted ~a of ~a wrote a snapshot whose tags ~a are not its rows after, ~s" op name
+                               (and added (s-tags added)) t1))))
+           '())
+       (cond
+        ((and (string=? op "update") (eq? (content-tags (event-content e)) 'absent))
+         (if (equal? t0 t1) '() (list (format "L4: a replace of ~a with no tags changed its rows from ~s to ~s" name t0 t1))))
+        ((string=? op "restore")
+         (let ((snap (find (lambda (s) (and (bytevector=? (s-node s) id) (= (s-rev s) (event-snap e)))) (cadr db0))))
+           (if (and snap (equal? t1 (tags-of-text (s-tags snap)))) '()
+               (list (format "L11: a restore of ~a's snapshot ~a set its rows to ~s, not that snapshot's ~a" name (event-snap e) t1
+                             (and snap (s-tags snap)))))))
+        ((string=? op "purge") (if (null? t1) '() (list (format "L7: a purge of ~a left its tags ~s" name t1))))
+        ((member op '("create" "update")) '())
+        (else (if (equal? t0 t1) '() (list (format "G11': an accepted ~a of ~a changed its tags from ~s to ~s" op name t0 t1))))))))
+
+  ;; changes-added : Db Db -> (values (Listof Row) Boolean)
+  ;; The change rows of DB1 that DB0 has not, by owner and seq, in DB1's
+  ;; order (one there with another value among them), and whether every
+  ;; row of DB0 is in DB1 as it was. By a table, not a walk of the rows
+  ;; for each row: a crowd's file has a thousand.
+  (define (changes-added db0 db1)
+    (let ((t0 (make-hashtable (lambda (k) (+ (id-hash (car k)) (cdr k)))
+                              (lambda (a b) (and (bytevector=? (car a) (car b)) (= (cdr a) (cdr b))))))
+          (t1 (make-hashtable (lambda (k) (+ (id-hash (car k)) (cdr k)))
+                              (lambda (a b) (and (bytevector=? (car a) (car b)) (= (cdr a) (cdr b)))))))
+      (for-each (lambda (c) (hashtable-set! t0 (cons (c-owner c) (c-seq c)) c)) (caddr db0))
+      (for-each (lambda (c) (hashtable-set! t1 (cons (c-owner c) (c-seq c)) c)) (caddr db1))
+      (values (filter (lambda (c) (not (equal? (hashtable-ref t0 (cons (c-owner c) (c-seq c)) #f) c))) (caddr db1))
+              (for-all (lambda (c) (equal? (hashtable-ref t1 (cons (c-owner c) (c-seq c)) #f) c)) (caddr db0)))))
 
   ;; op-of : Event -> String     the change row's op an accepted write makes (L10)
   (define (op-of e)
@@ -4004,9 +5301,10 @@
     (let* ((id (event-id e)) (now (event-now e)) (asker (account-id-of (event-tag e)))
            (name (id-text id)) (new (event-parent-id e))
            (rows0 (car db0)) (rows1 (car db1))
-           (changed (filter (lambda (r1) (not (equal? (find-node rows0 (n-id r1)) r1))) rows1))
+           (by0 (let ((t (make-id-table))) (for-each (lambda (r) (hashtable-set! t (n-id r) r)) rows0) t))
+           (changed (filter (lambda (r1) (not (equal? (hashtable-ref by0 (n-id r1) #f) r1))) rows1))
            (m0 (length (filter (lambda (c) (bytevector=? (c-owner c) asker)) (caddr db0))))
-           (added (filter (lambda (c) (not (member c (caddr db0)))) (caddr db1)))
+           (added (let-values (((added kept?) (changes-added db0 db1))) added))
            (j (obs-json o))
            (moved (and (list? j) (assoc "moved" j) (cdr (assoc "moved" j))))
            (left (and (list? j) (assoc "left" j) (cdr (assoc "left" j)))))
@@ -4017,7 +5315,7 @@
            (list (format "H1: a bulk move of ~a's children made or lost a row" name)))
        (fold-right
         (lambda (r1 acc)
-          (let ((r0 (find-node rows0 (n-id r1))) (child (id-text (n-id r1))))
+          (let ((r0 (hashtable-ref by0 (n-id r1) #f)) (child (id-text (n-id r1))))
             (append
              (cond ((not r0) '())
                    ((not (and (n-parent r0) (bytevector=? (n-parent r0) id)))
@@ -4033,6 +5331,8 @@
            (list (format "P4: a bulk move of ~a's children touched a snapshot" name)))
        (if (equal? (db-links db0) (db-links db1)) '()
            (list (format "Q9: a bulk move of ~a's children changed links" name)))
+       (if (equal? (db-tag-rows db0) (db-tag-rows db1)) '()
+           (list (format "G6', L5: a bulk move of ~a's children changed tag rows" name)))
        (let ((want (map (lambda (r1 i) (list asker (+ m0 i) (n-id r1) (n-rev r1) "move" now))
                         (list-sort (lambda (x y) (bytevector<? (n-id x) (n-id y))) changed)
                         (from-to 1 (length changed)))))
@@ -4045,6 +5345,103 @@
          (if (eqv? left under) '()
              (list (format "P11: a bulk move of ~a's children answers left ~s; ~a rows are under it after" name left under))))
        (key-breaks e "bulk move" db0 db1))))
+
+  ;; tag-row<? : Row Row -> Boolean     node_tags' order: owner, node, tag, as the query sorts them
+  (define (tag-row<? x y)
+    (cond ((not (bytevector=? (t-owner x) (t-owner y))) (bytevector<? (t-owner x) (t-owner y)))
+          ((not (bytevector=? (t-node x) (t-node y))) (bytevector<? (t-node x) (t-node y)))
+          (else (string<? (t-tag x) (t-tag y)))))
+
+  ;; step-breaks : Event Obs Db Db -> (Listof String)
+  ;; An accepted step of a tag's rename or removal (G8), between the
+  ;; tables before and after, as the plan restates L5: the carriers of
+  ;; FROM, the asker's rows of it before, by id; the first min(500, them)
+  ;; are touched, whatever their state (L13); every node row changed is a
+  ;; touched one and every touched one changed, each at its next revision,
+  ;; updated the time, nothing else (H1, and H2': its title, content type
+  ;; and props still its newest snapshot's); no row made or lost; no
+  ;; snapshot written, changed or removed (H3'); one change row tags for
+  ;; each, at its new revision, the owner's next numbers in id order, and
+  ;; no other (H4, G6'); each touched node's tag rows its rows before less
+  ;; FROM, with TO for a rename (a merge where it was), every other tag row
+  ;; as it was (L5, L6); no link changed (Q9); the answer's count the
+  ;; touched, its left the asker's rows of FROM after, which is the
+  ;; carriers before less the touched; and H5.
+  (define (step-breaks e o db0 db1)
+    (let-values (((v clause) (command-verdict e)))
+      (if (not (memq (car v) '(rename remove)))
+          (list (format "the handlers took a step the model refuses: ~s" v))
+          (let* ((now (event-now e)) (asker (account-id-of (event-tag e)))
+                 (from (cadr v)) (to (and (eq? (car v) 'rename) (caddr v)))
+                 (word (step-word (event-kind e)))
+                 (what (format "a step of ~a ~s~a" (event-kind e) from (if to (format " to ~s" to) "")))
+                 (rows0 (car db0)) (rows1 (car db1))
+                 (by0 (make-id-table))
+                 (carriers (list-sort bytevector<?
+                                      (map t-node (filter (lambda (t) (and (bytevector=? (t-owner t) asker) (string=? (t-tag t) from)))
+                                                          (db-tag-rows db0)))))
+                 (touched (take* carriers step-most))
+                 (touched? (make-id-table))
+                 (m0 (length (filter (lambda (c) (bytevector=? (c-owner c) asker)) (caddr db0))))
+                 (added (let-values (((added kept?) (changes-added db0 db1))) added))
+                 (by1 (make-id-table))
+                 (has-to (make-id-table))
+                 (j (obs-json o))
+                 (count (and (list? j) (assoc word j) (cdr (assoc word j))))
+                 (left (and (list? j) (assoc "left" j) (cdr (assoc "left" j)))))
+            (for-each (lambda (r) (hashtable-set! by0 (n-id r) r)) rows0)
+            (for-each (lambda (r) (hashtable-set! by1 (n-id r) r)) rows1)
+            (for-each (lambda (t) (when (and to (bytevector=? (t-owner t) asker) (string=? (t-tag t) to))
+                                    (hashtable-set! has-to (t-node t) #t)))
+                      (db-tag-rows db0))
+            (for-each (lambda (id) (hashtable-set! touched? id #t)) touched)
+            (let* ((changed (filter (lambda (r1) (not (equal? (hashtable-ref by0 (n-id r1) #f) r1))) rows1))
+                   (want-tags (list-sort tag-row<?
+                                         (append (filter (lambda (t) (not (and (hashtable-ref touched? (t-node t) #f)
+                                                                               (string=? (t-tag t) from))))
+                                                         (db-tag-rows db0))
+                                                 (if to
+                                                     (filter (lambda (t) t)
+                                                             (map (lambda (id)
+                                                                    (and (not (hashtable-ref has-to id #f))
+                                                                         (list asker to id)))
+                                                                  touched))
+                                                     '())))))
+              (append
+               (if (equal? (map n-id rows0) (map n-id rows1)) '()
+                   (list (format "H1: ~a made or lost a node's row" what)))
+               (if (equal? (list-sort bytevector<? (map n-id changed)) touched) '()
+                   (list (format "L5, L13: ~a changed ~a nodes' rows; it touches the first ~a of the ~a carriers by id, in any state, and no other"
+                                 what (length changed) (length touched) (length carriers))))
+               (fold-right
+                (lambda (r1 acc)
+                  (let ((r0 (hashtable-ref by0 (n-id r1) #f)))
+                    (if (and r0 (equal? r1 (rebuilt r0 (n-parent r0) (+ 1 (n-rev r0)) now))) acc
+                        (cons (format "L5, H2': ~a left ~a as ~s, not at its next revision, updated now, with nothing else changed"
+                                      what (id-text (n-id r1)) r1)
+                              acc))))
+                '() changed)
+               (if (equal? (cadr db0) (cadr db1)) '()
+                   (list (format "H3', L5: ~a wrote, changed or removed a snapshot" what)))
+               (let ((want (map (lambda (id i) (list asker (+ m0 i) id (let ((r (hashtable-ref by1 id #f))) (and r (n-rev r))) "tags" now))
+                                touched (from-to 1 (length touched)))))
+                 (if (and (equal? added want) (= (length (caddr db1)) (+ (length (caddr db0)) (length added)))) '()
+                     (list (format "H4, G6', L5: ~a touched ~a nodes; it adds a change row tags for each, at its new revision, by id, numbered from ~a, and no other: it added ~a"
+                                   what (length touched) (+ m0 1) (length added)))))
+               (if (equal? (db-tag-rows db1) want-tags) '()
+                   (list (format "L5, L6: ~a left ~a tag rows; the ~a before, less ~s on the touched~a, are ~a"
+                                 what (length (db-tag-rows db1)) (length (db-tag-rows db0)) from
+                                 (if to (format ", with ~s" to) "") (length want-tags))))
+               (if (equal? (db-links db0) (db-links db1)) '()
+                   (list (format "Q9: ~a changed links" what)))
+               (if (eqv? count (length touched)) '()
+                   (list (format "L5: ~a answers ~a ~s; it touched ~a" what word count (length touched))))
+               (let ((after (length (filter (lambda (t) (and (bytevector=? (t-owner t) asker) (string=? (t-tag t) from)))
+                                            (db-tag-rows db1)))))
+                 (if (and (eqv? left after) (= after (- (length carriers) (length touched)))) '()
+                     (list (format "L5: ~a answers left ~s; ~a carriers are left, of ~a before less the ~a touched"
+                                   what left after (length carriers) (length touched)))))
+               (key-breaks e "step" db0 db1)))))))
 
   ;; accepted-breaks : Event Obs Db Db -> (Listof String)
   ;; An accepted write, between the tables before and after: H1, H3', H4,
@@ -4163,14 +5560,13 @@
                       (list (format "G11: an accepted ~a of ~a changed its content" op name)))
                   (if (equal? (n-state r1) lands) '()
                       (list (format "G3: an accepted ~a left ~a ~a, not ~a" op name (n-state r1) lands)))))))
-             (if (and (= (length changes1) (+ 1 (length (caddr db0))))
-                      (member want-change changes1)
-                      (for-all (lambda (c) (member c changes1)) (caddr db0)))
+             (if (let-values (((added kept?) (changes-added db0 db1))) (and kept? (equal? added (list want-change))))
                  '()
                  (list (format "H4, G6': an accepted ~a adds one change row, (~a ~a ~a ~a ~s ~a); the rows before were ~a, after ~a"
                                op (event-tag e) (+ m0 1) name rev op now
                                (length (caddr db0)) (length changes1))))
              (if r0 (props-change-breaks e op name r0 r1 mine0 mine1 rev) '())
+             (tag-write-breaks e op name id db0 db1 mine1 rev)
              (key-breaks e op db0 db1))))))
 
   ;; status-and-closed : String -> (List String (U Any #f))
@@ -4235,12 +5631,14 @@
            (key? (lambda (l) (and (bytevector=? (l-owner l) asker) (bytevector=? (l-source l) source)
                                   (equal? (l-type l) type) (bytevector? target) (bytevector=? (l-target l) target))))
            (m0 (length (filter (lambda (c) (bytevector=? (c-owner c) asker)) (caddr db0))))
-           (added (filter (lambda (c) (not (member c (caddr db0)))) (caddr db1))))
+           (added (let-values (((added kept?) (changes-added db0 db1))) added)))
       (append
        (if (equal? (car db0) (car db1)) '()
            (list (format "H1', Q4: an accepted ~a changed a node's row" op)))
        (if (equal? (cadr db0) (cadr db1)) '()
            (list (format "H1', Q4: an accepted ~a changed a snapshot" op)))
+       (if (equal? (db-tag-rows db0) (db-tag-rows db1)) '()
+           (list (format "H1', Q4: an accepted ~a changed tag rows" op)))
        (if (string=? op "link")
            (let ((made (filter (lambda (l) (not (member l l0))) l1)))
              (if (and (equal? made (list (list asker source type target now)))
@@ -4277,18 +5675,21 @@
                  (list (car db1) (cadr db1) (caddr db1)))
      (if (equal? (db-links db0) (db-links db1)) '()
          (list "H4'', Q3, Q15: a 200 PUT of a link that is there changed links"))
+     (if (equal? (db-tag-rows db0) (db-tag-rows db1)) '()
+         (list "H4'', Q3: a 200 PUT of a link that is there changed tag rows"))
      (key-breaks e "kept link" db0 db1)))
 
   ;; unchanged-breaks : Event Natural Db Db -> (Listof String)
-  ;; H5, G4, G13, H4'': a refused write, a refused link and any read change
-  ;; nothing at all, links among it.
+  ;; H5, G4, G13, H4'', L10: a refused write, a refused link, a refused
+  ;; command and any read change nothing at all, links and tag rows among
+  ;; it.
   (define (unchanged-breaks e status db0 db1)
-    (let ((what (if (or (write-kind? (event-kind e)) (link-kind? (event-kind e)))
+    (let ((what (if (or (write-kind? (event-kind e)) (link-kind? (event-kind e)) (step-kind? (event-kind e)))
                     (format "a refused ~a (~a)" (event-kind e) status)
                     (format "a read (~a)" status))))
       (fold-right (lambda (name t0 t1 acc)
-                    (if (equal? t0 t1) acc (cons (format "H5, G13, H4'': ~a changed ~a" what name) acc)))
-                  '() '("nodes" "revisions" "changes" "api_keys' last_used" "links") db0 db1)))
+                    (if (equal? t0 t1) acc (cons (format "H5, G13, H4'', L10: ~a changed ~a" what name) acc)))
+                  '() '("nodes" "revisions" "changes" "api_keys' last_used" "links" "node_tags") db0 db1)))
 
   ;; other-breaks : Event Db Db -> (Listof String)
   ;; H6, G7, G7': no request changes a row of the other account's, its
@@ -4303,9 +5704,10 @@
                              (filter (lambda (s) (hashtable-ref ids (s-node s) #f)) (cadr db))
                              (filter (lambda (c) (bytevector=? (c-owner c) other)) (caddr db))
                              (filter (lambda (k) (bytevector=? (k-account k) other)) (cadddr db))
-                             (filter (lambda (l) (bytevector=? (l-owner l) other)) (db-links db)))))))
+                             (filter (lambda (l) (bytevector=? (l-owner l) other)) (db-links db))
+                             (filter (lambda (t) (bytevector=? (t-owner t) other)) (db-tag-rows db)))))))
       (if (equal? (theirs db0) (theirs db1)) '()
-          (list (format "H6, G7, G7': a request by ~a changed the rows of ~a" (event-tag e) (other-tag (event-tag e)))))))
+          (list (format "H6, G7, G7', L6: a request by ~a changed the rows of ~a" (event-tag e) (other-tag (event-tag e)))))))
 
   ;; db-law-breaks : Event Obs Db Db -> (Listof String)
   ;; By the answer the handlers gave: an accepted write's laws; an
@@ -4317,6 +5719,7 @@
            (accepted? (and (write-kind? kind) (memv status '(200 201 204)) #t)))
       (append (always-breaks db1)
               (cond (accepted? (accepted-breaks e o db0 db1))
+                    ((and (step-kind? kind) (eqv? status 200)) (step-breaks e o db0 db1))
                     ((and (link-kind? kind) (memv status '(201 204))) (link-breaks e db0 db1))
                     ((and (eq? kind 'link) (eqv? status 200)) (kept-breaks e db0 db1))
                     (else (unchanged-breaks e status db0 db1)))
@@ -4341,7 +5744,8 @@
            (map (lambda (n)
                   (map (lambda (s)
                          (list (mnode-id n) (msnap-revision s) (account-id-of (msnap-author s)) (msnap-title s)
-                               (msnap-type s) (mprops-text (msnap-props s)) (msnap-created s) (msnap-body s)))
+                               (msnap-type s) (mprops-text (msnap-props s)) (msnap-created s) (msnap-body s)
+                               (tags-text (msnap-tags s))))
                        (reverse (mnode-snaps n))))
                 (by-id (world-nodes w)))))
 
@@ -4353,6 +5757,13 @@
                                (mchange-op c) (mchange-created c)))
                        (world-changes-of w tag)))
                 '(a b))))
+
+  ;; model-tag-rows : World -> (Listof Row)     each live node's tags, by owner, node, tag, as the query orders them
+  (define (model-tag-rows w)
+    (list-sort tag-row<?
+               (apply append
+                      (map (lambda (n) (map (lambda (t) (list (account-id-of (mnode-tag n)) t (mnode-id n))) (mnode-tags n)))
+                           (world-nodes w)))))
 
   (define (model-key-rows w)
     (map (lambda (k) (list (mkey-id k) (account-id-of (mkey-tag k)) (mkey-last-used k))) (world-keys w)))
@@ -4375,7 +5786,8 @@
       ("updated" . "H15'', Q4") ("state" . "G3', G12") ("parent" . "P1 to P4, P8, P11, P15, P16")))
   (define snap-columns
     '(("node" . "H3'") ("revision" . "H3'") ("author" . "H16") ("title" . "H3'") ("content_type" . "H3'")
-      ("props" . "H3'") ("created" . "H15'") ("body" . "H3'")))
+      ("props" . "H3'") ("created" . "H15'") ("body" . "H3'") ("tags" . "L3, L11")))
+  (define tag-columns '(("owner" . "L6, L9") ("tag" . "L2, L4, L5") ("node" . "L3, L5, L7, L11")))
   (define change-columns
     '(("owner" . "H4") ("seq" . "H4") ("node" . "H4") ("revision" . "H4") ("op" . "H4, L10") ("created" . "H4")))
   (define key-columns '(("id" . "H5") ("account" . "H5") ("last_used" . "H5")))
@@ -4418,7 +5830,8 @@
                   change-columns "H4")
      (rows-breaks w "api_keys" (model-key-rows w) (cadddr db) (lambda (r) (list (car r))) key-columns "H5")
      (rows-breaks w "links" (model-link-rows w) (db-links db)
-                  (lambda (r) (list (l-owner r) (l-source r) (l-type r) (l-target r))) link-columns "H1'/Q8/Q9")))
+                  (lambda (r) (list (l-owner r) (l-source r) (l-type r) (l-target r))) link-columns "H1'/Q8/Q9")
+     (rows-breaks w "node_tags" (model-tag-rows w) (db-tag-rows db) (lambda (r) r) tag-columns "L3/L4/L5/L11")))
 
   ;;; One sequence
 
@@ -4648,9 +6061,9 @@
                  (r (rng-below! rng 3))
                  (change (rng-pick! rng '(archive trash)))
                  (n1 (make-mnode id tag (string-append "s" (number->string i)) "task" c0 'active 1 c0
-                                 (list (make-msnap 1 title body type (empty-props "task") c0 tag)) #f))
+                                 (list (make-msnap 1 title body type (empty-props "task") c0 tag '())) #f '()))
                  (w1 (world-with-seeded (world-with-change (world-with-node w n1) tag id 1 "create" c0) id))
-                 (n2 (and (>= r 1) (with-snap n1 title2 body2 type (empty-props "task") (+ c0 10))))
+                 (n2 (and (>= r 1) (with-snap n1 title2 body2 type (empty-props "task") '() (+ c0 10))))
                  (w2 (if n2 (world-with-change (world-with-node w1 n2) tag id 2 "update" (+ c0 10)) w1))
                  (n3 (and (= r 2) (with-state n2 (if (eq? change 'archive) 'archived 'trashed) (+ c0 20))))
                  (w3 (if n3 (world-with-change (world-with-node w2 n3) tag id 3 (symbol->string change) (+ c0 20)) w2)))
@@ -4658,7 +6071,8 @@
 
   ;; seed-rows! : Store World -> Void
   ;; W's rows written straight into the tables, as no route writes them:
-  ;; each node's (it has no parent), each snapshot's, each change row.
+  ;; each node's (it has no parent), each snapshot's with its tags' text,
+  ;; each change row, each tag's row.
   (define (seed-rows! store w)
     (run-write store
                (lambda (tx)
@@ -4671,10 +6085,13 @@
                            (model-node-rows w))
                  (for-each (lambda (s)
                              (tx-execute! tx (string-append "INSERT INTO revisions (node, revision, author, title, content_type,"
-                                                            " props, created, body) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+                                                            " props, created, body, tags) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
                                           (s-node s) (s-rev s) (s-author s) (s-title s) (s-type s) (s-props s) (s-created s)
-                                          (s-body s)))
+                                          (s-body s) (s-tags s)))
                            (model-snap-rows w))
+                 (for-each (lambda (t)
+                             (tx-execute! tx "INSERT INTO node_tags (owner, tag, node) VALUES (?, ?, ?)" (t-owner t) (t-tag t) (t-node t)))
+                           (model-tag-rows w))
                  (for-each (lambda (c)
                              (tx-execute! tx "INSERT INTO changes (owner, seq, node, revision, op, created) VALUES (?, ?, ?, ?, ?, ?)"
                                           (c-owner c) (c-seq c) (c-node c) (c-rev c) (c-op c) (c-created c)))
@@ -4731,7 +6148,7 @@
                           (create? '(props-413-create))
                           (named '(props-413-replace-named))
                           (else '(props-413-replace-unnamed))))
-                 ((and (eqv? status 400) own) (list (sym "props-400-job-" (mnode-kind own))))
+                 ((and (eqv? status 400) own (= (expectation-jobs x) 1)) (list (sym "props-400-job-" (mnode-kind own))))
                  ((equal? code "status_fixed")
                   (let ((p (msnap-props (node-top own))))
                     (cons (sym "status-fixed-" (claim-differs? v p))
@@ -4813,9 +6230,122 @@
              '()))
         (else '()))))
 
+  ;;; What slice 7a's rules looked at
+
+  ;; tag-aims : World Event Expectation Obs -> (Listof Symbol)
+  ;; What the tags' rules looked at for E, by the model's own reading:
+  ;;   tags-400-<create|replace>, tags-400-with-props-413   a PUT refused for its tags, no write job
+  ;;   tags-stored-<none|some|fifty>, tags-folded-to-one    a PUT's tags as stored
+  ;;   tags-kept, tags-kept-with-props   L4: a replace with no tags of a node that carries some
+  ;;   tags-cleared, tags-replaced
+  ;;   restore-tags-changed, restore-tags-cleared, restore-before-migration-7, restore-brings-back
+  ;;   task-command-tagged, purge-tagged, move-tagged, state-change-tagged
+  ;;   tag-filter-200-<n>, tag-filter-found, tag-filter-empty-page, tag-filter-400,
+  ;;   tag-filter-404-parent, tag-filter-with-<state|parent|after>, tag-filter-pages-followed
+  ;;   list-tags-200, list-tags-400, list-tags-pages-or-counted (pages followed, or its first tag
+  ;;   counted by the filter), list-tags-count-capped, list-tags-empty
+  ;;   step-<rename|remove>-<none|some|cap>, step-left-above-0, step-merge, step-touched-<archived|trashed>,
+  ;;   step-theirs-only, step-<rename|remove>-<400|413|415|invalid-json>
+  ;;   entry-tag-<name>   a corpus entry stored by a PUT
+  (define (tag-aims w e x o)
+    (let* ((kind (event-kind e)) (status (expectation-status x)) (tag (event-tag e))
+           (id (event-id e)) (own (and id (own-node w tag id))))
+      (case kind
+        ((put)
+         (if (memq (event-pre e) '(missing invalid))
+             '()
+             (let* ((c (event-content e)) (create? (eq? (event-pre e) 'create))
+                    (ts (sent-tags (content-tags c) create?))
+                    (p (props-refusal e)))
+               (cond
+                ((and (eqv? status 400) (= (expectation-jobs x) 0) (eq? ts 'invalid) (not (and p (= (car p) 400))))
+                 (cons (if create? 'tags-400-create 'tags-400-replace) (if p '(tags-400-with-props-413) '())))
+                ((memv status '(200 201))
+                 (append
+                  (cond ((eq? ts 'absent)
+                         (if (and own (pair? (mnode-tags own)))
+                             (cons 'tags-kept (if (content-props c) '(tags-kept-with-props) '()))
+                             '()))
+                        ((null? ts) (if (and own (pair? (mnode-tags own))) '(tags-cleared) '(tags-stored-none)))
+                        ((= (length ts) tag-most) '(tags-stored-fifty))
+                        (else (cons 'tags-stored-some (if (and own (not (equal? ts (mnode-tags own)))) '(tags-replaced) '()))))
+                  (let ((es (let ((t (content-tags c))) (if (and (pair? t) (eq? (car t) 'entries)) (cadr t) '()))))
+                    (append (if (and (pair? es) (pair? ts) (< (length ts) (length es))) '(tags-folded-to-one) '())
+                            (map (lambda (en) (sym "entry-tag-" (tag-entry-name en))) es)))))
+                (else '())))))
+        ((restore)
+         (if (and (eqv? status 200) own)
+             (let ((snap (snap-of own (event-snap e))))
+               (append (if (equal? (msnap-tags snap) (mnode-tags own)) '() '(restore-tags-changed))
+                       (if (and (null? (msnap-tags snap)) (pair? (mnode-tags own))) '(restore-tags-cleared) '())
+                       (if (and (seeded? w id) (pair? (mnode-tags own)) (<= (event-snap e) 2)) '(restore-before-migration-7) '())
+                       (if (not (equal? (mnode-tags own) (msnap-tags (node-top own)))) '(restore-after-a-step) '())
+                       (if (exists (lambda (t) (not (member t (mnode-tags own)))) (msnap-tags snap)) '(restore-brings-back) '())))
+             '()))
+        ((done wontdo reopen) (if (and (eqv? status 200) own (pair? (mnode-tags own))) '(task-command-tagged) '()))
+        ((purge) (if (and (eqv? status 204) own (pair? (mnode-tags own))) '(purge-tagged) '()))
+        ((move) (if (and (eqv? status 200) own (pair? (mnode-tags own))) '(move-tagged) '()))
+        ((archive unarchive trash untrash) (if (and (eqv? status 200) own (pair? (mnode-tags own))) '(state-change-tagged) '()))
+        ((list-nodes)
+         (let ((f (event-tagq e)))
+           (if (not f)
+               '()
+               (case status
+                 ((400) '(tag-filter-400))
+                 ((404) '(tag-filter-404-parent))
+                 ((200)
+                  (let ((items (or (expectation-items x) '())) (n (length (filter-spec-values f))))
+                    (append (list (sym "tag-filter-200-" (number->string n))
+                                  (if (null? items) 'tag-filter-empty-page 'tag-filter-found))
+                            (if (event-query e) '(tag-filter-with-state) '())
+                            (if (eq? (event-parent e) 'absent) '() '(tag-filter-with-parent))
+                            (if (filter-spec-after f) '(tag-filter-with-after) '())
+                            (if (> (obs-requests o) 1) '(tag-filter-pages-followed) '())
+                            (if (exists (lambda (q) (and (pair? q) (eq? (car q) 'entry) (eq? (caddr q) 'plus)
+                                                         (exists (lambda (c) (char=? c #\space)) (string->list (tag-entry-sent (cadr q))))))
+                                        (filter-spec-values f))
+                                '(tag-filter-plus-spaces)
+                                '())
+                            (filter-map-raw (filter-spec-values f)))))
+                 (else '())))))
+        ((list-tags)
+         (case status
+           ((400) '(list-tags-400))
+           ((200) (let ((items (or (expectation-items x) '())))
+                    (append '(list-tags-200)
+                            (if (null? items) '(list-tags-empty) '())
+                            (if (> (obs-requests o) 1) '(list-tags-pages-or-counted) '())
+                            (if (exists (lambda (i) (= (cdr (assoc "count" i)) count-most)) items) '(list-tags-count-capped) '()))))
+           (else '())))
+        ((rename-tag remove-tag)
+         (let ((r (if (eq? kind 'rename-tag) "rename" "remove")))
+           (case status
+             ((200)
+              (let-values (((v clause) (command-verdict e)))
+                (let* ((from (cadr v)) (to (and (eq? (car v) 'rename) (caddr v)))
+                       (carriers (carriers-of w tag from))
+                       (touched (take* carriers step-most)))
+                  (append
+                   (list (sym "step-" r "-" (cond ((null? carriers) "none") ((> (length carriers) step-most) "cap") (else "some"))))
+                   (if (> (length carriers) step-most) '(step-left-above-0) '())
+                   (if (and to (exists (lambda (n) (member to (mnode-tags n))) touched)) '(step-merge) '())
+                   (if (exists (lambda (n) (eq? (mnode-state n) 'archived)) touched) '(step-touched-archived) '())
+                   (if (exists (lambda (n) (eq? (mnode-state n) 'trashed)) touched) '(step-touched-trashed) '())
+                   (if (and (null? carriers) (pair? (carriers-of w (other-tag tag) from))) '(step-theirs-only) '())))))
+             ((400) (list (sym "step-" r (if (equal? (expectation-code x) "invalid_json") "-invalid-json" "-400"))))
+             ((413) (list (sym "step-" r "-413")))
+             ((415) (list (sym "step-" r "-415")))
+             (else '()))))
+        (else '()))))
+
+  ;; filter-map-raw : (Listof QueryTag) -> (Listof Symbol)     tag-filter-<name> for each raw value
+  (define (filter-map-raw qs)
+    (map (lambda (q) (sym "tag-filter-" (caddr q))) (filter (lambda (q) (and (pair? q) (eq? (car q) 'raw))) qs)))
+
   (define (reset! store)
     (run-write store
                (lambda (tx)
+                 (tx-execute! tx "DELETE FROM node_tags")
                  (tx-execute! tx "DELETE FROM links")
                  (tx-execute! tx "DELETE FROM changes")
                  (tx-execute! tx "DELETE FROM revisions")
@@ -4872,13 +6402,13 @@
   (define (run-sequence store twist seed trace?)
     (let* ((rng (make-rng seed))
            (style (cond ((deep-seed? seed) 'deep) ((family-seed? seed) 'family) ((linked-seed? seed) 'linked)
-                        (else 'plain)))
-           (n (if (eq? style 'deep) (+ 14 (rng-below! rng 14)) (+ 88 (rng-below! rng 40))))
+                        ((crowd-seed? seed) 'crowd) (else 'plain)))
+           (n (if (memq style '(deep crowd)) (+ 14 (rng-below! rng 14)) (+ 97 (rng-below! rng 44))))
            (t0 (+ 1795515226123 (rng-below! rng 100000)))
            (deep-tag (rng-pick! rng '(a b)))
            (total (+ n (case style
                          ((deep) (+ chain-steps script-steps)) ((family) family-steps) ((linked) linked-steps)
-                         (else 0))))
+                         ((crowd) crowd-steps) (else 0))))
            (bodies (make-hashtable string-hash string=?))
            (now-cell (vector t0))
            (clock (step-clock 0 1))
@@ -4908,6 +6438,8 @@
                (or (family-event rng w now deep-tag i) (next-event rng w now)))
               ((and (eq? style 'linked) (<= i linked-steps))
                (or (linked-event rng w now deep-tag i) (next-event rng w now)))
+              ((and (eq? style 'crowd) (<= i crowd-steps))
+               (or (crowd-event rng w now deep-tag i) (next-event rng w now)))
               (else (next-event rng w now))))
 
       ;; body-breaks : Obs -> (Listof String)
@@ -4978,6 +6510,7 @@
                         (for-each (lambda (a) (count! aims a)) (tree-aims w e x))
                         (for-each (lambda (a) (count! aims a)) (link-aims w e x o))
                         (for-each (lambda (a) (count! aims a)) (props-aims w e x))
+                        (for-each (lambda (a) (count! aims a)) (tag-aims w e x o))
                         (let ((p (purged-aim w e))) (when p (count! aims p)))
                         (when (expectation-touched x) (count! aims 'last-used-set))
                         (when (and (write-kind? (event-kind e))
@@ -4999,7 +6532,7 @@
                             (report w e i desc x o breaks)))))))))
 
       (reset! store)
-      (let* ((w0 (if (eq? style 'plain) (seed-world rng t0) model-start))
+      (let* ((w0 (case style ((plain) (seed-world rng t0)) ((crowd) (crowd-world rng t0 seed deep-tag)) (else model-start)))
              (seeding (attempt (lambda () (seed-rows! store w0))))
              (db (attempt (lambda () (db-now store)))))
         (cond
@@ -5129,4 +6662,99 @@
                                         bases)))
                           props-corpus))))
         (append creates replaces))))
+
+  ;;; The tags corpus, checked once against the server (slice 7a)
+
+  ;; tag-corpus-breaks : Store -> (Listof String)
+  ;; Every entry of the tags corpus through the real handlers, on STORE
+  ;; emptied first, so that a wrong entry is a named failure rather than a
+  ;; mystery mid-run. For each entry, a create of a Note whose tags are the
+  ;; entry alone: 201 with its stored form as the answer's tags, its one
+  ;; row in node_tags and its snapshot's tags' text, written as the model
+  ;; writes it; or the 400 with no write job. Then each entry as a list's
+  ;; ?tag=, a space as %20 and, where it has one, as +; and each raw query
+  ;; case, and the field with no =: 200 with exactly the Notes made with
+  ;; that stored form, by id, each showing it; or the 400.
+  (define (tag-corpus-breaks store)
+    (reset! store)
+    (let* ((now-cell (vector 1795515400000))
+           (clock (step-clock 0 1))
+           (jobs (vector 0))
+           (writer (let ((write (store-writer store)))
+                     (lambda (job) (vector-set! jobs 0 (+ 1 (vector-ref jobs 0))) (write job))))
+           (h (wrap-server (make-app (store-reader store) writer (lambda () (vector-ref now-cell 0)) (byte-sequence) clock)
+                           (lambda (line) #f) 10000 clock))
+           (auth (bearer (key-secret-of (make-bytevector 16 1))))
+           (owner (account-id-of 'a))
+           (rows-of (lambda (id)
+                      (run-read store
+                                (lambda (tx)
+                                  (list (map (lambda (r) (vector-ref r 0))
+                                             (tx-query tx "SELECT tag FROM node_tags WHERE owner = ? AND node = ? ORDER BY tag" owner id))
+                                        (map (lambda (r) (vector-ref r 0))
+                                             (tx-query tx "SELECT tags FROM revisions WHERE node = ?" id))))))))
+      (let loop ((es tag-corpus) (k 1) (made '()) (acc '()))
+        (if (pair? es)
+            (let* ((e (car es)) (id (node-id-of (+ 3000 k)))
+                   (what (format "tag corpus: ~a ~s, a create's tags" (tag-entry-name e) (tag-entry-sent e)))
+                   (tick (vector-set! now-cell 0 (+ 1 (vector-ref now-cell 0))))
+                   (j0 (vector-ref jobs 0))
+                   (a (exchange h 'PUT (string-append "/v1/nodes/" (id-text id))
+                                (list auth (cons "Content-Type" "application/json") (cons "If-None-Match" "*"))
+                                (content->text (make-tagged-content "note" "corpus" "" "text/plain" #f 'absent
+                                                                    (list 'entries (list e))))))
+                   (made-jobs (- (vector-ref jobs 0) j0))
+                   (s (tag-entry-stored e))
+                   (breaks
+                    (if (string? s)
+                        (let ((got (and (list? (answer-json a)) (assoc "tags" (answer-json a))))
+                              (stored (rows-of id)))
+                          (append
+                           (if (= (answer-status a) 201) '()
+                               (list (format "~a: the corpus has 201 storing ~s, the server answered ~a ~a" what s (answer-status a)
+                                             (problem-code a))))
+                           (if (and got (equal? (cdr got) (vector s))) '()
+                               (list (format "~a: the corpus shows ~s, the server answered ~s" what (vector s) (and got (cdr got)))))
+                           (if (equal? stored (list (list s) (list (tags-text (list s))))) '()
+                               (list (format "~a: the corpus has the row ~s and the snapshot's ~s, the server stored ~s" what s
+                                             (tags-text (list s)) stored)))))
+                        (append
+                         (if (and (= (answer-status a) 400) (equal? (problem-code a) "invalid_request")) '()
+                             (list (format "~a: the corpus has 400, the server answered ~a ~a" what (answer-status a) (problem-code a))))
+                         (if (= made-jobs 0) '()
+                             (list (format "~a: a tag refused made ~a write jobs (L10)" what made-jobs)))))))
+              (loop (cdr es) (+ k 1) (if (string? s) (cons (cons s id) made) made) (append acc breaks)))
+            (let* ((ids-of (lambda (s) (list-sort bytevector<? (map cdr (filter (lambda (p) (string=? (car p) s)) made)))))
+                   (filtered
+                    (lambda (what field s)
+                      (let* ((a (exchange h 'GET (string-append "/v1/nodes?limit=100&" field) (list auth)))
+                             (j (answer-json a)))
+                        (if (string? s)
+                            (let ((items (and (= (answer-status a) 200) (list? j) (assoc "items" j) (vector->list (cdr (assoc "items" j))))))
+                              (if (and items (equal? (map (lambda (i) (cdr (assoc "id" i))) items) (map id-text (ids-of s)))
+                                       (for-all (lambda (i) (equal? (cdr (assoc "tags" i)) (vector s))) items)
+                                       (equal? (cdr (assoc "next" j)) 'null))
+                                  '()
+                                  (list (format "~a: the corpus finds the ~a Notes made with ~s, the server answered ~a ~s"
+                                                what (length (ids-of s)) s (answer-status a) (or items (problem-code a))))))
+                            (if (and (= (answer-status a) 400) (equal? (problem-code a) "invalid_request")) '()
+                                (list (format "~a: the corpus has 400, the server answered ~a" what (answer-status a)))))))))
+              (append
+               acc
+               (apply append
+                      (map (lambda (e)
+                             (append
+                              (filtered (format "tag corpus: ~a ~s, a filter" (tag-entry-name e) (tag-entry-sent e))
+                                        (tag-query-field (list 'entry e 'strict)) (tag-entry-stored e))
+                              (if (exists (lambda (c) (char=? c #\space)) (string->list (tag-entry-sent e)))
+                                  (filtered (format "tag corpus: ~a ~s, a filter with spaces as +" (tag-entry-name e) (tag-entry-sent e))
+                                            (tag-query-field (list 'entry e 'plus)) (tag-entry-stored e))
+                                  '())))
+                           tag-corpus))
+               (apply append
+                      (map (lambda (c) (filtered (format "tag corpus: the raw query value ~s (~a)" (car c) (cadr c))
+                                                 (string-append "tag=" (car c)) (caddr c)))
+                           query-raw-cases))
+               (filtered "tag corpus: the field tag with no =" "tag" 'invalid)))))))
+
 )

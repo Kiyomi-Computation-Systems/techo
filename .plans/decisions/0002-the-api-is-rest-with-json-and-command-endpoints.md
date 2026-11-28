@@ -116,3 +116,19 @@ Plan: [slice 6](../2026-11-27-slice-6-kinds-and-props.md)
 - **The forms are fixed:** a fourth would break a client that reads the three.
 - **Four codes more:** `props_too_large` (413); `not_a_task`, `wrong_status`
   and `status_fixed` (409).
+
+## Amendment, 2026-11-27: slice 7a's routes
+
+Status: accepted (owner, 2026-11-27, as slice 7a's G6 and G8)
+Plan: [slice 7a](../2026-11-27-slice-7a-tags.md)
+
+1. **`GET /v1/nodes` takes `tag`,** up to ten times: the nodes that carry
+   every tag named.
+2. **`GET /v1/tags`** lists the account's tags in order, each with a count
+   that stops at 1,000 ("1,000 or more"). It pages by `limit` and `after`,
+   and `after` is the last tag seen.
+3. **`POST /v1/tags/rename` and `POST /v1/tags/remove`** are commands on no
+   one node. Each names its tag in the body, takes no `If-Match`, changes at
+   most 500 nodes, and answers how many it changed and how many are left.
+   The client repeats it until none is left.
+4. **A tag in a query must be percent-encoded.** A `+` there is a space.
