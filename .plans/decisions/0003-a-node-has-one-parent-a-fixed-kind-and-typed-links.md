@@ -115,3 +115,21 @@ Plan: [slice 6](../2026-11-27-slice-6-kinds-and-props.md)
    JSContact processor. A country code is two capitals, not checked further.
 6. **The cap is raised when real use asks.** Past about 8 KiB the fix is a
    migration that puts `props` last in `nodes`, or in its own table.
+
+## Amendment, 2026-11-27: tags
+
+Status: accepted (owner, 2026-11-27, as slice 7a's G1, G3, G4, G5 and G7)
+Plan: [slice 7a](../2026-11-27-slice-7a-tags.md)
+
+1. **A node has a set of at most 50 tags,** kept in `node_tags`. A row's
+   owner is its node's.
+2. **The server stores one form of a tag:** NFKC, lower case, NFKC again,
+   white space trimmed from its ends, each run of spaces inside made one `-`.
+   The result is 1 to 64 characters. A sent tag over 256 characters is
+   refused before it is folded.
+3. **A tag holds no control character and no invisible one,** by a list
+   written out in the code. Neither is stripped: the tag is refused. A tab
+   and a line break are control characters, not spaces.
+4. **Tags are not inherited.** A client works that out from the tree.
+5. **A tag is a name, not a record.** Tags with ids of their own are kept
+   ready, as a slice, if renaming by steps proves too slow.

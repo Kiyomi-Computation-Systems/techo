@@ -447,3 +447,22 @@ This replaces the table above.
   and the column; `feed-state` keeps the state for `tags`; tags are a corpus
   written by hand; one seed has over 500 carriers of a tag, so `left` is
   above 0.
+
+## Decided after the review (owner, 2026-11-27)
+
+- **H2:** a tab or a line break in a tag is a 400. `space-char?` is U+0020,
+  U+00A0, U+1680, U+2000 to U+200A, U+202F, U+205F and U+3000; after NFKC
+  only U+0020 and U+1680 can be left. U+2028 and U+2029 are refused, as in a
+  Contact.
+- **H3:** an invisible character is a 400. `invisible-char?` replaces
+  `zero-width-char?` in `(techo chars)`, and is Unicode 16's
+  Default_Ignorable_Code_Point, written out: U+00AD, U+034F, U+061C, U+115F,
+  U+1160, U+17B4, U+17B5, U+180B to U+180F, U+200B to U+200F, U+202A to
+  U+202E, U+2060 to U+206F, U+3164, U+FE00 to U+FE0F, U+FEFF, U+FFA0, U+FFF0
+  to U+FFF8, U+1BCA0 to U+1BCA3, U+1D173 to U+1D17A, U+E0000 to U+E0FFF.
+  **Its price:** an emoji typed with its variation selector (`❤️`, U+2764 and
+  U+FE0F) or joined by U+200D is refused. A client strips U+FE0F first. A
+  refusal can be lifted later; an acceptance cannot be taken back.
+- **H5:** the three rules are amended (ADR-0004; the constraints).
+- **H6:** a tag's count stops at 1,000. `tags-page` answers
+  `min(count, 1000)` for each tag, and L8 is held against that.

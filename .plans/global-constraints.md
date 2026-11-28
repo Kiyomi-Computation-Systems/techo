@@ -232,3 +232,22 @@ disagree, the record wins and this file gets fixed.
   [progress.md](progress.md).
 - **A decision changes by a new or amended record,** never by an edit here alone.
 - **Agents do not commit or push** unless the owner asks.
+
+## Tags (slice 7a; ADR-0002, 0003 and 0004, amended 2026-11-27)
+
+- **A tag is stored in one form,** and that form is a fixed point: folding a
+  stored tag gives the same tag. NFKC, lower case, NFKC, trim, spaces to `-`.
+- **A sent tag over 256 characters is refused before it is folded.** Folding
+  is on the loop's thread.
+- **A tag is judged before any job.** A request refused for its tags makes no
+  write job, and no raise carries a tag.
+- **A rename or removal of a tag** changes at most 500 nodes a call, bumps
+  each, writes one change row of op `tags` for each and no snapshot, and
+  takes no `If-Match`. These are the exceptions to "every write carries
+  `If-Match`" and "a change of content appends a snapshot".
+- **A node's present tags are its rows in `node_tags`.** A snapshot written
+  takes its tags from those rows in the same statement.
+- **`revisions.tags` is behind `body`:** the one exception to "a large column
+  is its table's last".
+- **Every statement on `node_tags` names the owner,** and its index begins
+  with the owner. No `INSERT OR IGNORE`.

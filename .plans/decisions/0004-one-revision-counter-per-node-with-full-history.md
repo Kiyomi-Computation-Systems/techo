@@ -155,3 +155,24 @@ Plan: [slice 6](../2026-11-27-slice-6-kinds-and-props.md)
    `wontdo` or `reopen`.
 4. **A create may give a finished Task's `closed`,** for an import. Otherwise
    the server sets it.
+
+## Amendment, 2026-11-27: tags in a write, and a rename with no snapshot
+
+Status: accepted (owner, 2026-11-27, as slice 7a's G1, G2, G8 and H5)
+Plan: [slice 7a](../2026-11-27-slice-7a-tags.md)
+
+1. **A node's tags are part of its content.** A replace with no `tags` keeps
+   them, and `[]` clears them. Every snapshot holds the tags as they then
+   were, and a restore brings a snapshot's tags back.
+2. **A rename or a removal of a tag is the second write with no `If-Match`,**
+   after a bulk move's children. It names no one node.
+3. **It bumps each node's revision and writes no snapshot,** as a move does.
+   So "a change of content appends a snapshot" has one exception, and a
+   node's tags are its rows in `node_tags`, not its newest snapshot's. The
+   two agree after every write of content.
+4. **Its cost:** a restore of a revision from before brings the old tag back
+   to that node, and a device with an unsent edit to a renamed node gets a
+   412.
+5. **`revisions.tags` is behind `body`,** added by `ALTER TABLE`. This is the
+   one large column that is not its table's last. The column behind it is
+   read only with the body: 0.015 ms more behind 1 MiB.

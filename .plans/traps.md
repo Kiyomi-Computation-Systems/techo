@@ -413,6 +413,36 @@ it.
   a hex number of 10 or more never equals the answer's.
 - **Rule:** `string-downcase` an id built that way before comparing it.
 
+## Lowercasing a normalised string leaves it not normalised
+
+- **Seen:** `(string-downcase (string-normalize-nfkc "W\x30A;"))` is `w` and
+  U+030A, and normalising that gives `ẘ` (U+1E98): Unicode has `ẘ` and no
+  capital of it (slice 7a's plan review; reproduced with
+  `build/verify-7a/v.sps`). A tag folded once and folded again differed for
+  up to 0.2% of generated strings.
+- **Rule:** normalise, lowercase, normalise again. Hold "folding twice is
+  folding once" by a test over generated strings.
+
+## Normalising can grow a string 18 times
+
+- **Seen:** U+FDFA becomes 18 characters under NFKC. Two million of them took
+  2.5 to 7.5 s to fold (the same review; reproduced).
+- **Rule:** bound a string's length before normalising it, not after.
+
+## A `+` in a query is a space
+
+- **Seen:** `?tag=a+b` arrives from circuit's params as `a b`, and `?tag=c++`
+  as `c` and two spaces (the same review's `build/review-7a/query.sps`;
+  rerun). Bad UTF-8 in a percent sequence arrives as U+FFFD, not as an error.
+- **Rule:** a guide that puts free text in a query says to percent-encode it,
+  `+` as `%2B`.
+
+## `(chez-sqlite3)` exports `step!` and `changes`
+
+- **Seen:** a library that imports it and defines `step!` fails with
+  "multiple definitions" (the same review; both names checked).
+- **Rule:** name nothing in the store `step!` or `changes`.
+
 The siblings' traps apply wherever Techo touches the same ground. Read them there:
 
 - chez-sqlite3: `.plans/traps.md`
