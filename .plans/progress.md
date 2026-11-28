@@ -70,10 +70,17 @@ close-out under **Close-outs**, newest first.
 
 ## Next
 
-**Slice 6: kinds and props; task transitions.**
-[Planned](2026-11-27-slice-6-kinds-and-props.md), built and reviewed on
-`slice-6-kinds-and-props`: the owner decided P1 to P14 on 2026-11-27, and
-three tightenings after the build's review. Not merged.
+**Slice 7a: tags.** [Planned](2026-11-27-slice-7a-tags.md): the owner decided
+S1 and G1 to G8 on 2026-11-27. Not reviewed, not built.
+
+**Slice 7b: search.** [Decided](2026-11-27-slice-7b-search.md), Q1 to Q7, with
+its measurements. Not planned further.
+
+**Slice 6 is merged** (#22, `f6021e1`): props by kind, the When, three task
+commands, four codes, no migration
+([the plan](2026-11-27-slice-6-kinds-and-props.md); ADR-0001 to ADR-0004 and
+ADR-0007, amended 2026-11-27). A person can now keep tasks with deadlines and
+contacts with their details.
 
 **Slice 5b is merged** (#20, `25ad3b2`): migration 6, three
 link routes ([the plan](2026-11-26-slice-5b-links.md); ADR-0002, ADR-0003,
@@ -176,8 +183,9 @@ Task `DONE`.
 | 4b | The node lifecycle: archive, trash, purge | merged, #18 | |
 | 5a | The tree and move | merged, #19 | |
 | 5b | Links | merged, #20 | |
-| 6 | Kinds and props; task transitions | built, on `slice-6-kinds-and-props` | |
-| 7 | Tags and search | not planned | |
+| 6 | Kinds and props; task transitions | merged, #22 | |
+| 7a | Tags | planned, on `slice-7a-tags` | |
+| 7b | Search | decided, not planned | 7a |
 | 8 | The change feed | not planned | |
 | 9 | Docker image and backup | not planned | |
 
@@ -215,7 +223,7 @@ From [outline.md](outline.md) §14, each for the slice named:
 
 ## Close-outs
 
-### Slice 6: kinds and props; task transitions (PR #22, 2026-11-27)
+### Slice 6: kinds and props; task transitions (merged 2026-11-27, #22)
 
 - **Built:** four pure libraries, `(techo when)`, `(techo contact)`,
   `(techo tasks)` and `(techo props)`; `props-of` in the store; three routes,
